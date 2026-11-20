@@ -1,0 +1,7 @@
+spacy
+wordfreq
+openai
+srt
+yt-dlp
+numpy
+av

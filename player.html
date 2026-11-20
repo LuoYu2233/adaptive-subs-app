@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive Subs</title>
+<meta name="description" content="只给你不认识的词配中文的英语字幕：按词汇量实时调整，结合语境翻译。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="1" y="1" width="30" height="30" rx="8" class="bm-bg"/>
+      <rect x="7" y="18" width="18" height="3" rx="1.5" class="bm-line"/>
+      <rect x="7" y="24" width="11" height="3" rx="1.5" class="bm-line"/>
+      <rect x="15" y="8" width="10" height="6" rx="2" class="bm-gloss"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">Adaptive Subs</span>
+      <span class="brand-sub">只给你不认识的词配中文</span>
+    </div>
+  </div>
+  <div class="video-bar">
+    <select id="videoSelect" aria-label="选择视频" title="已经处理好的视频"></select>
+    <!-- shown only when the local server (server.py) is running -->
+    <form class="url-form" id="urlForm" hidden>
+      <input id="urlInput" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="粘贴任意 YouTube 链接，马上开始看" aria-label="YouTube 链接">
+      <button class="btn btn-ghost" type="submit">打开</button>
+    </form>
+    <!-- opened locally but not through server.py: explain how to get the link box -->
+    <span class="live-hint" id="liveHint" hidden>想粘贴新的 YouTube 链接？现在连的是只能看已保存视频的旧服务器，请关掉它，再双击 <b>start.bat</b></span>
+  </div>
+  <div class="top-actions">
+    <button class="btn btn-primary" id="openTest" type="button">测词汇量</button>
+    <button class="btn btn-ghost icon-btn" id="openIntro" type="button" aria-label="这是什么" title="这是什么">?</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="main-col">
+    <div class="player-frame" id="playerFrame">
+      <div id="yt"></div>
+      <!-- subtitles are shown here (inside the video) unless "below the video" is chosen -->
+      <div class="overlay-subs" id="overlaySubs" hidden></div>
+      <!-- toolbar shown only in fullscreen -->
+      <div class="fs-bar" id="fsBar">
+        <button class="sbtn" type="button" data-fs="prev" title="上一句" aria-label="上一句"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <button class="sbtn sbtn-wide" type="button" data-fs="replay" title="重听本句"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg><span>重听</span></button>
+        <button class="sbtn" type="button" data-fs="next" title="下一句" aria-label="下一句"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button class="sbtn sbtn-wide" type="button" data-fs="exit" title="退出全屏（Esc）"><svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg><span>退出全屏</span></button>
+      </div>
+    </div>
+
+    <div class="stage" id="stage">
+      <div class="stage-text" id="stageText">
+        <p class="line" id="line" aria-live="polite"></p>
+        <p class="line-zh" id="lineZh" hidden></p>
+      </div>
+      <div class="stage-bar">
+        <div class="stage-btns">
+          <button class="sbtn" id="prevLine" type="button" title="上一句（←）" aria-label="上一句">
+            <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+          <button class="sbtn sbtn-wide" id="replayLine" type="button" title="重听本句（R）">
+            <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg>
+            <span>重听本句</span>
+          </button>
+          <button class="sbtn" id="nextLine" type="button" title="下一句（→）" aria-label="下一句">
+            <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <label class="switch" title="每句结束时自动暂停，适合精听">
+            <input type="checkbox" id="autoPause">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span>每句暂停</span>
+          </label>
+        </div>
+        <div class="stage-right">
+          <span class="stage-meta" id="lineMeta"></span>
+          <button class="sbtn sbtn-wide" id="fsBtn" type="button" title="全屏，字幕一起显示（F）">
+            <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+            <span>全屏</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel controls">
+      <div class="ctl-level">
+        <div class="ctl-head">
+          <label for="levelRange" class="ctl-label">你的词汇量</label>
+          <span class="level-value" id="levelValue">≈ 5,000 词</span>
+          <button class="link-btn" id="levelTest" type="button">不确定？测一测</button>
+        </div>
+        <input type="range" id="levelRange" min="0" max="11" step="1" value="5">
+        <div class="level-scale" aria-hidden="true"><span>1.5k</span><span>4k</span><span>8k</span><span>15k</span></div>
+        <div class="density" id="density"></div>
+      </div>
+      <div class="ctl-options">
+        <div class="ctl-group">
+          <span class="ctl-label">注释多少</span>
+          <div class="seg" role="radiogroup" aria-label="注释多少" id="prefSeg">
+            <button type="button" role="radio" data-pref="more" title="拿不准的词也标出来">宁多勿缺</button>
+            <button type="button" role="radio" data-pref="normal">适中</button>
+            <button type="button" role="radio" data-pref="less" title="只标最难的词">精简</button>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <span class="ctl-label">字幕</span>
+          <div class="seg" role="radiogroup" aria-label="字幕模式" id="modeSeg">
+            <button type="button" role="radio" data-mode="adaptive">自适应</button>
+            <button type="button" role="radio" data-mode="plain">纯英文</button>
+            <button type="button" role="radio" data-mode="bilingual">中英对照</button>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <span class="ctl-label">字幕位置</span>
+          <div class="seg" role="radiogroup" aria-label="字幕位置" id="posSeg">
+            <button type="button" role="radio" data-pos="inside">视频内</button>
+            <button type="button" role="radio" data-pos="below">视频下方（大字）</button>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <span class="ctl-label">注释位置</span>
+          <div class="seg" role="radiogroup" aria-label="注释位置" id="glossSeg">
+            <button type="button" role="radio" data-gloss="over">单词上方</button>
+            <button type="button" role="radio" data-gloss="paren">括号</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="hint">点击字幕里任意单词：查看释义、标记认识 / 不认识、加入生词本。快捷键：空格 播放/暂停 · R 重听 · ← → 换句 · F 全屏</p>
+  </section>
+
+  <aside class="panel side">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="transcript">字幕全文</button>
+      <button type="button" role="tab" data-tab="preview">本集预习</button>
+      <button type="button" role="tab" data-tab="book">生词本 <span class="count" id="bookCount">0</span></button>
+    </div>
+    <div class="tab-panel" id="tab-transcript" role="tabpanel"></div>
+    <div class="tab-panel" id="tab-preview" role="tabpanel" hidden></div>
+    <div class="tab-panel" id="tab-book" role="tabpanel" hidden></div>
+  </aside>
+</main>
+
+<!-- word card -->
+<div class="word-card" id="wordCard" role="dialog" aria-label="单词" hidden></div>
+
+<!-- toast -->
+<div class="toast" id="toast" role="status" hidden></div>
+
+<!-- intro -->
+<dialog class="modal" id="introDialog">
+  <div class="modal-body intro">
+    <p class="eyebrow">英语字幕 · 按你的水平注释</p>
+    <h2>看纯英文字幕，<br>只在卡住的地方给一点中文</h2>
+    <ul class="intro-list">
+      <li><b>英文完整保留</b>：只在你可能不认识的词上方显示中文，注意力留在英语上</li>
+      <li><b>按词汇量调整</b>：水平越高注释越少，平均每句不到一个</li>
+      <li><b>结合语境翻译</b>：能识别习语和熟词僻义，比如 <i>address the risk</i> 里的 address 是"应对"</li>
+    </ul>
+    <div class="demo-line" aria-hidden="true">
+      <span>We need to </span><span class="g"><span class="w">address</span><span class="zh">应对</span></span><span> these risks and </span><span class="g"><span class="w">get this right</span><span class="zh">做对</span></span><span>.</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="introTest" type="button">先测词汇量（约 2 分钟）</button>
+      <button class="btn btn-ghost" id="introSkip" type="button">直接开始</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- vocabulary test -->
+<dialog class="modal modal-wide" id="testDialog">
+  <div class="modal-body" id="testBody"></div>
+</dialog>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

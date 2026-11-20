@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Adaptive Subs（B 站原型）",
+  "version": "0.1.0",
+  "description": "在 B 站视频的英文字幕上，只给你可能不认识的词配中文。注释由本机的 Adaptive Subs 服务器生成。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://*.hdslb.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.bilibili.com/*"],
+      "js": ["md5.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Adaptive Subs" }
+}

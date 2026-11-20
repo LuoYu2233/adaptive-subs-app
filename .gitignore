@@ -1,0 +1,26 @@
+# API keys — never commit
+.env
+*.env
+!.env.example
+
+# local Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+.cache/
+
+# build outputs (the Windows program goes to GitHub Releases, the web demo to GitHub Pages)
+build/
+release/
+site/
+
+# processed videos and downloaded subtitles: other people's content, generated locally.
+# Only the vocabulary test ships with the repo; data/ranks_en.txt is generated from wordfreq.
+data/*
+!data/vocab_test.json
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

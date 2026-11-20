@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Adaptive Subs</title>
+<style>
+  :root { --bg: #ffffff; --ink: #18202b; --ink-2: #5d6876; --line: #e3e7ec; --accent: #e09a1b; --accent-soft: #fff4dc; --ok: #1f8f5a; --bad: #c2410c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151a21; --ink: #e8edf3; --ink-2: #9aa5b2; --line: #2a323d; --accent: #ffc65c; --accent-soft: rgba(255, 198, 92, 0.14); --ok: #5fd39b; --bad: #ff9a6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 320px; background: var(--bg); color: var(--ink); font: 13px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font-size: 14px; }
+  .sub { color: var(--ink-2); font-size: 12px; }
+  main { padding: 12px 14px 14px; display: grid; gap: 14px; }
+  .label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; font-weight: 600; }
+  .value { color: var(--accent); font-weight: 700; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .scale { display: flex; justify-content: space-between; color: var(--ink-2); font-size: 11px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; background: none; color: var(--ink); padding: 6px 4px; font: inherit; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-checked=true] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .switch { position: relative; width: 36px; height: 20px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .track { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background 0.15s; pointer-events: none; }
+  .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(16px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .status { padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
+  .status.ok { color: var(--ok); } .status.bad { color: var(--bad); }
+  footer { padding: 0 14px 12px; color: var(--ink-2); font-size: 11px; }
+  .setup-btn { width: 100%; padding: 7px 10px; border: 1px solid var(--accent); border-radius: 8px; background: none;
+    color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; margin-top: -6px; }
+  .setup-btn:hover { background: var(--accent-soft); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Adaptive Subs</h1>
+    <div class="sub">只给你不认识的词配中文 · B 站原型</div>
+  </div>
+  <label class="switch" title="开 / 关">
+    <input type="checkbox" id="enabled" aria-label="启用">
+    <span class="track"></span>
+  </label>
+</header>
+<main>
+  <div class="status" id="status">正在检查本地程序…</div>
+  <button type="button" class="setup-btn" id="openSetup" hidden>打开设置（API key / 注释模型）</button>
+  <div>
+    <div class="label"><label for="level">你的词汇量</label><span class="value" id="levelValue"></span></div>
+    <input type="range" id="level" min="0" max="11" step="1">
+    <div class="scale"><span>1.5k</span><span>4k</span><span>8k</span><span>15k</span></div>
+  </div>
+  <div>
+    <div class="label">注释多少</div>
+    <div class="seg" role="radiogroup" data-key="pref">
+      <button type="button" role="radio" data-v="more">宁多勿缺</button>
+      <button type="button" role="radio" data-v="normal">适中</button>
+      <button type="button" role="radio" data-v="less">精简</button>
+    </div>
+  </div>
+  <div>
+    <div class="label">字幕</div>
+    <div class="seg" role="radiogroup" data-key="mode">
+      <button type="button" role="radio" data-v="adaptive">自适应</button>
+      <button type="button" role="radio" data-v="plain">纯英文</button>
+      <button type="button" role="radio" data-v="bilingual">中英对照</button>
+    </div>
+  </div>
+  <div>
+    <div class="label">注释位置</div>
+    <div class="seg" role="radiogroup" data-key="gloss">
+      <button type="button" role="radio" data-v="over">单词上方</button>
+      <button type="button" role="radio" data-v="paren">括号</button>
+    </div>
+  </div>
+  <div>
+    <div class="label">字幕位置</div>
+    <div class="seg" role="radiogroup" data-key="pos">
+      <button type="button" role="radio" data-v="bottom">底部</button>
+      <button type="button" role="radio" data-v="top" title="视频画面底部本来就印着字幕时，放到顶部避免重叠">顶部</button>
+    </div>
+  </div>
+  <div class="row">
+    <label for="hideNative">隐藏 B 站自带字幕（避免两行字幕重叠）</label>
+    <label class="switch"><input type="checkbox" id="hideNative"><span class="track"></span></label>
+  </div>
+</main>
+<footer>改动立即生效。注释由你电脑上的 Adaptive Subs 程序生成，API key 只保存在你的电脑上。</footer>
+<script src="popup.js"></script>
+</body>
+</html>

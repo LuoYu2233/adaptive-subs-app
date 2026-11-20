@@ -1,0 +1,57 @@
+/* Adaptive Subs overlay on Bilibili's player. Everything is prefixed asubs- to stay out of the page's way. */
+.asubs-root {
+  position: absolute; inset: 0; z-index: 30; pointer-events: none;
+  --asubs-size: 24px;
+  --asubs-gloss: #ffc65c;
+  --asubs-gloss-soft: rgba(255, 198, 92, 0.16);
+  font-family: "Figtree", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+.asubs-box {
+  position: absolute; left: 50%; bottom: max(58px, 12%); transform: translateX(-50%);
+  max-width: 92%; width: max-content; box-sizing: border-box;
+  padding: 0.12em 0.75em 0.18em; border-radius: 0.45em;
+  background: rgba(6, 8, 12, 0.74); color: #fff; text-align: center;
+  font-size: var(--asubs-size); font-weight: 500; letter-spacing: 0.005em;
+}
+.asubs-box[hidden], .asubs-pill[hidden], .asubs-zh[hidden] { display: none !important; }
+.asubs-line { line-height: 1.5; text-wrap: balance; }
+.asubs-line.asubs-has-over { line-height: 2.05; }      /* room for the gloss above the word */
+.asubs-zh {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-size: 0.72em; color: #d5dbe3; padding-bottom: 0.25em; line-height: 1.4;
+}
+.asubs-g { position: relative; display: inline-block; }
+.asubs-w { background: var(--asubs-gloss-soft); border-radius: 5px; padding: 0 3px; }
+.asubs-gz {
+  position: absolute; left: 50%; bottom: 84%; transform: translateX(-50%);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-size: 0.56em; line-height: 1; color: var(--asubs-gloss); white-space: nowrap; font-weight: 500;
+}
+.asubs-pz {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  color: var(--asubs-gloss); font-size: 0.72em; margin-left: 1px;
+}
+.asubs-pill {
+  position: absolute; left: 12px; top: 12px; max-width: min(560px, 80%);
+  padding: 5px 11px; border-radius: 999px; background: rgba(6, 8, 12, 0.72); color: #e8edf3;
+  font: 500 12px/1.45 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  opacity: 0.85;
+}
+.asubs-pill.asubs-pill-sticky { border-radius: 10px; color: #ffe2a8; opacity: 1; }
+
+/* hide Bilibili's own subtitle layer while ours is showing (switchable in the popup) */
+.asubs-hide-native .bpx-player-subtitle-wrap,
+.asubs-hide-native .bili-subtitle-x-subtitle-panel-wrap { display: none !important; }
+
+/* button in the status pill (e.g. "语音识别英文字幕") */
+.asubs-pill-btn {
+  pointer-events: auto; margin-left: 8px; padding: 2px 10px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--asubs-gloss); color: #1b1300; font: 600 12px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+.asubs-pill-btn:hover { filter: brightness(1.08); }
+.asubs-pill-btn:disabled { opacity: 0.6; cursor: default; }
+.asubs-pill:has(.asubs-pill-btn) { pointer-events: auto; }
+
+/* subtitles at the top: for videos whose own subtitles are printed at the bottom of the picture */
+.asubs-root.asubs-top .asubs-box { top: max(48px, 9%); bottom: auto; }
+.asubs-root.asubs-top .asubs-pill { top: auto; bottom: max(58px, 12%); }
