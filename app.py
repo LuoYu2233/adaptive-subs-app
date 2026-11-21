@@ -1,24 +1,39 @@
 """Entry point of the packaged Windows program (AdaptiveSubs.exe, built by build_app.py).
 
-Starts the local server on this computer only. On first run it opens the settings page,
-where the user picks the annotation model and enters their own API keys.
-Keep the window open while watching; closing it stops the program.
+A windowed program (no console): it starts the local server on this computer only and shows the
+control panel in its own window (Edge WebView2). On first run the window opens on the settings page,
+where the user picks the annotation model and enters their own API keys. Everything that used to be
+printed to the console goes to %LOCALAPPDATA%\\AdaptiveSubs\\logs\\adaptive-subs.log (and the panel's log).
+Closing the window stops the program.
 """
+import os
 import sys
 import traceback
+from pathlib import Path
+
+
+def home() -> Path:
+    if os.environ.get("ASUBS_HOME"):
+        return Path(os.environ["ASUBS_HOME"])
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs"
 
 
 def main():
+    import applog
+    applog.install(home() / "logs")
+    print("Adaptive Subs —— 只给你不认识的词配中文的英语字幕")
+    import server
+    sys.argv = [sys.argv[0], "--app", "--gui", *sys.argv[1:]]
+    server.main()
+
+
+def show_error(text: str):
+    """No console to print to: show the error in a message box."""
     try:
-        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)   # show each log line right away
-        sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text[-1500:], "Adaptive Subs 出错了", 0x10)
     except Exception:
         pass
-    print("Adaptive Subs —— 只给你不认识的词配中文的英语字幕")
-    print("看视频时请保持这个窗口开着，关掉窗口就停止。\n")
-    import server
-    sys.argv = [sys.argv[0], "--app", *sys.argv[1:]]
-    server.main()
 
 
 if __name__ == "__main__":
@@ -27,5 +42,9 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception:
-        traceback.print_exc()
-        input("\n程序出错了（上面是错误信息）。按回车关闭窗口…")
+        err = traceback.format_exc()
+        try:
+            print(err)
+        finally:
+            show_error("程序出错了，错误信息已写入日志：\n"
+                       f"{home() / 'logs' / 'adaptive-subs.log'}\n\n{err}")

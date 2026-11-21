@@ -15,7 +15,7 @@
     normal: { factor: 1.0, perLine: 3, repeat: 2 },
     less: { factor: 1.3, perLine: 2, repeat: 1 },
   };
-  const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom" };
+  const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom", cover: "on" };
   const GAP_GRACE = 0.5;     // a line stays this long after it ends, then the box disappears
   // Bilibili request signature ("WBI"): fixed shuffle of the two keys published by /nav
   const MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28,
@@ -34,10 +34,21 @@
     cur: -2, dirty: true,
     lastT: 0, lastFocusAt: 0,
   };
-  const ui = { root: null, box: null, line: null, zh: null, pill: null, host: null, ro: null, pillTimer: 0 };
+  const ui = { root: null, box: null, line: null, zh: null, pill: null, host: null, ro: null, pillTimer: 0, card: null, cover: null };
+
+  // Learner profile from the local program (shared with the profile page and the player):
+  //   known   = known-word library (exam lists + frequent words + test + "我认识" marks)
+  //   unknown = always gloss ("我不认识" marks + words answered 不认识 in the test)
+  // Phrase and special-sense notes use their own keys ("phrase:…", "sense:…"), so knowing a word
+  // never hides its uncommon meaning.
+  const PF = { ok: false, rev: -1, level: 0, known: new Set(), unknown: new Set(), marks: new Map(), lastCheck: 0 };
+  let defs = {};    // key -> short Chinese meaning, for words marked 不认识 that had no annotation
+  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const effLevel = () => (PF.ok && PF.level) || cfg.level;
 
   // ------------------------------------------------------------ helpers ---
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const WORD_RE = /[A-Za-z](?:[A-Za-z'’-]*[A-Za-z])?/g;
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -100,11 +111,13 @@
   // ------------------------------------------------------------- loading ---
   async function load(key) {
     const gen = ++S.gen;
-    Object.assign(S, { key: key.str, id: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true });
+    Object.assign(S, { key: key.str, id: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true, owner: null });
+    lastLayout = "";
     if (!cfg.enabled) return;
     pill("正在读取 B 站字幕…");
     try {
       const view = await biliJSON(`/x/web-interface/view?bvid=${key.bvid}`);
+      if (gen === S.gen) { S.owner = view.owner ? view.owner.mid : null; lastLayout = ""; }
       const pages = view.pages || [];
       const page = pages.find((x) => x.page === key.p) || pages[0] || { cid: view.cid, page: 1, part: "" };
       const title = pages.length > 1 ? `${view.title} · P${page.page} ${page.part}` : view.title;
@@ -218,6 +231,12 @@
           S.asr = d.source === "asr";
           const old = S.cues;
           setCues(d.cues.map((c, i) => (old[i] && old[i].text === c.text ? { ...c, zh: old[i].zh, notes: old[i].notes } : c)));
+        } else if (type === "more") {          // speech recognition: more lines cut while the audio streams in
+          d.cues.forEach((c, k) => {
+            const i = d.from + k, old = S.cues[i];
+            S.cues[i] = { s: c.s, e: c.e, text: c.text || (old && old.text) || "", zh: (old && old.zh) || "", notes: (old && old.notes) || [] };
+          });
+          S.dirty = true;
         } else if (type === "ann") {
           for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = notes; S.annDone && S.annDone.add(+k); }
         } else if (type === "zh") {
@@ -245,23 +264,101 @@
   }
 
   // ------------------------------------------- which glosses to show (core) ---
+  // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
+  function noteState(n) {
+    const mk = markKey(n);
+    if (PF.unknown.has(mk)) return "forced";
+    if (PF.known.has(mk)) return "known";
+    const pref = PREFS[cfg.pref] || PREFS.more;
+    return n.lv > effLevel() * pref.factor ? "hard" : "easy";
+  }
+
+  // rough base forms of a word as written, to match the library's lemma keys ("decided" -> "decide")
+  function lemmaGuesses(w) {
+    w = w.toLowerCase().replace(/['’]s$/, "");
+    const out = [w];
+    const add = (x) => { if (x.length >= 2 && !out.includes(x)) out.push(x); };
+    if (w.endsWith("ies")) add(w.slice(0, -3) + "y");
+    if (w.endsWith("es")) add(w.slice(0, -2));
+    if (w.endsWith("s")) add(w.slice(0, -1));
+    if (w.endsWith("ied")) add(w.slice(0, -3) + "y");
+    if (w.endsWith("ed")) { add(w.slice(0, -2)); add(w.slice(0, -1)); if (/(.)\1ed$/.test(w)) add(w.slice(0, -3)); }
+    if (w.endsWith("ing")) { add(w.slice(0, -3)); add(w.slice(0, -3) + "e"); if (/(.)\1ing$/.test(w)) add(w.slice(0, -4)); }
+    return out;
+  }
+
+  // Words marked 不认识 that this video has no annotation for: show the dictionary meaning instead.
+  function addMarkedWords(c) {
+    c.notes = c.notes.filter((n) => !n.local);
+    if (!PF.unknown.size) return;
+    const extra = [];
+    for (const m of c.text.matchAll(WORD_RE)) {
+      const s = m.index, e = s + m[0].length;
+      if (c.notes.some((n) => n.s < e && s < n.e)) continue;
+      const key = lemmaGuesses(m[0]).find((k) => PF.unknown.has(k) && defs[k]);
+      if (key) extra.push({ s, e, zh: defs[key], lv: 99999, kind: "word", key, local: true });
+    }
+    if (extra.length) c.notes = c.notes.concat(extra).sort((a, b) => a.s - b.s);
+  }
+
   function computeVisible() {
     const pref = PREFS[cfg.pref] || PREFS.more;
     const count = new Map();
     S.visible = S.cues.map((c) => {
-      const cand = c.notes.map((n, i) => ({ i, lv: n.lv, key: n.key })).filter((x) => x.lv > cfg.level * pref.factor);
-      cand.sort((a, b) => b.lv - a.lv);
+      addMarkedWords(c);
+      const cand = [];
+      c.notes.forEach((n, i) => {
+        const st = noteState(n);
+        if (st === "forced" || st === "hard") cand.push({ i, lv: n.lv, key: markKey(n), forced: st === "forced" });
+      });
+      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
       const keep = new Set();
       for (const x of cand) {
         if (keep.size >= pref.perLine) break;
         const seen = count.get(x.key) || 0;
-        if (seen >= pref.repeat) continue;
+        if (!x.forced && seen >= pref.repeat) continue;
         count.set(x.key, seen + 1);
         keep.add(x.i);
       }
       return keep;
     });
     S.dirty = true;
+  }
+
+  // ------------------------------------------------------------- profile ---
+  async function loadProfile() {
+    const r = await bg({ type: "profile" });
+    PF.lastCheck = Date.now();
+    if (r.error || !Array.isArray(r.known)) { PF.ok = false; computeVisible(); return; }
+    Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
+      marks: new Map([...r.marks.known.map((k) => [k, "known"]), ...r.marks.unknown.map((k) => [k, "unknown"])]) });
+    computeVisible();
+  }
+
+  async function checkProfile() {          // the profile page or the popup may have changed it
+    if (document.visibilityState !== "visible" || Date.now() - PF.lastCheck < 15000) return;
+    PF.lastCheck = Date.now();
+    const r = await bg({ type: "profile", summary: true });
+    if (r.error) { if (PF.ok) { PF.ok = false; computeVisible(); } return; }
+    if (r.rev !== PF.rev || !PF.ok) loadProfile();
+  }
+
+  async function mark(key, state, word, zhShort) {
+    if (state === "unknown" && zhShort && !defs[key]) {
+      defs[key] = zhShort;
+      chrome.storage.local.set({ asubsDefs: defs });
+    }
+    // update right away, then let the server recompute the library
+    PF.known.delete(key); PF.unknown.delete(key); PF.marks.delete(key);
+    if (state === "known") { PF.known.add(key); PF.marks.set(key, "known"); }
+    if (state === "unknown") { PF.unknown.add(key); PF.marks.set(key, "unknown"); }
+    computeVisible();
+    const r = await bg({ type: "mark", payload: { key, state } });
+    if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
+    const shown = key.replace(/^(sense|phrase):/, "");
+    pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
+      { hideAfter: 3500 });
+    loadProfile();
   }
 
   // ------------------------------------------------------------ overlay ---
@@ -283,7 +380,29 @@
     ui.box.append(ui.line, ui.zh);
     ui.pill = el("div", "asubs-pill");
     ui.pill.hidden = true;
-    ui.root.append(ui.box, ui.pill);
+    ui.cover = el("div", "asubs-cover");     // frosted board over subtitles printed in the picture
+    ui.cover.hidden = true;
+    ui.cover.innerHTML = '<span class="asubs-cover-hint">遮挡板 · 拖动移动 · 拖边缘调大小 · 双击恢复默认</span>' +
+      '<button type="button" class="asubs-cover-x" title="这个 UP 主不用遮挡板" aria-label="关闭遮挡板">×</button>' +
+      ["t", "b", "l", "r"].map((k) => `<span class="asubs-cover-edge asubs-cover-${k}" data-edge="${k}"></span>`).join("");
+    ui.card = el("div", "asubs-card");
+    ui.card.hidden = true;
+    ui.card.setAttribute("role", "dialog");
+    ui.root.append(ui.cover, ui.box, ui.pill, ui.card);
+    enableDrag();
+    enableCover();
+    lastLayout = "";
+    // clicks on words / the card must not reach the player underneath (it would pause / play / go fullscreen)
+    for (const target of [ui.line, ui.card]) {
+      for (const ev of ["pointerdown", "mousedown", "mouseup", "dblclick", "click"]) {
+        target.addEventListener(ev, (e) => {
+          if (target === ui.line && !e.target.closest(".asubs-t")) return;
+          e.stopPropagation();
+          if (ev === "click" && target === ui.line) { e.preventDefault(); openCard(e.target.closest(".asubs-t")); }
+        });
+      }
+    }
+    ui.card.addEventListener("click", onCardClick);
     host.append(ui.root);
     ui.ro = new ResizeObserver(() => {     // subtitle size follows the player (also in fullscreen)
       const w = host.clientWidth || 800;
@@ -294,6 +413,307 @@
     if (pillState.text) showPill();
     return true;
   }
+
+  // ------------------------------------------------------------ cover board ---
+  // Many Bilibili videos have subtitles printed into the picture (Chinese, English or both). A frosted
+  // board covers the area where they usually are (default: 78-95 % of the picture height, middle 80 %).
+  // The viewer drags it to move it, drags its edges to resize it; it is remembered per UP 主 (and the
+  // last one used is the default for new UP 主s). Double-click: back to the default. ×: no board for
+  // this UP 主 (the popup can bring it back). The board sits under Bilibili's control bar (z-index 75),
+  // so the progress bar stays usable.
+  const COVER_DEFAULT = { x0: 0.1, y0: 0.78, x1: 0.9, y1: 0.95 };
+  let COVER = {};           // UP 主 -> {x0, y0, x1, y1} (shares of the picture) | {off: true}; "_last": last used
+  let POS = {};             // UP 主 -> our line dragged by the viewer (bottom gap as a share of the player height)
+  let lastLayout = "";
+  const posKey = () => (S.owner != null ? String(S.owner) : "_");
+  const posFor = () => (POS[posKey()] != null ? POS[posKey()] : null);
+  function coverRect() {
+    if (cfg.cover === "off" || !cfg.enabled) return null;
+    const c = COVER[posKey()];
+    if (c && c.off) return null;
+    return c || COVER._last || COVER_DEFAULT;
+  }
+  function saveCover(rect) {
+    COVER[posKey()] = rect;
+    if (!rect.off) COVER._last = rect;
+    chrome.storage.local.set({ asubsCover: COVER });
+    lastLayout = "";
+  }
+
+  // where the picture is drawn inside our overlay (the video element letterboxes it: object-fit contain)
+  function pictureRect(video, root) {
+    const r = video.getBoundingClientRect();
+    const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+    const s = Math.min(r.width / vw, r.height / vh), w = vw * s, h = vh * s;
+    return { x: r.left - root.left + (r.width - w) / 2, y: r.top - root.top + (r.height - h) / 2, w, h };
+  }
+
+  // Bilibili's control bar (progress bar + buttons) covers the bottom of the player when the mouse is
+  // there: our line stays above it, or it could not be clicked or dragged.
+  function controlsHeight() {
+    const c = ui.host && ui.host.querySelector(".bpx-player-control-wrap");
+    const h = c ? c.getBoundingClientRect().height : 0;
+    return h > 20 ? h : 56;
+  }
+  const minBottom = () => controlsHeight() + 10;
+
+  // ---------------------------------------------------- subtitle position ---
+  function layout(video) {
+    const root = ui.root.getBoundingClientRect();
+    if (!root.height) return;
+    const pic = pictureRect(video, root);
+    const r = coverRect();
+    const cover = r && { left: pic.x + r.x0 * pic.w, top: pic.y + r.y0 * pic.h, width: (r.x1 - r.x0) * pic.w, height: (r.y1 - r.y0) * pic.h };
+    const low = minBottom(), boxH = ui.box.offsetHeight || 40;
+    let bottom = null, mode = "default";
+    const manual = posFor();
+    if (!cfg.enabled) mode = "off";
+    else if (manual != null) { bottom = manual * root.height; mode = "manual"; }
+    else if (cfg.pos === "top") mode = "top";
+    else if (cover) { bottom = root.height - (cover.top + cover.height / 2) - boxH / 2; mode = "cover"; }   // on the board
+    else bottom = Math.max(low, root.height * 0.12);
+    if (bottom != null) bottom = Math.max(low, Math.min(root.height * 0.85, bottom));
+    const key = [mode, Math.round(bottom || 0), Math.round(boxH), cover ? [cover.left, cover.top, cover.width, cover.height].map(Math.round).join(":") : ""].join(",");
+    if (key === lastLayout) return;
+    lastLayout = key;
+    ui.root.classList.toggle("asubs-manual", mode === "manual");
+    ui.box.style.bottom = bottom != null ? `${bottom.toFixed(0)}px` : "";
+    ui.cover.hidden = !cover;
+    if (cover) Object.assign(ui.cover.style, { left: `${cover.left}px`, top: `${cover.top}px`, width: `${cover.width}px`, height: `${cover.height}px` });
+  }
+
+  // board: drag the middle to move, an edge to resize (shares of the picture, kept inside it)
+  function enableCover() {
+    let op = null;
+    const pic = () => pictureRect(findVideo(), ui.root.getBoundingClientRect());
+    ui.cover.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest(".asubs-cover-x")) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const r = coverRect();
+      if (!r) return;
+      const edgeEl = e.target.closest("[data-edge]");
+      op = { x: e.clientX, y: e.clientY, r: { ...r }, edge: edgeEl ? edgeEl.dataset.edge : "", p: pic(), moved: false };
+      ui.cover.setPointerCapture(e.pointerId);
+      ui.cover.classList.add("asubs-cover-active");
+    });
+    ui.cover.addEventListener("pointermove", (e) => {
+      if (!op) return;
+      const dx = (e.clientX - op.x) / op.p.w, dy = (e.clientY - op.y) / op.p.h;
+      if (Math.abs(e.clientX - op.x) + Math.abs(e.clientY - op.y) > 3) op.moved = true;
+      if (!op.moved) return;
+      const r = { ...op.r }, MIN = 0.04;
+      if (!op.edge) {                                  // move
+        const w = r.x1 - r.x0, h = r.y1 - r.y0;
+        r.x0 = Math.max(0, Math.min(1 - w, r.x0 + dx)); r.x1 = r.x0 + w;
+        r.y0 = Math.max(0, Math.min(1 - h, r.y0 + dy)); r.y1 = r.y0 + h;
+      } else {                                         // resize one edge
+        if (op.edge === "t") r.y0 = Math.max(0, Math.min(r.y1 - MIN, r.y0 + dy));
+        if (op.edge === "b") r.y1 = Math.min(1, Math.max(r.y0 + MIN, r.y1 + dy));
+        if (op.edge === "l") r.x0 = Math.max(0, Math.min(r.x1 - MIN, r.x0 + dx));
+        if (op.edge === "r") r.x1 = Math.min(1, Math.max(r.x0 + MIN, r.x1 + dx));
+      }
+      op.now = r;
+      COVER[posKey()] = r;            // live preview (saved on release)
+      lastLayout = "";
+      layout(findVideo());
+    });
+    ui.cover.addEventListener("pointerup", (e) => {
+      if (!op) return;
+      e.stopPropagation();
+      ui.cover.classList.remove("asubs-cover-active");
+      const o = op;
+      op = null;
+      if (o.moved && o.now) saveCover(o.now);
+    });
+    ui.cover.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      if (e.target.closest(".asubs-cover-x")) return;
+      COVER._last = { ...COVER_DEFAULT };
+      saveCover({ ...COVER_DEFAULT });
+      pill("遮挡板已恢复默认位置", { hideAfter: 3000 });
+    });
+    ui.cover.querySelector(".asubs-cover-x").addEventListener("click", (e) => {
+      e.stopPropagation();
+      saveCover({ off: true });
+      pill("这个 UP 主的视频不再显示遮挡板（插件设置里可以恢复）", { hideAfter: 5000 });
+    });
+    for (const ev of ["mousedown", "mouseup", "click", "dblclick"]) ui.cover.addEventListener(ev, (e) => e.stopPropagation());
+  }
+
+  // our line: drag its background up or down; remembered per UP 主 (never into the control bar)
+  function enableDrag() {
+    let drag = null;
+    ui.box.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".asubs-t") || e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      drag = { y: e.clientY, bottom: parseFloat(getComputedStyle(ui.box).bottom) || 0, moved: false };
+      ui.box.setPointerCapture(e.pointerId);
+    });
+    ui.box.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(dy) > 3) drag.moved = true;
+      if (!drag.moved) return;
+      const h = ui.root.getBoundingClientRect().height;
+      const b = Math.max(minBottom(), Math.min(h * 0.85, drag.bottom - dy));
+      ui.root.classList.add("asubs-manual");
+      ui.box.style.bottom = `${b}px`;
+      drag.last = b;
+    });
+    ui.box.addEventListener("pointerup", (e) => {
+      if (!drag) return;
+      e.stopPropagation();
+      const d = drag;
+      drag = null;
+      if (!d.moved || d.last == null) return;
+      POS[posKey()] = +(d.last / ui.root.getBoundingClientRect().height).toFixed(4);
+      chrome.storage.local.set({ asubsPos: POS });
+      lastLayout = "";
+      pill("已记住这个 UP 主的字幕位置（双击字幕空白处恢复自动）", { hideAfter: 4000 });
+    });
+    ui.box.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".asubs-t") || posFor() == null) return;
+      e.stopPropagation();
+      delete POS[posKey()];
+      chrome.storage.local.set({ asubsPos: POS });
+      lastLayout = "";
+      pill("已恢复自动位置", { hideAfter: 3000 });
+    });
+    // the subtitle box is ours: its clicks never reach the player underneath
+    for (const ev of ["mousedown", "mouseup", "click", "dblclick"]) ui.box.addEventListener(ev, (e) => e.stopPropagation());
+  }
+
+  // ---------------------------------------------------------- word card ---
+  // Click a word: pause, show its meaning and why it is / isn't glossed, mark 认识 / 不认识.
+  const CARD = { open: false, paused: false, key: "", word: "", zh: "", short: "", note: null, ci: -1, defReq: 0 };
+  const KIND = { phrase: "短语", sense: "特殊意思" };
+
+  function openCard(tok) {
+    if (!tok || S.cur < 0) return;
+    const c = S.cues[S.cur];
+    const note = tok.dataset.n != null ? c.notes[+tok.dataset.n] : null;
+    const word = note ? c.text.slice(note.s, note.e) : tok.dataset.w;
+    const key = note ? markKey(note) : (lemmaGuesses(word).find((k) => PF.known.has(k) || PF.unknown.has(k)) || word.toLowerCase());
+    if (CARD.open && CARD.key === key) return closeCard();
+    const v = findVideo();
+    if (!CARD.open && v && !v.paused) { v.pause(); CARD.paused = true; }
+    const looking = !note || note.local;
+    Object.assign(CARD, { open: true, key, word, note, ci: S.cur, zh: note && !note.local ? note.zh : "", short: note ? note.zh : "",
+      lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "" });
+    renderCard();
+    placeCard(tok);
+    if (!looking) return;
+    // A word without an annotation: dictionary meaning (instant, general) + its meaning in this line
+    // (asks the annotation model, 1-2 s) — the dictionary alone can be wrong here ("ligature" = 绳 in a video on fonts)
+    const req = ++CARD.defReq;
+    const live = () => req === CARD.defReq && CARD.open;
+    (async () => {
+      let d = await bg({ type: "define", word });
+      if (!d.zh) {                               // try base forms ("decided" -> "decide")
+        for (const g of lemmaGuesses(word).slice(1)) {
+          const r2 = await bg({ type: "define", word: g });
+          if (r2.zh) { d = r2; if (!note) CARD.key = g; break; }
+        }
+      }
+      if (!live()) return;
+      CARD.dict = d.zh ? d : null;
+      CARD.dictState = d.zh ? "done" : "none";
+      CARD.lists = d.lists || null;
+      renderCard();
+    })();
+    bg({ type: "explain", payload: { word, sentence: S.cues[S.cur] ? S.cues[S.cur].text : "" } }).then((r) => {
+      if (!live()) return;
+      if (r.zh) { CARD.ctx = r; CARD.ctxState = "done"; }
+      else { CARD.ctxState = r.error ? "error" : "none"; CARD.ctxError = r.error === "noserver" || r.error === "oldserver" ? "" : (r.error || ""); }
+      renderCard();
+    });
+  }
+
+  function cardReason() {
+    const n = CARD.note, k = CARD.key, mk = PF.marks.get(k);
+    if (!PF.ok) return "打开 Adaptive Subs 程序后可以标记";
+    if (mk === "unknown") return "你标记过「不认识」，所以总会注释";
+    if (mk === "known") return "你标记过「认识」，所以不注释";
+    if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
+    if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
+    if (!n) return "这一集没有给它注释";
+    return noteState(n) === "hard" ? `难度约 ${n.lv.toLocaleString("en-US")} 词，高于你的水平（≈ ${effLevel().toLocaleString("en-US")}），所以注释`
+      : `难度约 ${n.lv.toLocaleString("en-US")} 词，按你的水平（≈ ${effLevel().toLocaleString("en-US")}）不注释`;
+  }
+
+  function renderCard() {
+    const n = CARD.note, mk = PF.marks.get(CARD.key);
+    const kind = n && KIND[n.kind] ? `<span class="asubs-card-kind">${KIND[n.kind]}</span>` : "";
+    const e = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    const known = n && n.kind !== "word" ? "我懂这个意思" : "我认识";
+    const dict = `https://dict.youdao.com/result?word=${encodeURIComponent(CARD.word)}&lang=en`;
+    let meaning;
+    if (n && !n.local) {                       // annotated: the gloss already is the meaning in this line
+      meaning = `<div class="asubs-card-zh">${e(n.zh)}</div><div class="asubs-card-dim">（这句话里的意思）</div>`;
+    } else {
+      const c = CARD.ctx, d = CARD.dict;
+      const ctxLine = CARD.ctxState === "done"
+        ? `<div class="asubs-card-zh">${c.pos ? `<span class="asubs-card-pos">${e(c.pos)}</span>` : ""}${e(c.zh)}</div>
+           <div class="asubs-card-dim">（这句话里的意思${c.note ? `；${e(c.note)}` : ""}）</div>`
+        : CARD.ctxState === "loading" ? `<div class="asubs-card-dim">正在查这句话里的意思…</div>`
+        : CARD.ctxState === "error" && CARD.ctxError ? `<div class="asubs-card-dim">这句话里的意思没查到：${e(CARD.ctxError)}</div>` : "";
+      const dictLine = CARD.dictState === "done"
+        ? `<div class="asubs-card-dict"><span class="asubs-card-dim">词典</span> ${e(d.zh)}</div>`
+        : CARD.dictState === "loading" ? "" : `<div class="asubs-card-dim">词典里没有这个词</div>`;
+      const nothing = CARD.dictState === "none" && (CARD.ctxState === "none" || CARD.ctxState === "error");
+      meaning = nothing ? `<div class="asubs-card-zh asubs-card-none">没查到释义，可以点右下角「查词典」</div>${ctxLine}` : ctxLine + dictLine;
+    }
+    ui.card.innerHTML = `
+      <div class="asubs-card-head"><span class="asubs-card-word">${e(CARD.word)}</span>${kind}
+        <button type="button" class="asubs-card-x" data-act="close" aria-label="关闭">×</button></div>
+      ${meaning}
+      ${CARD.lists && CARD.lists.length ? `<div class="asubs-card-dim">考试词表：${e(CARD.lists.join("、"))}</div>` : ""}
+      <div class="asubs-card-why">${e(cardReason())}</div>
+      <div class="asubs-card-btns">
+        <button type="button" data-act="known" aria-pressed="${mk === "known"}" ${PF.ok ? "" : "disabled"}>${known}</button>
+        <button type="button" data-act="unknown" aria-pressed="${mk === "unknown"}" ${PF.ok ? "" : "disabled"}>我不认识</button>
+        ${mk ? `<button type="button" data-act="clear">恢复默认</button>` : ""}
+        <a href="${dict}" target="_blank" rel="noopener">查词典 ↗</a>
+      </div>`;
+    ui.card.hidden = false;
+  }
+
+  function placeCard(tok) {
+    const root = ui.root.getBoundingClientRect(), t = tok.getBoundingClientRect(), cw = ui.card.offsetWidth, ch = ui.card.offsetHeight;
+    const left = Math.max(8, Math.min(root.width - cw - 8, t.left - root.left + t.width / 2 - cw / 2));
+    const above = t.top - root.top - ch - 10;
+    const top = cfg.pos === "top" || above < 8 ? t.bottom - root.top + 10 : above;
+    ui.card.style.left = `${left}px`;
+    ui.card.style.top = `${Math.max(8, Math.min(root.height - ch - 8, top))}px`;
+  }
+
+  function closeCard() {
+    if (!CARD.open) return;
+    CARD.open = false; CARD.defReq++;
+    ui.card.hidden = true;
+    const v = findVideo();
+    if (CARD.paused && v) v.play().catch(() => {});
+    CARD.paused = false;
+  }
+
+  function onCardClick(e) {
+    const b = e.target.closest("[data-act]");
+    if (!b || b.disabled) return;
+    const act = b.dataset.act;
+    if (act === "close") return closeCard();
+    const st = act === "clear" ? "clear" : PF.marks.get(CARD.key) === act ? "clear" : act;
+    // gloss shown later for a word marked 不认识: its meaning in the line where it was met, else the dictionary's
+    const short = (CARD.ctx && CARD.ctx.zh) || (CARD.dict && CARD.dict.short) || CARD.short;
+    mark(CARD.key, st, CARD.word, short);
+    closeCard();
+  }
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && CARD.open) closeCard(); }, true);
+  document.addEventListener("pointerdown", (e) => {
+    if (CARD.open && ui.card && !ui.card.contains(e.target) && !(e.target.closest && e.target.closest(".asubs-t"))) closeCard();
+  }, true);
 
   const pillState = { text: "", sticky: false, hideAfter: 0, action: null };
   function pill(text, opts = {}) {
@@ -327,21 +747,36 @@
     const style = cfg.mode === "adaptive" ? cfg.gloss : "none";
     ui.line.className = "asubs-line" + (style === "paren" ? " asubs-paren" : "") + (style === "over" && vis.size ? " asubs-has-over" : "");
     ui.line.replaceChildren();
+    // every word is a clickable token: annotated ones carry their note index, others just the word
+    const plainText = (s) => {
+      let last = 0;
+      for (const m of s.matchAll(WORD_RE)) {
+        ui.line.append(s.slice(last, m.index));
+        const t = el("span", "asubs-t", m[0]);
+        t.dataset.w = m[0];
+        ui.line.append(t);
+        last = m.index + m[0].length;
+      }
+      ui.line.append(s.slice(last));
+    };
     let pos = 0;
     c.notes.forEach((n, k) => {
       if (n.s < pos || n.e > c.text.length) return;
-      ui.line.append(c.text.slice(pos, n.s));
+      plainText(c.text.slice(pos, n.s));
       const word = c.text.slice(n.s, n.e);
       if (style !== "none" && vis.has(k)) {
-        const g = el("span", style === "over" ? "asubs-g" : "asubs-p");
+        const g = el("span", (style === "over" ? "asubs-g" : "asubs-p") + " asubs-t" + (noteState(n) === "forced" ? " asubs-forced" : ""));
         g.append(el("span", "asubs-w", word), el("span", style === "over" ? "asubs-gz" : "asubs-pz", style === "over" ? n.zh : `(${n.zh})`));
+        g.dataset.n = k;
         ui.line.append(g);
       } else {
-        ui.line.append(word);
+        const t = el("span", "asubs-t", word);
+        t.dataset.n = k;
+        ui.line.append(t);
       }
       pos = n.e;
     });
-    ui.line.append(c.text.slice(pos));
+    plainText(c.text.slice(pos));
     const zh = cfg.mode === "bilingual" ? c.zh : "";
     ui.zh.textContent = zh;
     ui.zh.hidden = !zh;
@@ -365,6 +800,7 @@
     const video = findVideo();
     if (!video) return;
     ensureOverlay(video);
+    layout(video);
     const t = video.currentTime || 0;
     const i = S.cues.length ? cueAt(t) : -1;
     const live = i >= 0 && t <= S.cues[i].e + GAP_GRACE ? i : -1;   // silences: nothing on screen
@@ -384,16 +820,26 @@
   }
 
   // ------------------------------------------------------------ settings ---
-  chrome.storage.local.get("settings", (r) => {
+  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover"], (r) => {
+    POS = (r && r.asubsPos) || {};
+    COVER = (r && r.asubsCover) || {};
     cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
     if (!LEVELS.includes(cfg.level)) cfg.level = DEFAULTS.level;
+    defs = (r && r.asubsDefs) || {};
     computeVisible();
+    loadProfile();
     setInterval(tick, 100);
+    setInterval(checkProfile, 5000);
+    document.addEventListener("visibilitychange", () => { PF.lastCheck = 0; checkProfile(); });
   });
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.settings) return;
+    if (area !== "local") return;
+    if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
+    if (changes.asubsCover) { COVER = changes.asubsCover.newValue || {}; lastLayout = ""; }
+    if (!changes.settings) return;
     const wasOn = cfg.enabled;
     cfg = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
+    lastLayout = "";
     computeVisible();
     showPill();
     if (cfg.enabled && !wasOn) { S.key = null; }      // turned back on: load this video's subtitles

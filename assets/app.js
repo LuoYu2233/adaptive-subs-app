@@ -48,6 +48,12 @@
   };
   const isDone = (ci) => !S.annDone || S.annDone.has(ci);
   const isHard = (n) => n.lv > S.level * PREFS[S.pref].factor;   // above the viewer's level?
+  // marks / known-word library are keyed by word; phrases and special senses get their own keys,
+  // so knowing a word never hides its uncommon meaning
+  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  // Opened from the local program: the profile (level + known-word library + marks) lives there,
+  // shared with the Bilibili extension and the profile page. On GitHub Pages: this browser only.
+  let shared = null;
   let bookKeys = new Set(S.book.map((b) => b.key));
 
   function loadStore() {
@@ -77,9 +83,10 @@
     S.visible = S.cues.map((c) => {
       const cand = [];
       c.notes.forEach((n, i) => {
-        if (S.known.has(n.key)) return;
-        const forced = S.unknown.has(n.key);
-        if (forced || isHard(n)) cand.push({ i, forced, lv: n.lv, key: n.key });
+        const mk = markKey(n);
+        const forced = S.unknown.has(mk);
+        if (!forced && S.known.has(mk)) return;
+        if (forced || isHard(n)) cand.push({ i, forced, lv: n.lv, key: mk });
       });
       cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
       const keep = new Set();
@@ -118,7 +125,7 @@
     c.notes.forEach((n, i) => {
       html += wrapWords(t.slice(pos, n.s), ci);
       const word = esc(t.slice(n.s, n.e));
-      const extra = (S.unknown.has(n.key) ? " forced" : "") + (bookKeys.has(n.key) ? " inbook" : "");
+      const extra = (S.unknown.has(markKey(n)) ? " forced" : "") + (bookKeys.has(n.key) ? " inbook" : "");
       const attrs = `data-c="${ci}" data-n="${i}"`;
       if (style !== "none" && vis.has(i)) {
         html += style === "over"
@@ -218,7 +225,7 @@
     let html = "", pos = 0;
     c.notes.forEach((n, i) => {
       if (!S.visible[ci].has(i)) return;
-      html += plain(c.text.slice(pos, n.s)) + esc(c.text.slice(n.s, n.e)) + `<span class="tz${S.unknown.has(n.key) ? " forced" : ""}">(${esc(n.zh)})</span>`;
+      html += plain(c.text.slice(pos, n.s)) + esc(c.text.slice(n.s, n.e)) + `<span class="tz${S.unknown.has(markKey(n)) ? " forced" : ""}">(${esc(n.zh)})</span>`;
       pos = n.e;
     });
     return html + plain(c.text.slice(pos));
@@ -251,9 +258,10 @@
   function previewList() {
     const agg = new Map();
     S.cues.forEach((c, ci) => c.notes.forEach((n) => {
-      if (S.known.has(n.key) || !(isHard(n) || S.unknown.has(n.key))) return;
-      let a = agg.get(n.key);
-      if (!a) agg.set(n.key, (a = { key: n.key, zh: n.zh, kind: n.kind, lv: n.lv, count: 0, first: ci, n }));
+      const mk = markKey(n);
+      if ((S.known.has(mk) && !S.unknown.has(mk)) || !(isHard(n) || S.unknown.has(mk))) return;
+      let a = agg.get(mk);
+      if (!a) agg.set(mk, (a = { key: mk, zh: n.zh, kind: n.kind, lv: n.lv, count: 0, first: ci, n }));
       a.count++;
     }));
     return { list: [...agg.values()].sort((a, b) => (b.count - a.count) || (b.lv - a.lv)), total: agg.size };
@@ -324,21 +332,52 @@
   }
 
   // ------------------------------------------------------ personal marks ---
+  const shownKey = (k) => k.replace(/^(sense|phrase):/, "");
   function markKnown(key, silent) {
-    S.known.add(key); S.unknown.delete(key); save(); renderAll();
-    if (!silent) toast(`已标为认识：${key}，之后不再提示`, () => { S.known.delete(key); save(); renderAll(); });
+    S.known.add(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "known");
+    if (!silent) toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => { S.known.delete(key); save(); renderAll(); pushMark(key, "clear"); });
   }
   function markUnknown(key) {
-    S.unknown.add(key); S.known.delete(key); save(); renderAll();
-    toast(`以后总是提示：${key}`, () => { S.unknown.delete(key); save(); renderAll(); });
+    S.unknown.add(key); S.known.delete(key); save(); renderAll(); pushMark(key, "unknown");
+    toast(`以后总是提示：${shownKey(key)}`, () => { S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); });
   }
-  function restore(key) { S.known.delete(key); save(); renderAll(); toast(`已恢复提示：${key}`); }
+  function restore(key) { S.known.delete(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); toast(`已恢复：${shownKey(key)}`); }
+
+  // ------------------------------------------------- shared profile (local program) ---
+  const API_H = { "X-Adaptive-Subs": "1", "Content-Type": "application/json" };
+  async function loadShared() {
+    try {
+      const r = await fetch("api/profile", { headers: API_H, cache: "no-store" });
+      const p = await r.json();
+      if (!r.ok || !Array.isArray(p.known)) return;
+      shared = p;
+      S.level = nearestLevel(p.level);
+      S.known = new Set(p.known);
+      S.unknown = new Set(p.unknown);
+      if (S.cues.length) renderAll(); else renderControls();
+    } catch { /* old program version: keep this browser's own marks */ }
+  }
+  async function pushMark(key, state) {
+    if (!shared) return;
+    try {
+      const r = await fetch("api/mark", { method: "POST", headers: API_H, body: JSON.stringify({ key, state }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      loadShared();
+    } catch { toast("标记没能保存到 Adaptive Subs 程序（只保存在这个浏览器里）"); }
+  }
+  let levelTimer = 0;
+  function pushLevel() {
+    if (!shared) return;
+    clearTimeout(levelTimer);
+    levelTimer = setTimeout(() => fetch("api/profile", { method: "POST", headers: API_H, body: JSON.stringify({ level: S.level }) })
+      .then(() => loadShared()).catch(() => {}), 400);
+  }
 
   function addToBook(entry) {
     if (bookKeys.has(entry.key)) return;
     S.book.push({ ...entry, vid: S.video.id, added: Date.now() });
     bookKeys = new Set(S.book.map((b) => b.key));
-    if (entry.hasNote) { S.unknown.add(entry.key); S.known.delete(entry.key); }
+    if (entry.hasNote) { const mk = entry.mk || entry.key; S.unknown.add(mk); S.known.delete(mk); pushMark(mk, "unknown"); }
     save(); renderAll();
     toast(`已加入生词本：${entry.term}`);
   }
@@ -346,7 +385,7 @@
     const c = S.cues[ci];
     if (noteIdx != null) {
       const n = c.notes[noteIdx];
-      return { key: n.key, term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
+      return { key: n.key, mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
     }
     // a word without a pre-generated gloss: use the same gloss if it appears elsewhere
     const key = word.toLowerCase();
@@ -394,7 +433,7 @@
     const ni = el.dataset.n != null ? +el.dataset.n : null;
     const note = ni != null ? c.notes[ni] : null;
     const term = note ? c.text.slice(note.s, note.e) : el.dataset.w;
-    const key = note ? note.key : term.toLowerCase();
+    const key = note ? markKey(note) : term.toLowerCase();
     const shown = note && S.visible[ci].has(ni);
 
     if (isPlaying()) { cardWasPlaying = true; player.pauseVideo(); }
@@ -409,7 +448,7 @@
           : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">标为生词，总是提示</button>`;
       const why = shown
         ? (S.unknown.has(key) ? "你标记过这个词，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
-        : S.known.has(key) ? "你标记过认识，所以不提示" : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
+        : S.known.has(key) ? (shared && note.kind === "word" ? "在你的熟词库里（考试词表 / 常见词 / 测试 / 你的标记），所以不提示" : "你标记过认识，所以不提示") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
       main = `
         <div class="wc-head"><span class="wc-term">${esc(term)}</span>
           <span class="tag ${note.kind !== "word" ? `tag-${note.kind}` : ""}">${KIND_LABEL[note.kind]}</span>
@@ -594,7 +633,7 @@
   let bank = null, T = null;
   const W = { 2: 1, 1: 0.3, 0: 0 };          // known / unsure / unknown
   const PAGE = 14;
-  const BAND_LABELS = ["1k", "2k", "3k", "4.5k", "6k", "8k", "11k", "15k"];
+  const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
 
   // Opened by double-clicking the HTML file: browsers block fetch() on file:// and
   // YouTube refuses to play inside a local file, so explain how to open it properly.
@@ -617,6 +656,7 @@
 
   async function openTest() {
     if (IS_FILE) { showFileNotice(); return; }
+    if (shared) { if (isPlaying()) player.pauseVideo(); window.open("/profile", "_blank", "noopener"); return; }
     if (isPlaying()) player.pauseVideo();
     const dlg = $("#testDialog");
     if (!bank) {
@@ -717,7 +757,7 @@
         <div class="result-num">≈ ${fmtNum(r.est)}<small>词</small></div>
         <p class="muted">按本工具的词频表估算，用来决定字幕注释的多少，不代表你全部的英语水平。</p>
         <div class="bands">${r.bands.map((b) => `<div class="band" title="${Math.round(b.r * 100)}%"><div class="band-bar" style="height:${Math.max(2, b.r * 100)}%"></div></div>`).join("")}</div>
-        <div class="band-labels">${BAND_LABELS.map((l) => `<span>${l}</span>`).join("")}</div>
+        <div class="band-labels">${bank.bands.map((b) => `<span>${bandLabel(b)}</span>`).join("")}</div>
         <div class="note-box">
           每根柱子是一个词频段里你大概认识的比例（越往右越难）。<br>
           假词：${r.nonYes ? `${r.nonTotal} 个假词里有 ${r.nonYes} 个选了「认识」，结果已经按这个往下校正` : `${r.nonTotal} 个假词都没有选「认识」，很好`}。
@@ -862,7 +902,7 @@
     $("#tab-transcript").addEventListener("click", (e) => { const r = e.target.closest(".tr-row"); if (r) seekCue(+r.dataset.c); });
     ["wheel", "touchmove"].forEach((ev) => $("#tab-transcript").addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true }));
 
-    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save(); renderAll(); });
+    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save(); renderAll(); pushLevel(); });
     $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save(); renderAll(); } });
     $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save(); renderAll(); } });
     $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save(); renderAll(); } });
@@ -1044,6 +1084,11 @@
     }
     try { live = !!(await (await fetch("api/health", { cache: "no-store" })).json()).ok; } catch { live = false; }
     $("#urlForm").hidden = !live;
+    if (live) {
+      await loadShared();
+      // the profile page (another tab) may change it: reload when coming back
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && shared) loadShared(); });
+    }
     // a local address without the live server = an old plain file server: say how to fix it
     // (on GitHub Pages there is never a server, so no hint there)
     $("#liveHint").hidden = live || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);

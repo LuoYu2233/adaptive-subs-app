@@ -6,7 +6,7 @@
   keeps clean test items (no names / brands / slang) with a Chinese meaning, an example
   sentence and 3 wrong options (used for the meaning check that catches over-claiming).
 - Pseudo-words (pronounceable, not real) catch "yes to everything" answering.
-The player samples 6 words per band each time, so a retest shows different words.
+The profile page samples words adaptively (more near the learner's level), so a retest shows different words.
 """
 
 import json
@@ -19,11 +19,11 @@ from wordfreq import top_n_list, zipf_frequency
 from annotate import ROOT, call_json, load_dotenv, nlp
 
 BANDS = [(1, 1000), (1001, 2000), (2001, 3000), (3001, 4500),
-         (4501, 6000), (6001, 8000), (8001, 11000), (11001, 15000)]
+         (4501, 6000), (6001, 8000), (8001, 11000), (11001, 15000), (15001, 20000)]
 
 BANK_PROMPT = """You build a yes/no vocabulary test for Chinese learners of English.
 Input: {"band": "...", "words": [...]} — words from one frequency band.
-Pick up to 14 words that make good test items: common standalone English words in base form
+Pick up to 30 words that make good test items: common standalone English words in base form
 (singular noun, base verb, adjective, adverb). NOT names, places, brands, abbreviations,
 interjections, slang, offensive words, foreign words, or words mostly seen inside names.
 For each give:
@@ -47,7 +47,7 @@ def main():
     client = OpenAI()
     random.seed(7)
 
-    top = top_n_list("en", 16000)
+    top = top_n_list("en", 21000)
     bands_out = []
     for lo, hi in BANDS:
         pool = []
@@ -58,7 +58,7 @@ def main():
             if t.is_stop or t.lemma_.lower() != w or t.pos_ in ("PROPN", "INTJ", "X"):
                 continue
             pool.append(w)
-        sample = random.sample(pool, min(45, len(pool)))
+        sample = random.sample(pool, min(80, len(pool)))
         data = call_json(client, model, "low", BANK_PROMPT, {"band": f"ranks {lo}-{hi}", "words": sample})
         items = []
         for it in data.get("items", []):

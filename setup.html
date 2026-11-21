@@ -6,23 +6,23 @@
 <title>Adaptive Subs 设置</title>
 <style>
   :root {
-    --bg: #f6f7f9; --card: #ffffff; --ink: #18202b; --ink-2: #5d6876; --line: #e3e7ec;
-    --accent: #d98a12; --accent-soft: #fff4dc; --ok: #1f8f5a; --bad: #c2410c;
+    --bg: #f3f4f6; --card: #ffffff; --ink: #1b1f24; --ink-2: #59626e; --line: #e3e6ea;
+    --accent: #e2a02a; --accent-soft: rgba(242, 177, 52, 0.14); --ok: #1f8f5a; --bad: #c2410c;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #0f1318; --card: #171c23; --ink: #e8edf3; --ink-2: #9aa5b2; --line: #2a323d;
-      --accent: #ffc65c; --accent-soft: rgba(255, 198, 92, 0.12); --ok: #5fd39b; --bad: #ff9a6b;
+      --bg: #14171c; --card: #1b1f25; --ink: #e9edf2; --ink-2: #a2abb6; --line: #2a3039;
+      --accent: #ffc65c; --accent-soft: rgba(255, 198, 92, 0.15); --ok: #5fd39b; --bad: #ff9a6b;
       color-scheme: dark;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif; }
   main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
-  h1 { font-size: 24px; margin: 0 0 4px; }
+  h1 { font: 600 24px/1.25 "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", sans-serif; margin: 0 0 4px; }
   .lead { color: var(--ink-2); margin: 0 0 24px; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 20px; margin-bottom: 16px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px 20px; margin-bottom: 14px; }
   h2 { font-size: 16px; margin: 0 0 4px; }
   .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 14px; }
   .prov { display: grid; gap: 10px; }
@@ -53,11 +53,26 @@
   .results { margin-top: 10px; font-size: 13px; display: grid; gap: 2px; }
   .foot { color: var(--ink-2); font-size: 12px; margin-top: 18px; }
   code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
+
+  /* header shared with the control panel; "back" shows when opened inside the program's window (?app=1) */
+  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .topbar .mark { width: 30px; height: 30px; border-radius: 8px; flex: none; position: relative;
+    background: linear-gradient(145deg, #ffcf6e, #e08a12); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+  .topbar .mark::before { content: "A"; position: absolute; inset: 0; display: grid; place-items: center;
+    font: 800 18px/1 "Segoe UI", system-ui, sans-serif; color: #2a1a02; padding-bottom: 6px; }
+  .topbar .mark::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 7px; height: 3px; border-radius: 2px; background: rgba(42, 26, 2, 0.55); }
+  .topbar .name { font-weight: 750; font-size: 15px; flex: 1; }
+  .topbar a.back { text-decoration: none; font-size: 13px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; background: var(--card); }
+  .topbar a.back:hover { border-color: var(--accent); color: var(--ink); }
+  .topbar a.back[hidden] { display: none; }
+  img.mark { background: none; box-shadow: 0 2px 8px rgba(46, 79, 184, 0.25); object-fit: cover; display: block; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Adaptive Subs 设置</h1>
+  <div class="topbar"><img class="mark" src="/assets/icon-256.png" alt=""><div class="name">Adaptive Subs</div>
+    <a class="back" href="/app" id="backToApp" hidden>← 返回控制台</a></div>
+  <h1>设置</h1>
   <p class="lead">选择生成注释用的模型，并填写你自己的 API key。key 只保存在这台电脑上，只会发给对应的服务商。</p>
 
   <section>
@@ -162,6 +177,9 @@
   $("#save").addEventListener("click", save);
   load().catch(() => { $("#msg").className = "bad"; $("#msg").textContent = "读取设置失败：请确认 Adaptive Subs 的窗口还开着"; });
 })();
+</script>
+<script>
+  if (new URLSearchParams(location.search).has("app")) document.getElementById("backToApp").hidden = false;
 </script>
 </body>
 </html>

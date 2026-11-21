@@ -5,3 +5,5 @@ srt
 yt-dlp
 numpy
 av
+pywebview
+faster-whisper

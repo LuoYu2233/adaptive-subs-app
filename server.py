@@ -28,12 +28,17 @@ import sys
 import threading
 import time
 import traceback
+
+import numpy as np
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import annotate as A
+import applog
 import asr as ASR
+import local_asr as LOCAL_ASR
+import profile_store as PS
 import providers as P
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
@@ -44,6 +49,7 @@ HOME = Path(os.environ["ASUBS_HOME"]) if os.environ.get("ASUBS_HOME") else (
     (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs") if FROZEN else Path(__file__).parent)
 DATA = HOME / "data"
 CONFIG = HOME / ("config.env" if FROZEN else ".env")                  # API keys + chosen model
+PROFILE = PS.Store(HOME / "profile.json")                              # learner profile + known words
 SEG = 12               # lines per batch: small batches -> first annotations sooner
 WORKERS = 12           # parallel LLM requests per video (spare capacity for jumps)
 URGENT_WINDOW = 90     # seconds ahead of the playhead handled with low effort (speed first)
@@ -199,6 +205,11 @@ class Job:
         self.asr_inflight = 0
         self.asr_stats = {"ok": 0, "chinese": 0, "errors": 0, "last_error": ""}
         self.asr_usage: dict = {}
+        self.feeding = False      # ASR: audio still arriving, more lines will be added
+        self.sent = None          # ASR: lines already sent to the page (None: first "meta" not sent yet)
+        self.seg_next = 0         # ASR: first line not yet in an annotation batch
+        self.seg = None           # ASR: StreamSegmenter (the audio samples)
+        self.audio_frac = 0.0     # ASR: share of the audio cut into lines so far
         self.aborted = False
         self.cond = threading.Condition()
         self.events: list[tuple[str, dict]] = []
@@ -218,6 +229,12 @@ class Job:
         with self.cond:
             self.events.append((typ, data))
             self.cond.notify_all()
+
+    def progress_total(self) -> int:
+        """Tasks in all. While speech recognition is still cutting lines, extrapolate from the audio so far."""
+        if self.feeding and self.audio_frac > 0.02:
+            return max(self.total, int(self.total / self.audio_frac))
+        return self.total
 
 
 JOBS: dict[str, Job] = {}
@@ -250,30 +267,29 @@ def run_job(job: Job):
     try:
         sub = job.sub
         if job.asr_url:
-            sub = prepare_asr(job)
+            sub = start_asr(job)        # returns once the first lines are cut; the rest keep coming
         elif sub is None:
             job.emit("status", {"msg": "正在获取英文字幕…"})
             sub = fetch_subtitles(job.vid, on_retry=lambda msg: job.emit("status", {"msg": msg}))
         job.title, job.duration, job.cues = sub["title"], sub["duration"], sub["cues"]
-        job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
-                          "source": sub["source"], "cues": job.cues})
-        print(f"[{job.vid}] {len(job.cues)} lines ({sub['source']} subtitles) in {time.time() - job.started:.1f}s: {job.title}")
-
-        job.texts = [c["text"] for c in job.cues]
         if job.asr_url:
-            job.cands = [None] * len(job.texts)     # found per batch, once its speech is recognised
+            # speech recognition: lines (and their tasks) are added by the audio thread as the audio is cut
+            with job.cond:
+                job.sent = len(job.cues)
+                job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
+                                  "source": sub["source"], "cues": list(job.cues)})
         else:
+            job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
+                              "source": sub["source"], "cues": job.cues})
+            job.texts = [c["text"] for c in job.cues]
             with NLP_LOCK:
                 job.cands = A.find_candidates(job.texts)
-        segs = [list(range(i, min(i + SEG, len(job.texts)))) for i in range(0, len(job.texts), SEG)]
-        with job.cond:
-            job.tasks = [{"kind": "ann", "ids": s} for s in segs] + [{"kind": "tr", "ids": s, "retry": 0} for s in segs]
-            if job.asr_url:
-                # each line is ranked by the batch it belongs to, so a batch near the viewer gets all of
-                # its lines recognised together and can be annotated sooner
-                job.tasks += [{"kind": "asr", "ids": [i], "span": segs[i // SEG]} for i in range(len(job.texts))]
-            job.total = len(job.tasks)
-        job.emit("progress", {"done": 0, "total": job.total})
+            segs = [list(range(i, min(i + SEG, len(job.texts)))) for i in range(0, len(job.texts), SEG)]
+            with job.cond:
+                job.tasks = [{"kind": "ann", "ids": s} for s in segs] + [{"kind": "tr", "ids": s, "retry": 0} for s in segs]
+                job.total = len(job.tasks)
+        print(f"[{job.vid}] {len(job.cues)} lines ({sub['source']} subtitles) in {time.time() - job.started:.1f}s: {job.title}")
+        job.emit("progress", {"done": 0, "total": job.progress_total()})
 
         workers = [threading.Thread(target=worker, args=(job,), daemon=True) for _ in range(WORKERS)]
         for w in workers:
@@ -318,6 +334,8 @@ def pick_task(job: Job) -> dict | None:
                 continue
         elif job.has_text is not None:
             # the batch's lines, plus the line before and after it (context for punctuation and glosses)
+            if job.feeding and t["ids"][-1] + 1 >= len(job.has_text):
+                continue                          # the line after this batch isn't cut yet
             lo, hi = max(0, t["ids"][0] - 1), min(len(job.has_text), t["ids"][-1] + 2)
             if not all(job.has_text[lo:hi]):
                 continue
@@ -331,7 +349,7 @@ def worker(job: Job):
     while True:
         with job.cond:
             while True:
-                if not job.tasks or job.aborted:
+                if (not job.tasks and not job.feeding) or job.aborted:
                     return
                 t = pick_task(job)
                 if t:
@@ -355,40 +373,121 @@ def worker(job: Job):
                 job.asr_inflight -= 1
                 job.cond.notify_all()
             job.finished += 1
-            done, total = job.finished, job.total
+            done, total = job.finished, job.progress_total()
         job.emit("progress", {"done": done, "total": total})
 
 
 # ---------------------------------------------------- speech recognition ---
 
-def prepare_asr(job: Job) -> dict:
-    """Download the audio and cut it into lines; their text is filled in by run_asr tasks."""
+def start_asr(job: Job) -> dict:
+    """Speech recognition, streamed: a thread downloads and decodes the audio and cuts it into lines
+    while it arrives (asr.stream_audio + StreamSegmenter). Lines and their tasks are added to the job
+    as they are cut, so recognition starts within seconds even for a two-hour video.
+    Returns once the first lines exist (or the audio is done / failed)."""
     if not ASR.configured():
         raise ASR.AudioError("本地服务器没有配置 MIMO_API_KEY（.env），无法语音识别")
-    job.emit("status", {"msg": "正在下载音频…"})
-    path = ASR.download_audio(job.asr_url)
+    job.cues, job.texts, job.cands, job.has_text, job.pieces = [], [], [], [], []
+    job.feeding = True
+    job.audio_error = None
+    job.emit("status", {"msg": "正在获取音频地址…"})
+    threading.Thread(target=feed_audio, args=(job,), daemon=True).start()
+    with job.cond:
+        while job.feeding and not job.cues and not job.audio_error and not job.aborted:
+            job.cond.wait(timeout=1.0)
+        if job.audio_error:
+            raise ASR.AudioError(job.audio_error)
+        if not job.cues and not job.aborted:
+            raise ASR.AudioError("这个视频里没检测到人声")
+    dur = job.sub.get("duration") or (job.seg.seconds if job.seg else 0)
+    return {**job.sub, "duration": round(dur), "source": "asr", "cues": job.cues}
+
+
+def feed_audio(job: Job):
+    started = time.time()
+    first_line = None
+
+    def status(frac, speed):
+        if job.sent is None:              # only before the first lines: afterwards the page shows progress
+            job.emit("status", {"msg": f"正在下载音频 {frac * 100:.0f}%（{speed / 1024:.0f} KB/s）…"})
+
+    gen = None
     try:
-        job.emit("status", {"msg": "正在切分语音…"})
-        job.pcm = ASR.decode(path)
+        gen = ASR.stream_audio(job.asr_url, on_status=status, cancelled=lambda: job.aborted)
+        duration = next(gen)
+        job.seg = ASR.StreamSegmenter(duration or job.sub.get("duration") or 0)
+        for block in gen:
+            if job.aborted:
+                return
+            if not isinstance(block, np.ndarray):
+                continue
+            new = job.seg.add(block)
+            if duration:
+                job.audio_frac = min(1.0, job.seg.seconds / duration)
+            if new:
+                add_asr_lines(job, new)
+                if first_line is None:
+                    first_line = time.time() - started
+                    print(f"[{job.vid}] first {len(new)} lines after {first_line:.1f}s (audio so far {job.seg.seconds:.0f}s)")
+        add_asr_lines(job, job.seg.finish(), final=True)
+        print(f"[{job.vid}] audio {job.seg.seconds / 60:.1f} min -> {len(job.cues)} lines, "
+              f"cut in {time.time() - started:.1f}s")
+    except ASR.AudioError as e:
+        job.audio_error = str(e)
+    except Exception as e:
+        traceback.print_exc()
+        job.audio_error = f"音频处理失败：{short_err(e)}"
     finally:
-        shutil.rmtree(path.parent, ignore_errors=True)
-    job.pieces = ASR.segment(job.pcm)
-    if not job.pieces:
-        raise ASR.AudioError("这个视频里没检测到人声")
-    cues = []
-    for i, (s, e) in enumerate(job.pieces):
-        nxt = job.pieces[i + 1][0] if i + 1 < len(job.pieces) else e + 1
-        cues.append({"s": s, "e": round(min(e + 0.3, nxt), 2), "text": ""})
-    job.has_text = [False] * len(cues)
-    print(f"[{job.vid}] audio {len(job.pcm) / ASR.SR / 60:.1f} min -> {len(cues)} lines to recognise")
-    return {**job.sub, "duration": job.sub.get("duration") or round(len(job.pcm) / ASR.SR), "source": "asr", "cues": cues}
+        if gen is not None:
+            gen.close()                   # stops the download if it is still running (aborted)
+        with job.cond:
+            job.feeding = False
+            job.audio_frac = 1.0
+            if job.audio_error and job.sent is not None and not job.aborted:
+                # failed midway: keep what was recognised so far, stop waiting for more
+                print(f"[{job.vid}] audio stopped early: {job.audio_error}")
+                job.emit("status", {"msg": f"{job.audio_error}（已识别的部分照常显示）"})
+                add_asr_lines(job, [], final=True)
+            job.cond.notify_all()
+
+
+def add_asr_lines(job: Job, pieces: list, final: bool = False):
+    """Append newly cut lines: their recognition tasks, full annotation batches, and a "more" event."""
+    with job.cond:
+        start = len(job.cues)
+        for s, e in pieces:
+            if job.cues and job.cues[-1]["e"] > s:            # a line ends where the next begins
+                job.cues[-1]["e"] = round(max(job.cues[-1]["s"] + 0.3, s), 2)
+            job.cues.append({"s": s, "e": round(e + 0.3, 2), "text": ""})
+            job.pieces.append((s, e))
+            job.texts.append("")
+            job.cands.append(None)
+            job.has_text.append(False)
+        n = len(job.cues)
+        new_tasks = []
+        for i in range(start, n):
+            b = i // SEG
+            # ranked by the batch it belongs to: a batch near the viewer gets all its lines recognised together
+            new_tasks.append({"kind": "asr", "ids": [i], "span": list(range(b * SEG, min((b + 1) * SEG, n)))})
+        while job.seg_next < n and (n - job.seg_next >= SEG or final):
+            ids = list(range(job.seg_next, min(job.seg_next + SEG, n)))
+            new_tasks += [{"kind": "ann", "ids": ids}, {"kind": "tr", "ids": ids, "retry": 0}]
+            job.seg_next = ids[-1] + 1
+        job.tasks += new_tasks
+        job.total += len(new_tasks)
+        if job.sent is not None and n > job.sent:
+            job.emit("more", {"from": job.sent, "cues": job.cues[job.sent:n]})
+            job.sent = n
+        job.cond.notify_all()
 
 
 def run_asr(job: Job, i: int):
     text, err = "", None
+    before, after = ASR.pads(job.pieces, i)
     try:
-        before, after = ASR.pads(job.pieces, i)
-        text = ASR.transcribe(job.pcm, *job.pieces[i], job.asr_usage, before, after)
+        text = ASR.transcribe(job.seg.view(), *job.pieces[i], job.asr_usage, before, after)
+    except ASR.ContentRefused:
+        # MiMo's content filter refused the line (swearing, "kill", "naked" ...): recognise it on this computer
+        text = local_fallback(job.seg.view(), job.pieces[i], before, after, f"{job.vid} #{i}")
     except Exception as e:
         err = short_err(e)
     chinese = bool(text) and ASR.mostly_chinese(text)
@@ -421,6 +520,96 @@ def run_asr(job: Job, i: int):
         job.emit("fail", {"msg": abort})
     elif text:
         job.emit("text", {str(i): text})
+
+
+def local_fallback(pcm, piece, before: float, after: float, label: str) -> str:
+    """A line the cloud recogniser refused -> local Whisper (or "" if it isn't available / fails)."""
+    if not LOCAL_ASR.available():
+        print(f"[{label}] refused by the speech-recognition filter; no local model, line left empty")
+        return ""
+    try:
+        t = time.time()
+        text = LOCAL_ASR.transcribe(pcm, *piece, before, after)
+        print(f"[{label}] refused by the speech-recognition filter -> local model ({time.time() - t:.1f}s): {text[:60]}")
+        return ASR.fix_i(ASR.strip_tags(text))
+    except Exception as e:
+        print(f"[{label}] local speech model failed: {short_err(e)}")
+        return ""
+
+
+REPAIRING: set = set()
+REPAIR_LOCK = threading.Lock()
+
+
+def tag_only_lines(data: dict) -> list[int]:
+    """Speech-recognition lines that are only non-speech labels ("<chinese> <chinese>", "[Music]")."""
+    if data.get("source") != "asr":
+        return []              # uploaders' subtitles keep their brackets ("[in Portuguese]")
+    return [i for i, c in enumerate(data.get("cues", [])) if c.get("text") and not ASR.strip_tags(c["text"])]
+
+
+def refusal_lines(data: dict) -> list[int]:
+    return [i for i, c in enumerate(data.get("cues", [])) if ASR.is_refusal(c.get("text", ""))]
+
+
+def bili_page(bvid: str, cid: str) -> int:
+    """Part number of a multi-part Bilibili video from its cid (public API, no login)."""
+    import urllib.request
+    req = urllib.request.Request(f"https://api.bilibili.com/x/player/pagelist?bvid={bvid}",
+                                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        pages = json.loads(r.read().decode("utf-8")).get("data") or []
+    return next((p["page"] for p in pages if str(p.get("cid")) == cid), 1)
+
+
+def repair_saved(vid: str, path: Path):
+    """A video recognised before refusals were detected has the filter's refusal sentence as some lines.
+    Download the audio up to the last such line, recognise those lines with the local model, annotate and
+    translate them, and save — the next time the video opens they are fixed (now they show blank)."""
+    with REPAIR_LOCK:
+        if vid in REPAIRING:
+            return
+        REPAIRING.add(vid)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cues, bad = data["cues"], refusal_lines(data)
+        m = re.fullmatch(r"bili_(BV[0-9A-Za-z]{10})_(\d+)_asr", vid)
+        fixed = {}
+        if m and LOCAL_ASR.available():
+            bvid, cid = m.groups()
+            url = f"https://www.bilibili.com/video/{bvid}/?p={bili_page(bvid, cid)}"
+            print(f"[{vid}] repairing {len(bad)} lines the speech filter refused (local model)")
+            need = max(cues[i]["e"] for i in bad) + 2
+            gen = ASR.stream_audio(url)
+            seg = ASR.StreamSegmenter(next(gen) or 0)
+            for block in gen:
+                if isinstance(block, np.ndarray):
+                    seg.add(block)
+                if seg.seconds > need:
+                    break
+            gen.close()
+            for i in bad:
+                s, e = cues[i]["s"], max(cues[i]["s"] + 0.3, cues[i]["e"] - 0.3)     # cue ends were padded by 0.3 s
+                fixed[i] = local_fallback(seg.view(), (s, e), 0.15, 0.15, f"{vid} #{i}")
+        job = Job(vid, sub=None, save_dir=EXT_DATA)
+        job.cues, job.texts = cues, [("" if i in bad else c["text"]) for i, c in enumerate(cues)]
+        for i, t in fixed.items():
+            job.texts[i] = t
+        job.cands = [None] * len(cues)
+        job.first = {(n["key"], n["kind"]): n for c in cues for n in c.get("notes", [])}
+        ids = [i for i in bad if job.texts[i]]
+        if ids and P.has_key():
+            run_annotation(job, ids, "low")
+            run_translation(job, {"ids": ids, "retry": 1})
+        for i in bad:
+            cues[i].update(text=job.texts[i], notes=job.ann.get(i, []), zh=job.zh.get(i, ""))
+        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        print(f"[{vid}] repaired: {sum(1 for i in bad if job.texts[i])} of {len(bad)} lines recognised again")
+    except Exception as e:
+        print(f"[{vid}] repair failed: {short_err(e)}")
+    finally:
+        with REPAIR_LOCK:
+            REPAIRING.discard(vid)
 
 
 PUNCT_PROMPT = """You fix punctuation in subtitles made by speech recognition.
@@ -569,7 +758,7 @@ def finalize(job: Job):
         sec = job.asr_usage.get("asr_seconds", 0)
         print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
               f"{sec / 60:.1f} min billed (about ¥{ASR.cost_cny(sec):.2f})")
-    job.pcm = None                 # free the audio samples
+    job.seg = None                 # free the audio samples
     job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"]})
 
 
@@ -612,7 +801,21 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
 
-STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html"}
+EXPLAIN_PROMPT = """A Chinese learner of English clicked a word in a video subtitle.
+Input: {"word": "...", "sentence": "..."} (the subtitle line the word is in).
+Give the word's meaning IN THIS SENTENCE, for a Chinese learner.
+Reply with JSON only:
+{"zh": "<the meaning here, Simplified Chinese, 2-8 characters, one sense only, no alternatives>",
+ "pos": "<part of speech here: n. / v. / adj. / adv. / prep. / ...>",
+ "base": "<dictionary form, e.g. 'ran' -> 'run'>",
+ "note": "<optional, at most 15 Chinese characters: only if the word is part of a phrase or idiom here
+           whose meaning differs, e.g. 'give up' -> 放弃; otherwise empty>"}
+If the word is a name or not English, give its usual Chinese rendering (or a transliteration) in "zh"."""
+
+STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html",
+                "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html"}
+LAST_EXT = 0.0            # when the browser extension last talked to us (shown in the control panel)
+STARTED = time.time()
 LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?")
 CONFIG_KEYS = ("ANNOTATION_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY")
 
@@ -644,6 +847,64 @@ def save_config(updates: dict):
 def key_hint(name: str) -> str:
     k = os.environ.get(name, "")
     return f"已填写（…{k[-4:]}）" if k else ""
+
+
+def extension_dir() -> Path:
+    """The browser extension folder: next to the program in the release zip, or in the source folder."""
+    if FROZEN:
+        return Path(sys.executable).resolve().parent.parent / "浏览器插件"
+    return Path(__file__).parent / "extension"
+
+
+def recent_videos(limit: int = 8) -> list:
+    """Videos finished before (Bilibili extension + player), newest first. Only the head of each file is read."""
+    out = []
+    for folder, kind in ((EXT_DATA, "bili"), (DATA, "youtube")):
+        if not folder.exists():
+            continue
+        for f in folder.glob("*.json"):
+            if f.name == "index.json":
+                continue
+            try:
+                head = f.open(encoding="utf-8").read(600)
+                m = re.search(r'"title":"((?:[^"\\]|\\.)*)"', head) or re.search(r'"title":\s*"((?:[^"\\]|\\.)*)"', head)
+                if not m or '"video"' not in head:      # not a processed video (word lists, test bank ...)
+                    continue
+                title = json.loads(f'"{m.group(1)}"')
+            except (OSError, ValueError):
+                continue
+            vid = f.stem
+            bv = re.match(r"bili_(BV[0-9A-Za-z]{10})", vid)
+            url = f"https://www.bilibili.com/video/{bv.group(1)}" if bv else (
+                f"https://www.youtube.com/watch?v={vid}" if kind == "youtube" else "")
+            out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
+                        "mtime": f.stat().st_mtime})
+    out.sort(key=lambda x: -x["mtime"])
+    return out[:limit]
+
+
+def app_status(port: int) -> dict:
+    with JOBS_LOCK:
+        jobs = list(JOBS.values())
+    running = []
+    for j in jobs:
+        if j.state != "running" and time.time() - j.started > 1800:
+            continue
+        running.append({"id": j.vid, "title": getattr(j, "title", "") or j.vid, "state": j.state,
+                        "done": j.finished, "total": j.progress_total() if j.state == "running" else j.total,
+                        "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started})
+    running.sort(key=lambda x: -x["started"])
+    prof = PROFILE.payload()
+    return {
+        "port": port, "uptime": int(time.time() - STARTED),
+        "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
+        "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
+        "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
+        "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
+                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"]},
+        "jobs": running, "recent": recent_videos(),
+        "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -679,6 +940,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_error(404)
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+                 ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
                  ".ico": "image/x-icon"}.get(f.suffix.lower(), "application/octet-stream")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -704,9 +966,25 @@ class Handler(SimpleHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
+            self.note_extension()
             return self.send_json({"ok": True, "ext": 1, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
-                                   "key": P.has_key(), "setup": "/setup"})
+                                   "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
+        if u.path == "/api/profile":
+            if not self.ext_ok():
+                return
+            p = PROFILE.payload()
+            if q.get("summary"):        # cheap check the extension polls: has anything changed?
+                return self.send_json({k: p[k] for k in ("rev", "setup", "level", "prior", "test", "lists", "stats")})
+            return self.send_json(p)
+        if u.path == "/api/status":
+            if not self.ext_ok():
+                return
+            return self.send_json(app_status(self.server.server_address[1]))
+        if u.path == "/api/define":
+            if not self.ext_ok():
+                return
+            return self.send_json(PS.define(q.get("w", "")[:40]) or {"word": q.get("w", "")[:40], "zh": ""})
         if u.path == "/api/settings":
             if not self.ext_ok():
                 return
@@ -758,8 +1036,14 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"events": events, "next": nxt})
         return self.serve_static(u.path)
 
+    def note_extension(self):
+        global LAST_EXT
+        if (self.headers.get("Origin") or "").startswith("chrome-extension://"):
+            LAST_EXT = time.time()
+
     def ext_ok(self) -> bool:
         if self.headers.get(EXT_HEADER) == "1":
+            self.note_extension()
             return True
         self.send_json({"error": "forbidden"}, 403)
         return False
@@ -776,13 +1060,38 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.local_only():
             return
         path = urlparse(self.path).path
-        if path not in ("/api/ext/open", "/api/settings", "/api/settings/test"):
+        if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
+                        "/api/open-folder", "/api/quit"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/profile":
+            if body.get("reset_marks"):
+                PROFILE.reset_marks()
+            err = PROFILE.update(body)
+            return self.send_json({"error": err}, 400) if err else self.send_json(PROFILE.payload())
+        if path == "/api/explain":
+            return self.explain(body)
+        if path == "/api/open-folder":
+            folder = {"data": HOME / "data", "logs": applog.LOG_FILE.parent if applog.LOG_FILE else HOME,
+                      "extension": extension_dir()}.get(str(body.get("what")))
+            if not folder or not folder.exists():
+                return self.send_json({"error": "文件夹不存在"}, 404)
+            try:
+                os.startfile(str(folder))          # Windows: open in File Explorer
+            except Exception as e:
+                return self.send_json({"error": short_err(e)}, 500)
+            return self.send_json({"ok": True})
+        if path == "/api/quit":
+            print("  quit from the control panel")
+            threading.Timer(0.3, lambda: os._exit(0)).start()
+            return self.send_json({"ok": True})
+        if path == "/api/mark":
+            err = PROFILE.mark(body.get("key"), body.get("state"))
+            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
         if path == "/api/settings":
             return self.save_settings(body)
         if path == "/api/settings/test":
@@ -792,7 +1101,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "bad id"}, 400)
         saved = EXT_DATA / f"{vid}.json"
         if saved.exists():          # done before: send the whole result at once
-            return self.send_json({"id": vid, "cached": True, "data": json.loads(saved.read_text(encoding="utf-8"))})
+            data = json.loads(saved.read_text(encoding="utf-8"))
+            tags = tag_only_lines(data)
+            if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there
+                for i in tags:
+                    data["cues"][i].update(text="", notes=[], zh="")
+                saved.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                print(f"[{vid}] removed {len(tags)} non-speech labels (<chinese> ...) from the saved subtitles")
+            if refusal_lines(data):  # made before refusals were detected: blank them now, fix in the background
+                for i in refusal_lines(data):
+                    data["cues"][i].update(text="", notes=[], zh="")
+                threading.Thread(target=repair_saved, args=(vid, saved), daemon=True).start()
+            return self.send_json({"id": vid, "cached": True, "data": data})
         if not P.has_key():
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
@@ -828,6 +1148,27 @@ class Handler(SimpleHTTPRequestHandler):
                "source": "auto" if body.get("source") == "auto" else "manual", "cues": cues}
         get_job(vid, start=True, sub=sub, save_dir=EXT_DATA)
         return self.send_json({"id": vid, "cached": False})
+
+    def explain(self, body: dict):
+        """Meaning of a clicked word in its sentence (words the annotations didn't cover).
+        The dictionary only has general senses ("ligature" = 绳); this asks the annotation model what the
+        word means here. Cached on disk by call_json, so the same word in the same line costs nothing again."""
+        word = A.clean(str(body.get("word", "")))[:40]
+        sentence = A.clean(str(body.get("sentence", "")))[:400]
+        if not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", word) or not sentence:
+            return self.send_json({"error": "bad request"}, 400)
+        if not P.has_key():
+            return self.send_json({"error": key_missing_msg()}, 400)
+        try:
+            data = A.call_json(client(), P.model(), "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
+        except Exception as e:
+            return self.send_json({"error": f"查询失败：{short_err(e)[:80]}"}, 502)
+        zh = A.clean(str(data.get("zh") or ""))[:16]
+        if not zh:
+            return self.send_json({"zh": ""})
+        return self.send_json({"zh": zh, "pos": A.clean(str(data.get("pos") or ""))[:8],
+                               "base": A.clean(str(data.get("base") or ""))[:40].lower(),
+                               "note": A.clean(str(data.get("note") or ""))[:40]})
 
     def save_settings(self, body: dict):
         updates = {}
@@ -903,10 +1244,11 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="open the player in the browser once the server is up")
     ap.add_argument("--app", action="store_true", help="packaged program: open the settings page if no key is set")
+    ap.add_argument("--gui", action="store_true", help="show the control panel in a window (no console needed)")
     args = ap.parse_args()
     if args.host not in ("127.0.0.1", "localhost"):
         sys.exit("Adaptive Subs only listens on this computer (127.0.0.1): it holds your API keys.")
-    want_browser = (args.open or args.app) and not os.environ.get("ASUBS_NO_BROWSER")
+    want_browser = (args.open or args.app) and not args.gui and not os.environ.get("ASUBS_NO_BROWSER")
 
     def open_browser(port):
         if not want_browser:
@@ -927,6 +1269,8 @@ def main():
         except OSError:
             if is_live_server(args.host, candidate):
                 print(f"Adaptive Subs is already running: http://{args.host}:{candidate}/player.html")
+                if args.gui:                       # second start: just show the running program's panel
+                    return run_window(f"http://{args.host}:{candidate}/app", None)
                 open_browser(candidate)
                 if want_browser:
                     time.sleep(2)
@@ -948,10 +1292,62 @@ def main():
     print(f"  annotation model: {P.PROVIDERS[P.current()]['name']} ({P.model()}), key: {key} | speech recognition key: {asr}")
     print(f"  settings: http://{args.host}:{port}/setup   (saved in {CONFIG})\n")
     open_browser(port)
+    if args.gui:
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        # always the control panel (its intro plays); without a key its stage leads to the settings
+        return run_window(f"http://{args.host}:{port}/app", httpd)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+
+
+QUIT_TEXT = ("关闭窗口会停止 Adaptive Subs，B 站插件就不能生成注释了。\n"
+             "看视频时可以把窗口最小化。确定要退出吗？")
+
+
+def run_window(url: str, httpd):
+    """The program's window: the control panel in a native window (Edge WebView2 via pywebview).
+    Closing it stops the program. Without WebView2, the panel opens in the browser instead."""
+    try:
+        import webview
+        webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True     # target=_blank links -> the browser
+        w, h = window_size()
+        webview.create_window("Adaptive Subs", url, width=w, height=h, min_size=(min(w, 760), min(h, 520)),
+                              confirm_close=True, background_color="#04060e")      # = the intro: no white flash on launch
+        webview.start(localization={"global.quitConfirmation": QUIT_TEXT, "global.ok": "退出", "global.cancel": "取消"},
+                      private_mode=False, storage_path=str(HOME / "webview"))
+    except Exception as e:
+        print(f"  could not open the window ({short_err(e)}); opening the control panel in the browser")
+        import webbrowser
+        webbrowser.open(url.replace("setup?app=1", "setup").replace("/app", "/app?browser=1"))
+        if httpd is None:
+            return
+        while True:                     # keep serving; "退出程序" in the panel stops it
+            time.sleep(3600)
+    os._exit(0)
+
+
+def window_size() -> tuple[int, int]:
+    """1040 x 760, or smaller to fit the screen's work area (above the taskbar), in logical pixels."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        r = wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0)     # SPI_GETWORKAREA
+        scale = max(1.0, ctypes.windll.user32.GetDpiForSystem() / 96)
+        return int(min(1040, (r.right - r.left) / scale - 40)), int(min(760, (r.bottom - r.top) / scale - 40))
+    except Exception:
+        return 1040, 720
+
+
+def dark_mode() -> bool:
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except Exception:
+        return False
 
 
 def is_live_server(host: str, port: int) -> bool:

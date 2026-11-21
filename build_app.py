@@ -28,7 +28,7 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 2. 双击「程序」文件夹里的 AdaptiveSubs.exe。
    - Windows 可能提示"Windows 已保护你的电脑"：点「更多信息」→「仍要运行」。
    - 杀毒软件如果拦截，请选择允许（程序没有数字签名，所以容易被误报）。
-3. 浏览器会自动打开设置页（没打开的话，访问 http://127.0.0.1:8765/setup ）：
+3. 程序窗口会先打开设置页（以后也可以在窗口里点「API key 和模型」）：
    - 选择注释模型并填写它的 API key。推荐 DeepSeek（国内可直接用、速度最快）：
        DeepSeek：https://platform.deepseek.com/api_keys
        小米 MiMo：https://platform.xiaomimimo.com
@@ -42,11 +42,15 @@ GUIDE = """Adaptive Subs（测试版）使用说明
    - 建议点工具栏的拼图图标，把 Adaptive Subs 固定出来
 
 二、日常使用
-1. 先双击 AdaptiveSubs.exe，看视频时保持那个黑色窗口开着（关掉窗口就停止）。
+1. 先双击 AdaptiveSubs.exe，看视频时保持 Adaptive Subs 窗口开着（可以最小化，关掉窗口就停止）。
+   窗口里能看到：模型和 key 是否就绪、插件有没有连上、正在处理的视频、英语画像和运行日志。
 2. 在浏览器里登录 B 站，打开带英文的视频：
    - 有英文字幕的视频：自动显示字幕，注释边看边补上。
    - 没有英文字幕的：视频左上角点「语音识别英文字幕」。
-3. 点工具栏的插件图标：调词汇量、注释多少、中英对照、字幕位置；「打开设置」可以换模型或 key。
+3. 第一次用：点工具栏的插件图标 →「建立英语画像」，填身份和考试成绩、做 3 分钟词汇测试。
+   字幕会按你的熟词库判断哪些词不用注释（以后在插件图标里也能重新测）。
+4. 看视频时点字幕里任意单词：显示释义，可以标「我认识」（不再注释）或「我不认识」（总会注释）。
+5. 插件图标里还能调词汇量、注释多少、中英对照、字幕位置；「打开设置」可以换模型或 key。
 
 三、费用
 用的是你自己的 API key，按用量付费，大约：
@@ -56,6 +60,7 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 
 四、隐私
   - API key 只保存在这台电脑：%LOCALAPPDATA%\\AdaptiveSubs\\config.env，只发给对应的服务商。
+  - 英语画像和标记过的词保存在同一个文件夹的 profile.json，不会上传到任何地方。
   - 程序只在本机（127.0.0.1）运行，别的电脑和网站访问不到。
   - 你的 B 站登录信息不会离开浏览器；发给程序的只有字幕文字和视频编号。
 
@@ -65,7 +70,8 @@ GUIDE = """Adaptive Subs（测试版）使用说明
   - 8765 端口被占用：程序会自动换一个端口，插件会自己找到，不用管。
   - 提示"这个视频说的主要是中文"：语音识别只支持英语视频。
 
-本程序包含开源组件：Python、spaCy（MIT）、FFmpeg（LGPL，经 PyAV）、yt-dlp（Unlicense）等。
+本程序包含开源组件和数据：Python、spaCy（MIT）、FFmpeg（LGPL，经 PyAV）、yt-dlp（Unlicense）、
+ECDICT 词典数据（MIT，考试词表和释义）等。
 """
 
 
@@ -74,7 +80,16 @@ def main():
         try:
             __import__(mod)
         except ImportError:
-            sys.exit(f"缺少 {mod}：先运行 .venv/Scripts/python -m pip install pyinstaller av")
+            sys.exit(f"缺少 {mod}：先运行 .venv/Scripts/python -m pip install pyinstaller av faster-whisper")
+    model = ROOT / "models" / "faster-whisper-base.en"
+    # local speech model, bundled (Hugging Face is often blocked in China). The release uses an int8 copy
+    # (76 MB instead of 145 MB, same results), made once with:
+    #   ct2-transformers-converter --model openai/whisper-base.en --output_dir models/faster-whisper-base.en
+    #       --quantization int8 --copy_files tokenizer.json preprocessor_config.json
+    # (needs: pip install ctranslate2 transformers torch). Without it, the fp16 copy is downloaded here.
+    if not (model / "model.bin").exists():
+        from huggingface_hub import snapshot_download
+        snapshot_download("Systran/faster-whisper-base.en", local_dir=str(model), allow_patterns=["*.bin", "*.json", "*.txt"])
     if not (ROOT / "data" / "ranks_en.txt").exists():
         from wordfreq import top_n_list
         (ROOT / "data" / "ranks_en.txt").write_text("\n".join(top_n_list("en", 100_000)), encoding="utf-8")

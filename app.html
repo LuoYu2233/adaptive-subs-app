@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive Subs</title>
+<script>
+  // the intro plays once per launch; reduced motion skips it (set before first paint: no flash)
+  try {
+    if (sessionStorage.getItem("asubsIntro") || matchMedia("(prefers-reduced-motion: reduce)").matches)
+      document.documentElement.classList.add("no-intro");
+    else document.documentElement.classList.add("intro-on");
+  } catch (e) { document.documentElement.classList.add("no-intro"); }
+</script>
+<style>
+  /* Concept: the program's window as a quiet glass console over drifting deep-sea / amber light.
+     Colours come from the two artworks: the whale maid's deep-sea and sky blues, and the orange of the
+     intro girl's hair. Amber (the gloss colour on videos) is the single accent.
+     The intro uses the intro picture as a film frame whose burned-in Chinese caption gets covered by the
+     product's own frosted board and replaced by an English line with one glossed word. */
+  :root {
+    --base: #eef3ff;          /* foam: light background */
+    --ink: #121a33;
+    --ink-2: #4c5875;
+    --ink-3: #7f8aa6;
+    --glass: rgba(255, 255, 255, 0.58);
+    --glass-strong: rgba(255, 255, 255, 0.8);
+    --edge: rgba(255, 255, 255, 0.75);       /* highlight edge of glass */
+    --rule: rgba(18, 26, 51, 0.09);
+    --sea: #2e4fb8;           /* whale blue */
+    --sky: #7db8ff;
+    --ember: #ff9a4a;         /* intro girl's orange */
+    --gloss: #f6b23c;         /* amber: the only accent */
+    --gloss-ink: #241602;
+    --ok: #1d9a63;
+    --warn: #d0601a;
+    --shadow: 0 10px 40px rgba(28, 47, 122, 0.12), 0 1px 2px rgba(28, 47, 122, 0.08);
+    --display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    --text: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    --mono: "Cascadia Mono", Consolas, monospace;
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --base: #0b1330; --ink: #eaf0ff; --ink-2: #a7b3d1; --ink-3: #7180a6;
+      --glass: rgba(20, 30, 66, 0.5); --glass-strong: rgba(22, 32, 70, 0.82); --edge: rgba(160, 190, 255, 0.16);
+      --rule: rgba(160, 190, 255, 0.1); --sea: #3f63e0; --gloss: #ffc65c; --ok: #4fd393; --warn: #ff9a5c;
+      --shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--base); color: var(--ink); }
+  body { font: 14px/1.55 var(--text); overflow-x: hidden; }
+  button, a { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--gloss); outline-offset: 2px; border-radius: 6px; }
+
+  /* ---------- living background: three soft lights drifting + grain ---------- */
+  .bg { position: fixed; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
+  .blob { position: absolute; border-radius: 50%; filter: blur(70px); opacity: 0.55; will-change: transform; }
+  .b1 { width: 520px; height: 520px; left: -120px; top: -140px; background: var(--sky); animation: drift1 22s ease-in-out infinite alternate; }
+  .b2 { width: 460px; height: 460px; right: -140px; top: 120px; background: var(--ember); opacity: 0.38; animation: drift2 26s ease-in-out infinite alternate; }
+  .b3 { width: 560px; height: 560px; left: 30%; bottom: -260px; background: var(--sea); opacity: 0.4; animation: drift3 30s ease-in-out infinite alternate; }
+  @keyframes drift1 { to { transform: translate(140px, 90px) scale(1.1); } }
+  @keyframes drift2 { to { transform: translate(-120px, 140px) scale(0.92); } }
+  @keyframes drift3 { to { transform: translate(-160px, -80px) scale(1.08); } }
+  .grain { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0.07; mix-blend-mode: overlay;
+           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  /* ---------- glass ---------- */
+  .glass { position: relative; background: var(--glass); border: 1px solid var(--edge); border-radius: 16px; box-shadow: var(--shadow);
+           -webkit-backdrop-filter: blur(22px) saturate(1.5); backdrop-filter: blur(22px) saturate(1.5); }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background: var(--glass-strong); } }
+  /* spotlight: a soft light follows the pointer over a card */
+  .spot { overflow: hidden; }
+  .spot::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity 0.3s;
+                  background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), rgba(125, 184, 255, 0.18), transparent 60%); }
+  .spot:hover::before { opacity: 1; }
+
+  .shell { position: relative; z-index: 2; max-width: 1080px; margin: 0 auto; padding: 16px max(20px, env(safe-area-inset-left)) 22px; display: grid; gap: 14px; }
+
+  /* header bar */
+  .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 18px; }
+  .avatar { width: 40px; height: 40px; border-radius: 12px; flex: none; position: relative; }
+  .avatar img { width: 100%; height: 100%; border-radius: inherit; display: block; position: relative; }
+  .avatar::after { content: ""; position: absolute; inset: -3px; border-radius: 14px; z-index: -1;
+                   background: conic-gradient(from var(--spin, 0deg), var(--sky), var(--gloss), var(--sea), var(--sky)); filter: blur(6px); opacity: 0.7;
+                   animation: spin 8s linear infinite; }
+  @property --spin { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  @keyframes spin { to { --spin: 360deg; } }
+  .brand { flex: 1; min-width: 0; }
+  .brand b { display: block; font: 650 16px/1.2 var(--display); letter-spacing: 0.005em; }
+  .brand span { font-size: 12.5px; color: var(--ink-2); }
+  .live { display: inline-flex; align-items: center; gap: 9px; padding: 6px 12px; border-radius: 999px; font-size: 13px;
+          background: rgba(29, 154, 99, 0.12); color: var(--ink); }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); position: relative; }
+  .live i::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); opacity: 0; animation: ping 2.2s var(--ease) infinite; }
+  @keyframes ping { 0% { transform: scale(0.6); opacity: 0.7; } 100% { transform: scale(1.8); opacity: 0; } }
+  .live.down { background: rgba(208, 96, 26, 0.12); } .live.down i { background: var(--warn); } .live.down i::after { border-color: var(--warn); }
+
+  /* ---------- the stage: a film still with the state as a subtitle ---------- */
+  .stage { position: relative; height: 188px; border-radius: 18px; overflow: hidden; background: #05070f; box-shadow: var(--shadow); isolation: isolate; }
+  .still { position: absolute; right: 0; top: 0; width: 52%; height: 100%; object-fit: cover; object-position: 50% 34%;
+           transform: translate(calc(var(--px, 0) * -14px), calc(var(--py, 0) * -10px)) scale(1.08); transition: transform 0.6s var(--ease); z-index: -2; }
+  .shade { position: absolute; inset: 0; z-index: -1;
+           background: linear-gradient(90deg, #05070f 38%, rgba(5, 7, 15, 0.82) 55%, rgba(5, 7, 15, 0.15) 85%), linear-gradient(0deg, rgba(5, 7, 15, 0.6), transparent 45%); }
+  .stage-body { position: absolute; left: 34px; right: 46%; top: 50%; transform: translateY(-46%); color: #fff; }
+  .kicker { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #b9c6e6; margin-bottom: 24px; }
+  .kicker i { width: 6px; height: 6px; border-radius: 50%; background: var(--gloss); box-shadow: 0 0 10px var(--gloss); }
+  .line { font: 650 28px/1.3 var(--display); letter-spacing: 0.002em; }
+  .g { position: relative; display: inline-block; }
+  .g .w { background: rgba(255, 198, 92, 0.2); border-radius: 7px; padding: 0 3px; box-shadow: inset 0 -2px 0 rgba(255, 198, 92, 0.6); }
+  .g .z { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); margin-bottom: 3px; font: 600 15px/1 var(--text); color: #ffc65c; white-space: nowrap;
+          text-shadow: 0 0 14px rgba(255, 198, 92, 0.6); }
+  .sub { margin-top: 10px; font-size: 14px; color: #c3cde6; }
+  .stage .btn { margin-top: 14px; }
+  .meter { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255, 255, 255, 0.08); }
+  .meter span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--gloss), #fff2c8, var(--gloss)); background-size: 200% 100%;
+                animation: shimmer 1.6s linear infinite; transition: width 0.6s var(--ease); box-shadow: 0 0 12px rgba(255, 198, 92, 0.8); }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .swap { animation: swap 0.5s var(--ease); }
+  @keyframes swap { from { opacity: 0; transform: translateY(calc(-46% + 8px)); filter: blur(4px); } to { opacity: 1; transform: translateY(-46%); filter: none; } }
+
+  /* ---------- panels ---------- */
+  .grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .panel { padding: 4px 0 8px; }
+  .panel h2 { margin: 0; font: 650 15px/1.3 var(--display); }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px 8px; }
+  .head p { margin: 0; font-size: 12.5px; color: var(--ink-3); }
+
+  ol.ready { list-style: none; margin: 0; padding: 0 8px; counter-reset: step; }
+  ol.ready li { display: grid; grid-template-columns: 22px 24px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 10px;
+                border-radius: 12px; transition: background 0.2s; }
+  ol.ready li + li { margin-top: 2px; }
+  ol.ready li:hover { background: rgba(125, 184, 255, 0.1); }
+  ol.ready li::before { counter-increment: step; content: counter(step); font: 600 13px/1 var(--display); color: var(--ink-3); text-align: center; font-variant-numeric: tabular-nums; }
+  .st { width: 24px; height: 24px; display: grid; place-items: center; }
+  .st svg { width: 22px; height: 22px; overflow: visible; }
+  .st.ok { color: var(--ok); } .st.warn { color: var(--warn); } .st.idle { color: var(--ink-3); }
+  .st .draw { stroke-dasharray: 16; stroke-dashoffset: 16; animation: draw 0.6s 0.15s var(--ease) forwards; }
+  .st .pop { transform-origin: 50% 50%; animation: pop 0.45s var(--ease); }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes pop { from { transform: scale(0.4); opacity: 0; } to { transform: none; opacity: 0.16; } }
+  .what b { display: block; font-weight: 600; }
+  .what > span { display: block; font-size: 13px; color: var(--ink-2); }
+  .opt { font-weight: 400; color: var(--ink-3); font-size: 12.5px; margin-left: 5px; }
+
+  .btn { position: relative; overflow: hidden; border: 1px solid var(--rule); background: rgba(255, 255, 255, 0.35); border-radius: 10px; padding: 6px 13px;
+         cursor: pointer; text-decoration: none; white-space: nowrap; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;
+         transition: transform 0.15s var(--ease), background 0.2s, border-color 0.2s, box-shadow 0.2s; }
+  @media (prefers-color-scheme: dark) { .btn { background: rgba(255, 255, 255, 0.05); } }
+  .btn:hover { border-color: rgba(125, 184, 255, 0.6); box-shadow: 0 4px 14px rgba(46, 79, 184, 0.15); }
+  .btn:active { transform: scale(0.96); }
+  .btn.primary { background: linear-gradient(180deg, #ffd27a, var(--gloss)); border-color: transparent; color: var(--gloss-ink); font-weight: 650;
+                 box-shadow: 0 4px 18px rgba(246, 178, 60, 0.4); }
+  .btn.primary::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%; transform: skewX(-20deg);
+                        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent); transition: left 0.6s var(--ease); }
+  .btn.primary:hover::after { left: 120%; }
+  .btn.quiet { border-color: transparent; background: transparent; color: var(--ink-2); box-shadow: none; }
+  .btn.quiet:hover { color: var(--ink); background: rgba(125, 184, 255, 0.12); }
+
+  /* vocabulary */
+  .vocab { padding: 0 18px 12px; display: grid; gap: 10px; }
+  .num { font: 700 46px/1 var(--display); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .num small { font: 500 15px var(--text); color: var(--ink-2); margin-left: 6px; letter-spacing: 0; }
+  .facts { font-size: 13px; color: var(--ink-2); display: grid; gap: 2px; }
+  .facts strong { color: var(--ink); font-weight: 650; }
+  .bands { display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px; align-items: end; height: 64px; margin-top: 4px; }
+  .bands div { height: 100%; display: flex; align-items: end; border-radius: 5px; background: rgba(125, 184, 255, 0.14); }
+  .bands span { display: block; width: 100%; height: 0; border-radius: 5px; background: linear-gradient(180deg, #ffd27a, var(--gloss));
+                transition: height 0.9s var(--ease); box-shadow: 0 0 10px rgba(246, 178, 60, 0.25); }
+  .band-x { display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px; font-size: 10.5px; color: var(--ink-3); text-align: center; font-variant-numeric: tabular-nums; margin-top: -4px; }
+  .cap { font-size: 12px; color: var(--ink-3); }
+
+  /* videos */
+  .videos { padding: 0 8px; }
+  .vid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 9px 10px; border-radius: 12px; align-items: center; transition: background 0.2s, transform 0.2s var(--ease); }
+  .vid:hover { background: rgba(125, 184, 255, 0.1); transform: translateX(3px); }
+  .vid-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vid-m { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; display: flex; gap: 10px; align-items: center; }
+  .vid-m a { color: var(--sea); text-decoration: none; font-weight: 600; opacity: 0; transition: opacity 0.2s; }
+  @media (prefers-color-scheme: dark) { .vid-m a { color: var(--sky); } }
+  .vid:hover .vid-m a, .vid-m a:focus-visible { opacity: 1; }
+  .badge { font-size: 11px; color: var(--sea); background: rgba(125, 184, 255, 0.16); border-radius: 6px; padding: 1px 6px; margin-left: 8px; vertical-align: 1px; }
+  @media (prefers-color-scheme: dark) { .badge { color: var(--sky); } }
+  .bar-p { grid-column: 1 / -1; height: 4px; background: rgba(125, 184, 255, 0.16); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .bar-p span { display: block; height: 100%; background: linear-gradient(90deg, var(--sky), var(--gloss)); transition: width 0.6s var(--ease); }
+  .empty { padding: 4px 10px 12px; color: var(--ink-3); font-size: 13px; }
+
+  /* log */
+  pre { margin: 0 18px 4px; padding: 10px 12px; max-height: 196px; overflow: auto; border-radius: 10px; background: rgba(5, 7, 15, 0.06);
+        font: 11.5px/1.65 var(--mono); color: var(--ink-2); white-space: pre-wrap; word-break: break-all; }
+  @media (prefers-color-scheme: dark) { pre { background: rgba(0, 0, 0, 0.25); } }
+  pre em { font-style: normal; color: var(--ink-3); }
+  .tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 14px 4px; }
+
+  footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-3); padding: 0 4px; }
+  footer .grow { flex: 1; }
+
+  /* entrance after the intro: cards rise in one after another */
+  .enter > * { animation: rise 0.7s var(--ease) both; animation-delay: calc(var(--i, 0) * 80ms + 60ms); }
+  .enter .grid > * { animation: rise 0.7s var(--ease) both; animation-delay: calc(var(--i, 0) * 80ms + 220ms); }
+  .enter .grid { animation: none; }
+  @keyframes rise { from { opacity: 0; transform: translateY(16px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+  /* dialogs */
+  dialog { border: 1px solid var(--edge); border-radius: 18px; padding: 22px 24px; background: var(--glass-strong); color: var(--ink);
+           max-width: 520px; width: calc(100% - 40px); box-shadow: 0 30px 80px rgba(10, 18, 50, 0.35);
+           -webkit-backdrop-filter: blur(24px) saturate(1.5); backdrop-filter: blur(24px) saturate(1.5); }
+  dialog[open] { animation: dlg 0.35s var(--ease); }
+  @keyframes dlg { from { opacity: 0; transform: translateY(10px) scale(0.97); } to { opacity: 1; transform: none; } }
+  dialog::backdrop { background: rgba(8, 14, 36, 0.4); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+  dialog h3 { margin: 0 0 8px; font: 650 17px/1.3 var(--display); }
+  dialog p { margin: 0 0 6px; color: var(--ink-2); }
+  dialog ol { margin: 8px 0 12px; padding-left: 20px; display: grid; gap: 6px; color: var(--ink-2); }
+  dialog code { font: 12.5px var(--mono); background: rgba(125, 184, 255, 0.16); padding: 1px 6px; border-radius: 5px; color: var(--ink); }
+  .path { font-size: 12.5px; color: var(--ink-3); word-break: break-all; }
+  .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 10px); z-index: 50; padding: 9px 16px; border-radius: 12px; font-size: 13px;
+           background: var(--glass-strong); border: 1px solid var(--edge); box-shadow: var(--shadow); opacity: 0; transition: opacity 0.25s, transform 0.25s var(--ease);
+           pointer-events: none; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- intro ---------- */
+  .intro { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #04060e; color: #fff; overflow: hidden; cursor: pointer; }
+  .no-intro .intro { display: none; }
+  .intro-on body { overflow: hidden; }      /* no scrollbar beside the intro */
+  .intro::before { content: ""; position: absolute; inset: -20%; background:
+      radial-gradient(40% 40% at 25% 30%, rgba(63, 99, 224, 0.35), transparent 70%),
+      radial-gradient(35% 35% at 80% 70%, rgba(255, 154, 74, 0.22), transparent 70%); animation: introGlow 6s ease-in-out infinite alternate; }
+  @keyframes introGlow { to { transform: translate(3%, -2%) scale(1.05); } }
+  .intro-stack { position: relative; display: grid; justify-items: center; gap: 22px; }
+  .scan { position: absolute; left: 50%; top: calc(min(64vh, 470px) / 2); width: min(64vh, 470px); height: 2px; transform: translate(-50%, -50%) scaleX(0);
+          background: linear-gradient(90deg, transparent, var(--gloss), transparent); box-shadow: 0 0 18px var(--gloss); }
+  .frame { position: relative; width: min(64vh, 470px); aspect-ratio: 1; border-radius: 16px; overflow: hidden; clip-path: inset(50% 0 50% 0 round 16px);
+           box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08); }
+  .frame img { width: 100%; height: 100%; object-fit: cover; display: block; transform: scale(1.08); transform-origin: 50% 40%; }
+  .cover { position: absolute; left: 0; right: 0; top: 85%; bottom: 0; transform: translateY(105%);
+           background: rgba(6, 9, 20, 0.66); -webkit-backdrop-filter: blur(22px) saturate(0.6); backdrop-filter: blur(22px) saturate(0.6);
+           border-top: 1px solid rgba(255, 255, 255, 0.14); display: grid; place-items: center; }
+  .cover .t { font: 650 clamp(14px, 2.6vh, 20px)/1.2 var(--display); white-space: nowrap; }
+  .cover .t .caret { display: inline-block; width: 2px; height: 1em; background: #ffc65c; margin-left: 2px; vertical-align: -0.12em; animation: blink 0.8s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .cover .g .z { font-size: clamp(11px, 1.9vh, 14px); opacity: 0; transform: translate(-50%, 6px) scale(0.6); transition: opacity 0.35s, transform 0.5s cubic-bezier(0.3, 1.6, 0.5, 1); }
+  .cover .g.on .z { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  .cover .g .w { background: transparent; box-shadow: none; padding: 0 2px; transition: background 0.3s, box-shadow 0.3s; }
+  .cover .g.on .w { background: rgba(255, 198, 92, 0.22); box-shadow: inset 0 -2px 0 rgba(255, 198, 92, 0.7); }
+  .lockup { display: flex; align-items: center; gap: 14px; opacity: 0; transform: translateY(14px); }
+  .lockup img { width: 52px; height: 52px; border-radius: 15px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15), 0 10px 30px rgba(63, 99, 224, 0.5); }
+  .lockup b { display: block; font: 700 26px/1.1 var(--display); letter-spacing: 0.01em; }
+  .lockup span { display: block; color: #b9c6e6; font-size: 14px; margin-top: 3px; }
+  .skip { position: absolute; right: 18px; bottom: 16px; font-size: 12px; color: rgba(255, 255, 255, 0.5); }
+  /* the sequence (classes added by the script, so it can be skipped at any point) */
+  .intro.s1 .scan { animation: scanIn 0.55s var(--ease) forwards; }
+  @keyframes scanIn { to { transform: translate(-50%, -50%) scaleX(1); } }
+  .intro.s2 .scan { animation: none; opacity: 0; transition: opacity 0.4s; transform: translate(-50%, -50%) scaleX(1); }
+  .intro.s2 .frame { animation: open 0.8s var(--ease) forwards; }
+  .intro.s2 .frame img { animation: kenburns 6s ease-out forwards; }
+  @keyframes open { to { clip-path: inset(0 0 0 0 round 16px); } }
+  @keyframes kenburns { to { transform: scale(1); } }
+  .intro.s3 .cover { animation: coverUp 0.6s var(--ease) forwards; }
+  @keyframes coverUp { to { transform: none; } }
+  .intro.s5 .lockup { animation: lockIn 0.7s var(--ease) forwards; }
+  @keyframes lockIn { to { opacity: 1; transform: none; } }
+  .intro.out { animation: introOut 0.75s var(--ease) forwards; pointer-events: none; }
+  @keyframes introOut { to { opacity: 0; transform: scale(1.06); filter: blur(10px); } }
+
+  @media (max-width: 780px) {
+    .grid { grid-template-columns: 1fr; }
+    .stage-body { right: 24px; } .still { width: 100%; opacity: 0.35; }
+    ol.ready li { grid-template-columns: 20px 22px minmax(0, 1fr); }
+    ol.ready li .btn { grid-column: 3; justify-self: start; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="bg" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="intro" id="intro" aria-hidden="true">
+  <div class="intro-stack">
+    <div class="scan"></div>
+    <div class="frame">
+      <img src="/assets/intro.jpg" alt="">
+      <div class="cover"><div class="t" id="introLine"></div></div>
+    </div>
+    <div class="lockup"><img src="/assets/icon-256.png" alt=""><div><b>Adaptive Subs</b><span>只给你不认识的词配中文</span></div></div>
+  </div>
+  <div class="skip">点击任意处跳过</div>
+</div>
+
+<div class="shell" id="shell">
+  <header class="glass bar" style="--i:0">
+    <div class="avatar"><img src="/assets/icon-256.png" alt=""></div>
+    <div class="brand"><b>Adaptive Subs</b><span>B 站英语字幕，只给你不认识的词配中文</span></div>
+    <span class="live" id="live"><i></i><span>正在连接</span></span>
+  </header>
+
+  <section class="stage" id="stage" style="--i:1" aria-live="polite">
+    <img class="still" src="/assets/intro.jpg" alt="">
+    <div class="shade"></div>
+    <div class="stage-body" id="stageBody"></div>
+    <div class="meter" id="meter" hidden><span></span></div>
+  </section>
+
+  <div class="grid" style="--i:2">
+    <section class="glass panel spot" style="--i:0">
+      <div class="head"><h2>准备情况</h2><p id="readyNote"></p></div>
+      <ol class="ready">
+        <li><span class="st" id="s1"></span><div class="what"><b>注释模型</b><span id="d1"></span></div><a class="btn" href="/setup?app=1">更改</a></li>
+        <li><span class="st" id="s2"></span><div class="what"><b>浏览器插件</b><span id="d2"></span></div><button class="btn" type="button" id="extHelp">安装方法</button></li>
+        <li><span class="st" id="s3"></span><div class="what"><b>英语画像</b><span id="d3"></span></div><a class="btn" href="/profile?app=1" id="b3">打开</a></li>
+        <li><span class="st" id="s4"></span><div class="what"><b>语音识别<span class="opt">可选</span></b><span id="d4"></span></div><a class="btn" href="/setup?app=1">更改</a></li>
+      </ol>
+    </section>
+
+    <section class="glass panel spot" style="--i:1">
+      <div class="head"><h2>你的词汇量</h2></div>
+      <div class="vocab" id="vocab"></div>
+    </section>
+
+    <section class="glass panel spot" style="--i:2">
+      <div class="head"><h2>最近的视频</h2></div>
+      <div class="videos" id="videos"></div>
+    </section>
+
+    <section class="glass panel spot" style="--i:3">
+      <div class="head"><h2>运行日志</h2></div>
+      <pre id="log"></pre>
+      <div class="tools">
+        <button class="btn quiet" type="button" data-folder="logs">日志文件夹</button>
+        <button class="btn quiet" type="button" data-folder="data">数据文件夹</button>
+      </div>
+    </section>
+  </div>
+
+  <footer style="--i:3">
+    <span class="grow">看视频时让程序保持运行，可以最小化窗口</span>
+    <button class="btn" type="button" id="quit">退出程序</button>
+  </footer>
+</div>
+
+<dialog id="extDlg">
+  <h3>安装浏览器插件</h3>
+  <p>Chrome 或 Edge 都可以，只需要装一次。</p>
+  <ol>
+    <li>在浏览器地址栏打开 <code>chrome://extensions</code>（Edge 是 <code>edge://extensions</code>）</li>
+    <li>打开右上角的「开发者模式」</li>
+    <li>点「加载已解压的扩展程序」，选择下面这个文件夹</li>
+    <li>点工具栏的拼图图标，把 Adaptive Subs 固定出来</li>
+  </ol>
+  <div class="path" id="extPath"></div>
+  <div class="dlg-actions">
+    <button class="btn" type="button" id="copyUrl">复制 chrome://extensions</button>
+    <button class="btn" type="button" data-folder="extension">打开插件文件夹</button>
+    <button class="btn primary" type="button" data-close>好的</button>
+  </div>
+</dialog>
+
+<dialog id="quitDlg">
+  <h3>退出 Adaptive Subs？</h3>
+  <p>退出后 B 站插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
+  <div class="dlg-actions">
+    <button class="btn" type="button" data-close>取消</button>
+    <button class="btn primary" type="button" id="quitYes">退出程序</button>
+  </div>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const H = { "X-Adaptive-Subs": "1", "Content-Type": "application/json" };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = (n) => Number(n).toLocaleString("en-US");
+  const ago = (s) => s < 60 ? "刚刚" : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ------------------------------------------------------------------ intro ---
+  // film frame -> frosted board covers the Chinese caption -> English line types in -> 枯燥 pops above "boring"
+  const intro = $("#intro");
+  let introDone = document.documentElement.classList.contains("no-intro");
+  function finishIntro() {
+    if (introDone) return;
+    introDone = true;
+    try { sessionStorage.setItem("asubsIntro", "1"); } catch (e) {}
+    intro.classList.add("out");
+    document.documentElement.classList.remove("intro-on");
+    $("#shell").classList.add("enter");
+    setTimeout(() => intro.remove(), 800);
+    growBars(250);
+  }
+  async function playIntro() {
+    if (introDone) { intro.remove(); return; }
+    const step = async (cls, ms) => { if (introDone) return true; intro.classList.add(cls); await sleep(ms); return introDone; };
+    if (await step("s1", 600)) return;
+    if (await step("s2", 950)) return;
+    if (await step("s3", 600)) return;
+    const el = $("#introLine"), before = "Reading subtitles? Pretty ", word = "boring", after = ", right?";
+    const full = before + word + after;
+    for (let i = 1; i <= full.length; i++) {               // typewriter
+      if (introDone) return;
+      el.innerHTML = `${esc(full.slice(0, i))}<span class="caret"></span>`;
+      await sleep(i < before.length ? 32 : 40);
+    }
+    el.innerHTML = `${esc(before)}<span class="g" id="introG"><span class="w">${word}</span><span class="z">枯燥</span></span>${esc(after)}`;
+    await sleep(120);
+    if (introDone) return;
+    $("#introG").classList.add("on");
+    await sleep(700);
+    if (await step("s5", 1150)) return;
+    finishIntro();
+  }
+  intro.addEventListener("click", finishIntro);
+  document.addEventListener("keydown", (e) => { if (!introDone && (e.key === "Escape" || e.key === "Enter" || e.key === " ")) finishIntro(); });
+
+  // ---------------------------------------------------------- interactions ---
+  // spotlight on cards, parallax on the film still
+  document.addEventListener("pointermove", (e) => {
+    const card = e.target.closest && e.target.closest(".spot");
+    if (card) {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${e.clientX - r.left}px`);
+      card.style.setProperty("--my", `${e.clientY - r.top}px`);
+    }
+    const stage = $("#stage");
+    if (!stage) return;
+    const st = stage.getBoundingClientRect();
+    stage.style.setProperty("--px", Math.max(-0.6, Math.min(0.6, (e.clientX - st.left) / st.width - 0.5)).toFixed(3));
+    stage.style.setProperty("--py", Math.max(-0.6, Math.min(0.6, (e.clientY - st.top) / st.height - 0.5)).toFixed(3));
+  });
+
+  function countUp(el, to, suffix) {
+    if (!el) return;
+    const from = el.dataset.v != null ? +el.dataset.v : Math.round(to * 0.6);
+    if (el.dataset.v != null && from === to) return;
+    el.dataset.v = to;
+    if (REDUCED) { el.innerHTML = `≈ ${fmt(to)}${suffix}`; return; }
+    const t0 = performance.now() + (introDone ? 150 : 4300), dur = 1100;
+    const tick = (t) => {
+      const k = Math.max(0, Math.min(1, (t - t0) / dur)), e = 1 - Math.pow(1 - k, 3);
+      el.innerHTML = `≈ ${fmt(Math.round((from + (to - from) * e) / 10) * 10)}${suffix}`;
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+  function growBars(delay) {
+    setTimeout(() => document.querySelectorAll(".bands span").forEach((el, i) => setTimeout(() => { el.style.height = `${el.dataset.h}%`; }, i * 60)), delay);
+  }
+
+  let toastTimer = 0;
+  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2500); }
+
+  // ------------------------------------------------------------------ render ---
+  const ICON = {
+    ok: '<svg viewBox="0 0 22 22" fill="none" aria-hidden="true"><circle class="pop" cx="11" cy="11" r="10" fill="currentColor" opacity=".16"/><path class="draw" d="M6.6 11.4l3 3 5.8-6.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warn: '<svg viewBox="0 0 22 22" fill="none" aria-hidden="true"><circle class="pop" cx="11" cy="11" r="10" fill="currentColor" opacity=".16"/><path d="M11 6.5v5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="11" cy="15.3" r="1.2" fill="currentColor"/></svg>',
+    idle: '<svg viewBox="0 0 22 22" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="9" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.8"/></svg>',
+  };
+  const LABEL = { ok: "已就绪", warn: "需要处理", idle: "未设置" };
+  function status(id, kind, text) {
+    const el = $(`#s${id}`);
+    if (el.dataset.kind !== kind) {            // redraw (and animate) only when the state changes
+      el.dataset.kind = kind;
+      el.className = `st ${kind}`;
+      el.innerHTML = ICON[kind];
+      el.setAttribute("aria-label", LABEL[kind]);
+    }
+    $(`#d${id}`).textContent = text;
+  }
+  const gl = (before, word, gloss, after) =>
+    `${esc(before)}<span class="g"><span class="w">${esc(word)}</span><span class="z">${esc(gloss)}</span></span>${esc(after)}`;
+  let lastStage = "";
+  function stage(key, html, meter) {
+    if (key !== lastStage) {
+      const b = $("#stageBody");
+      b.innerHTML = html;
+      b.classList.remove("swap"); void b.offsetWidth; b.classList.add("swap");
+      lastStage = key;
+    }
+    const m = $("#meter");
+    m.hidden = meter == null;
+    if (meter != null) m.querySelector("span").style.width = `${meter}%`;
+  }
+  let lastVideos = "", lastVocab = "";
+
+  function render(s) {
+    $("#live").className = "live";
+    $("#live span").textContent = "运行中";
+
+    const job = s.jobs.find((j) => j.state === "running");
+    if (!s.key) {
+      stage("nokey", `<div class="kicker"><i></i>还差一步</div>
+        <div class="line">${gl("", "Set up", "设置", " a model key to begin.")}</div>
+        <div class="sub">先填写注释模型的 API key，插件才能生成注释</div>
+        <a class="btn primary" href="/setup?app=1">填写 API key</a>`, null);
+    } else if (job) {
+      const pct = job.total ? Math.min(100, Math.round((100 * job.done) / job.total)) : 0;
+      stage(`job:${job.id}`, `<div class="kicker"><i></i>正在处理${job.asr ? "（语音识别）" : ""}</div>
+        <div class="line">${gl("", "Annotating", "正在注释", " this video…")}</div>
+        <div class="sub" id="jobTitle"></div>`, pct);
+      $("#jobTitle").textContent = `${job.title}  ${pct}%`;
+    } else {
+      stage("ready", `<div class="kicker"><i></i>一切就绪</div>
+        <div class="line">${gl("", "Ready", "准备好了", " when you are.")}</div>
+        <div class="sub">在 B 站打开一个英语视频，注释会边看边生成</div>`, null);
+    }
+
+    status(1, s.key ? "ok" : "warn", s.key ? `${s.provider}，模型 ${s.model}` : "还没填 API key，没有它就不能生成注释");
+    const seen = s.ext_seen;
+    status(2, seen != null ? "ok" : "idle", seen == null ? "还没连接过。装好后打开一个 B 站视频，这里会变成已连接" : `已连接，最近一次联系是${ago(seen)}`);
+    const p = s.profile;
+    status(3, p.setup ? "ok" : "idle", p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
+      : "还没建立。做个 3 分钟的词汇测试，注释会准很多");
+    $("#b3").textContent = p.setup ? "打开" : "开始";
+    $("#b3").className = p.setup ? "btn" : "btn primary";
+    status(4, s.asr ? "ok" : "idle", (s.asr ? "小米 MiMo，没有英文字幕的视频也能用" : "没设置，只影响没有英文字幕的视频") +
+      (s.local_asr ? "；接口拒绝的句子由本机模型补上" : ""));
+    const todo = [!s.key, seen == null, !p.setup].filter(Boolean).length;
+    $("#readyNote").textContent = todo ? `还有 ${todo} 项没完成` : "都准备好了";
+
+    // vocabulary (number counts up; bars grow when drawn)
+    const bands = (p.test && p.test.bands) || [];
+    const labels = ["1k", "2k", "3k", "4.5k", "6k", "8k", "11k", "15k", "20k"];
+    const sig = JSON.stringify([p.setup, p.test && p.test.date, bands, p.known, p.marked]);
+    if (sig !== lastVocab) {
+      const first = !lastVocab;
+      lastVocab = sig;
+      $("#vocab").innerHTML = `
+        <div class="num" id="num"></div>
+        <div class="facts">${p.setup
+          ? `<span>${p.test ? `来自 ${esc(p.test.date)} 的词汇测试` : "按考试成绩和身份估计"}</span>
+             <span>熟词库 <strong>${fmt(p.known)}</strong> 词，看视频时标记过 <strong>${p.marked}</strong> 个</span>`
+          : `<span>还没有建立英语画像，现在按默认水平注释</span>`}</div>
+        ${bands.length ? `<div class="bands" role="img" aria-label="各词频段认识的比例">${bands.map((b, i) =>
+            `<div title="${labels[i] || ""}：${Math.round(b * 100)}%"><span data-h="${Math.max(4, b * 100)}"></span></div>`).join("")}</div>
+          <div class="band-x">${bands.map((_, i) => `<span>${labels[i] || ""}</span>`).join("")}</div>
+          <div class="cap">每一栏是一个词频段里你认识的比例，越往右越难</div>`
+          : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
+      if (introDone || !first) growBars(first ? 400 : 60);
+    }
+    countUp($("#num"), p.level, "<small>词</small>");
+
+    // videos (redrawn only when they change)
+    const rows = [];
+    for (const j of s.jobs) {
+      const pct = j.total ? Math.min(100, Math.round((100 * j.done) / j.total)) : 0;
+      rows.push(`<div class="vid"><div class="vid-t" title="${esc(j.title)}">${esc(j.title)}${j.asr ? '<span class="badge">语音识别</span>' : ""}</div>
+        <div class="vid-m">${j.state === "running" ? `${pct}%` : j.state === "error" ? "出错了" : "完成"}</div>
+        ${j.state === "running" ? `<div class="bar-p"><span style="width:${pct}%"></span></div>` : ""}</div>`);
+    }
+    const running = new Set(s.jobs.map((j) => j.id));
+    for (const v of s.recent) {
+      if (running.has(v.id)) continue;
+      rows.push(`<div class="vid"><div class="vid-t" title="${esc(v.title)}">${esc(v.title)}${v.asr ? '<span class="badge">语音识别</span>' : ""}</div>
+        <div class="vid-m">${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">打开</a>` : ""}
+        <span>${new Date(v.mtime * 1000).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</span></div></div>`);
+    }
+    const html = rows.length ? rows.slice(0, 7).join("") : `<div class="empty">还没有处理过的视频</div>`;
+    if (html !== lastVideos) { lastVideos = html; $("#videos").innerHTML = html; }
+
+    const log = $("#log"), atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 20;
+    log.innerHTML = s.log.length ? s.log.slice(-40).map(([t, l]) => `<em>${t}</em>  ${esc(l)}`).join("\n") : "暂无日志";
+    if (atBottom) log.scrollTop = log.scrollHeight;
+    $("#extPath").textContent = `插件文件夹：${s.extension_dir}`;
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch("/api/status", { headers: H, cache: "no-store" });
+      render(await r.json());
+    } catch {
+      $("#live").className = "live down";
+      $("#live span").textContent = "程序没有响应";
+    }
+  }
+
+  document.addEventListener("click", async (e) => {
+    const f = e.target.closest("[data-folder]");
+    if (f) {
+      const r = await fetch("/api/open-folder", { method: "POST", headers: H, body: JSON.stringify({ what: f.dataset.folder }) })
+        .then((x) => x.json()).catch(() => ({ error: "连不上程序" }));
+      toast(r.error ? `打不开：${r.error}` : "已在文件资源管理器中打开");
+    }
+    const c = e.target.closest("[data-close]");
+    if (c) c.closest("dialog").close();
+  });
+  $("#extHelp").onclick = () => $("#extDlg").showModal();
+  $("#copyUrl").onclick = async () => {
+    try { await navigator.clipboard.writeText("chrome://extensions"); toast("已复制，粘贴到浏览器地址栏"); }
+    catch { toast("复制失败，请手动输入 chrome://extensions"); }
+  };
+  $("#quit").onclick = () => $("#quitDlg").showModal();
+  $("#quitYes").onclick = async () => {
+    $("#quitDlg").close();
+    $("#shell").innerHTML = '<section class="stage"><div class="shade"></div><div class="stage-body"><div class="line">Adaptive Subs 已退出</div><div class="sub">可以关掉这个窗口了</div></div></section>';
+    try { await fetch("/api/quit", { method: "POST", headers: H, body: "{}" }); } catch {}
+  };
+
+  if (introDone) $("#shell").classList.add("enter");
+  playIntro();
+  refresh();
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>

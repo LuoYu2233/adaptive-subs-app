@@ -119,6 +119,11 @@ DeepSeek 只对离你观看位置较远的批次打开思考模式；MiMo 的思
 API 结果缓存在 `.cache/`，重复运行不会重复花钱。
 词汇测试的题库（`data/vocab_test.json`）已经生成好了。要重新生成就运行 `python make_vocab_test.py`。
 
+**英语画像**（本地程序运行时）：打开 `http://127.0.0.1:8765/profile`，填身份和考试成绩、做自适应词汇测试，生成熟词库。
+插件、网页播放器、画像页共用这份画像（保存在 `profile.json`）。考试词表和词典释义来自
+[ECDICT](https://github.com/skywind3000/ECDICT)（MIT License），整理成 `data/exam_words.json`；要重新生成：
+下载 ECDICT 的 `ecdict.csv`，运行 `python make_exam_words.py 路径/ecdict.csv`。
+
 ## 3. 分享给别人（GitHub Pages）
 
 ```bash

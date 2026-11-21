@@ -3,11 +3,18 @@
 *.env
 !.env.example
 
+# your learner profile and word marks (personal)
+profile.json
+profile.tmp
+
 # local Python environment and caches
 .venv/
 __pycache__/
 *.pyc
 .cache/
+
+# local speech model (downloaded by build_app.py, ~140 MB)
+models/
 
 # build outputs (the Windows program goes to GitHub Releases, the web demo to GitHub Pages)
 build/
@@ -18,6 +25,7 @@ site/
 # Only the vocabulary test ships with the repo; data/ranks_en.txt is generated from wordfreq.
 data/*
 !data/vocab_test.json
+!data/exam_words.json
 
 # editors / OS
 .vscode/

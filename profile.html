@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的英语画像 - Adaptive Subs</title>
+<style>
+  :root {
+    --bg: #f3f4f6; --card: #ffffff; --ink: #1b1f24; --ink-2: #59626e; --line: #e3e6ea;
+    --accent: #e2a02a; --accent-soft: rgba(242, 177, 52, 0.14); --ok: #1f8f5a; --bad: #c2410c; --bar: #e9b65a;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --card: #1b1f25; --ink: #e9edf2; --ink-2: #a2abb6; --line: #2a3039;
+      --accent: #ffc65c; --accent-soft: rgba(255, 198, 92, 0.15); --ok: #5fd39b; --bad: #ff9a6b; --bar: #c99a45;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 56px; }
+  h1 { font: 600 24px/1.25 "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", sans-serif; margin: 0 0 4px; }
+  .lead { color: var(--ink-2); margin: 0 0 22px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px 20px; margin-bottom: 14px; }
+  section[hidden] { display: none; }
+  h2 { font-size: 16px; margin: 0 0 4px; display: flex; align-items: baseline; gap: 8px; }
+  h2 .step { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1.5px solid var(--line); border-radius: 999px; padding: 6px 14px; cursor: pointer; background: var(--card); color: var(--ink); font: inherit; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  label.k { display: block; font-size: 13px; color: var(--ink-2); margin: 14px 0 4px; }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--ink); font: inherit;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .exams { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 14px; }
+  .exams label.k { margin-top: 0; }
+  .exam-in { display: flex; align-items: center; gap: 6px; }
+  .exam-in span { color: var(--ink-2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+  .spacer { flex: 1; }
+  button.btn { font: inherit; border-radius: 10px; padding: 9px 18px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #1b1300; font-weight: 700; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  .msg { font-size: 14px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  .note { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
+  .muted { color: var(--ink-2); }
+
+  /* summary */
+  .summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; align-items: center; }
+  .big { font-size: 40px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .big small { font-size: 15px; font-weight: 500; color: var(--ink-2); margin-left: 4px; }
+  .facts { font-size: 13px; color: var(--ink-2); display: grid; gap: 2px; }
+  .facts b { color: var(--ink); font-weight: 600; }
+
+  /* test */
+  .test-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 6px 0 14px; }
+  .progress span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+  .titems { display: grid; gap: 8px; }
+  .titem { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .titem.missing { border-color: var(--bad); }
+  .titem.answered { opacity: .75; }
+  .tw { flex: 1; font-size: 18px; font-weight: 600; letter-spacing: .01em; min-width: 0; overflow-wrap: anywhere; }
+  .tc { display: flex; gap: 6px; }
+  .tc button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+  .tc button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1b1300; font-weight: 700; }
+  .mcq { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .mcq.missing { border-color: var(--bad); }
+  .mcq-word { font-size: 18px; font-weight: 700; }
+  .mcq-ex { color: var(--ink-2); font-size: 14px; margin: 2px 0 8px; font-style: italic; }
+  .mcq-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mcq-opts button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+  .mcq-opts button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1b1300; font-weight: 700; }
+  .bands { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; height: 90px; align-items: end; margin-top: 14px; }
+  .band { background: var(--line); border-radius: 6px 6px 2px 2px; height: 100%; display: flex; align-items: end; }
+  .band-bar { width: 100%; background: var(--bar); border-radius: 6px 6px 2px 2px; }
+  .band-labels { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; font-size: 11px; color: var(--ink-2); text-align: center; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* marks */
+  .marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .mk { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 13px; }
+  .mk button { border: 0; background: none; color: var(--ink-2); cursor: pointer; font-size: 14px; padding: 0 6px; border-radius: 99px; }
+  .mk button:hover { color: var(--bad); }
+  @media (max-width: 520px) {
+    .titem { flex-wrap: wrap; }
+    .tc { width: 100%; }
+    .tc button { flex: 1; }
+    .summary { grid-template-columns: 1fr; }
+  }
+
+  /* header shared with the control panel; "back" shows when opened inside the program's window (?app=1) */
+  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .topbar .mark { width: 30px; height: 30px; border-radius: 8px; flex: none; position: relative;
+    background: linear-gradient(145deg, #ffcf6e, #e08a12); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+  .topbar .mark::before { content: "A"; position: absolute; inset: 0; display: grid; place-items: center;
+    font: 800 18px/1 "Segoe UI", system-ui, sans-serif; color: #2a1a02; padding-bottom: 6px; }
+  .topbar .mark::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 7px; height: 3px; border-radius: 2px; background: rgba(42, 26, 2, 0.55); }
+  .topbar .name { font-weight: 750; font-size: 15px; flex: 1; }
+  .topbar a.back { text-decoration: none; font-size: 13px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; background: var(--card); }
+  .topbar a.back:hover { border-color: var(--accent); color: var(--ink); }
+  .topbar a.back[hidden] { display: none; }
+  img.mark { background: none; box-shadow: 0 2px 8px rgba(46, 79, 184, 0.25); object-fit: cover; display: block; }
+</style>
+</head>
+<body>
+<main>
+  <div class="topbar"><img class="mark" src="/assets/icon-256.png" alt=""><div class="name">Adaptive Subs</div>
+    <a class="back" href="/app" id="backToApp" hidden>← 返回控制台</a></div>
+  <h1>我的英语画像</h1>
+  <p class="lead">告诉 Adaptive Subs 你的英语背景，再做一次词汇测试。字幕会据此判断哪些词你已经认识、不再注释。<br>
+  看视频时点任意单词，可以随时标「我认识」或「我不认识」，画像会越用越准。</p>
+
+  <section id="summary" hidden></section>
+
+  <section id="s1">
+    <h2><span class="step">1</span>你现在是</h2>
+    <p class="sub">没填考试成绩时，用它推测你学过哪些词表。</p>
+    <div class="chips" id="identity"></div>
+    <label class="k" for="field">专业或行业（可选）</label>
+    <input type="text" id="field" list="fields" maxlength="40" placeholder="例如：计算机、医学、金融">
+    <datalist id="fields">
+      <option value="计算机 / 软件"></option><option value="电子 / 通信"></option><option value="医学 / 生物"></option>
+      <option value="金融 / 经济"></option><option value="法律"></option><option value="机械 / 工程"></option>
+      <option value="设计 / 艺术"></option><option value="教育"></option><option value="文学 / 语言"></option>
+    </datalist>
+  </section>
+
+  <section id="s2">
+    <h2><span class="step">2</span>考过的英语考试</h2>
+    <p class="sub">填你考过的（填最高的一次），没考过的空着。成绩决定哪些考试词表直接算作"已认识"。</p>
+    <div class="exams" id="exams"></div>
+    <div class="actions">
+      <button class="btn primary" id="saveProfile" type="button">保存，下一步：词汇测试</button>
+      <span class="msg" id="msg1" role="status"></span>
+    </div>
+  </section>
+
+  <section id="s3">
+    <h2><span class="step">3</span>词汇测试</h2>
+    <div id="test"></div>
+  </section>
+
+  <section id="s4" hidden>
+    <h2>看视频时标记过的词</h2>
+    <p class="sub">这些标记优先于画像和测试。点 × 恢复成按画像判断。</p>
+    <div id="marks"></div>
+  </section>
+</main>
+<script src="/assets/profile.js"></script>
+<script>
+  if (new URLSearchParams(location.search).has("app")) document.getElementById("backToApp").hidden = false;
+</script>
+</body>
+</html>

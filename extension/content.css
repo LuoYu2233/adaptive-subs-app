@@ -52,6 +52,71 @@
 .asubs-pill-btn:disabled { opacity: 0.6; cursor: default; }
 .asubs-pill:has(.asubs-pill-btn) { pointer-events: auto; }
 
+/* every word can be clicked (meaning + 认识 / 不认识) */
+.asubs-t { pointer-events: auto; cursor: pointer; border-radius: 4px; }
+.asubs-t:hover { background: rgba(255, 255, 255, 0.16); }
+.asubs-forced .asubs-w { box-shadow: inset 0 -2px 0 var(--asubs-gloss); }   /* marked 不认识 */
+
+.asubs-card {
+  position: absolute; z-index: 2; pointer-events: auto; width: min(320px, 86%); box-sizing: border-box;
+  padding: 12px 14px; border-radius: 12px; background: rgba(18, 22, 29, 0.97); color: #e8edf3;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); border: 1px solid rgba(255, 255, 255, 0.08);
+  font: 400 14px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; text-align: left;
+}
+.asubs-card[hidden] { display: none !important; }
+.asubs-card-head { display: flex; align-items: baseline; gap: 8px; }
+.asubs-card-word { font: 700 20px/1.3 "Figtree", "Segoe UI", system-ui, sans-serif; color: #fff; }
+.asubs-card-kind { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--asubs-gloss-soft); color: var(--asubs-gloss); }
+.asubs-card-x { margin-left: auto; border: 0; background: none; color: #9aa5b2; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.asubs-card-x:hover { color: #fff; }
+.asubs-card-zh { margin-top: 4px; color: var(--asubs-gloss); font-size: 15px; }
+.asubs-card-dim { color: #8f9aa7; font-size: 12px; }
+.asubs-card-pos { color: #8f9aa7; font-size: 12px; margin-right: 6px; font-style: italic; }
+.asubs-card-dict { margin-top: 6px; color: #c9d1db; font-size: 13px; }
+.asubs-card-none { color: #c9d1db; font-size: 14px; }
+.asubs-card-why { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); color: #b7c0cb; font-size: 12px; }
+.asubs-card-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.asubs-card-btns button {
+  border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.06); color: #e8edf3;
+  border-radius: 8px; padding: 4px 10px; font: 600 13px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; cursor: pointer;
+}
+.asubs-card-btns button:hover { background: rgba(255, 255, 255, 0.12); }
+.asubs-card-btns button[aria-pressed="true"] { background: var(--asubs-gloss); border-color: var(--asubs-gloss); color: #1b1300; }
+.asubs-card-btns button:disabled { opacity: 0.5; cursor: default; }
+.asubs-card-btns a { margin-left: auto; color: #9aa5b2; font-size: 12px; text-decoration: none; }
+.asubs-card-btns a:hover { color: #fff; }
+
+/* the subtitle box can be dragged up / down by its background (remembered per UP 主) */
+.asubs-box { pointer-events: auto; cursor: ns-resize; transition: bottom 0.25s ease; }
+.asubs-root.asubs-manual .asubs-box { transition: none; }
+.asubs-root.asubs-top.asubs-manual .asubs-box { top: auto; }
+
+/* cover board: frosted band over subtitles printed in the picture; ours sits on it.
+   Drag to move, drag an edge to resize, double-click for the default, × to hide it for this UP 主. */
+.asubs-cover {
+  position: absolute; pointer-events: auto; cursor: move; border-radius: 10px; box-sizing: border-box;
+  background: rgba(8, 10, 14, 0.6); -webkit-backdrop-filter: blur(14px) saturate(0.6); backdrop-filter: blur(14px) saturate(0.6);
+  border: 1px dashed transparent; transition: border-color 0.15s;
+}
+.asubs-cover[hidden] { display: none !important; }
+.asubs-cover:hover, .asubs-cover.asubs-cover-active { border-color: rgba(255, 198, 92, 0.55); }
+.asubs-cover-hint {
+  position: absolute; left: 8px; top: 4px; font: 500 11px/1.4 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: rgba(255, 226, 168, 0.85); opacity: 0; transition: opacity 0.15s; pointer-events: none; white-space: nowrap;
+}
+.asubs-cover:hover .asubs-cover-hint, .asubs-cover-active .asubs-cover-hint { opacity: 1; }
+.asubs-cover-x {
+  position: absolute; right: 4px; top: 2px; border: 0; background: none; color: #c9d1db; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 6px; opacity: 0; transition: opacity 0.15s;
+}
+.asubs-cover:hover .asubs-cover-x { opacity: 1; }
+.asubs-cover-x:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.asubs-cover-edge { position: absolute; }
+.asubs-cover-t, .asubs-cover-b { left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.asubs-cover-t { top: -4px; } .asubs-cover-b { bottom: -4px; }
+.asubs-cover-l, .asubs-cover-r { top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+.asubs-cover-l { left: -4px; } .asubs-cover-r { right: -4px; }
+
 /* subtitles at the top: for videos whose own subtitles are printed at the bottom of the picture */
 .asubs-root.asubs-top .asubs-box { top: max(48px, 9%); bottom: auto; }
 .asubs-root.asubs-top .asubs-pill { top: auto; bottom: max(58px, 12%); }

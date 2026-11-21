@@ -4,95 +4,159 @@
 <meta charset="utf-8">
 <title>Adaptive Subs</title>
 <style>
-  :root { --bg: #ffffff; --ink: #18202b; --ink-2: #5d6876; --line: #e3e7ec; --accent: #e09a1b; --accent-soft: #fff4dc; --ok: #1f8f5a; --bad: #c2410c; }
+  /* One card for the learner (vocabulary), then grouped settings. Amber = the colour of the glosses on screen. */
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --ink: #161b22; --ink-2: #5b6573; --ink-3: #8a94a1; --line: #e3e6ea;
+    --accent: #df9418; --accent-ink: #1d1405; --accent-soft: rgba(223, 148, 24, 0.12); --track: #e7e9ed;
+    --ok: #1f8f5a; --ok-soft: rgba(31, 143, 90, 0.1); --bad: #c2410c; --bad-soft: rgba(194, 65, 12, 0.09);
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+    color-scheme: light;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #151a21; --ink: #e8edf3; --ink-2: #9aa5b2; --line: #2a323d; --accent: #ffc65c; --accent-soft: rgba(255, 198, 92, 0.14); --ok: #5fd39b; --bad: #ff9a6b; }
+    :root {
+      --bg: #0f1318; --card: #171c23; --ink: #e8edf3; --ink-2: #9aa5b2; --ink-3: #6c7784; --line: #262d37;
+      --accent: #ffc65c; --accent-ink: #1d1405; --accent-soft: rgba(255, 198, 92, 0.13); --track: #262d37;
+      --ok: #5fd39b; --ok-soft: rgba(95, 211, 155, 0.1); --bad: #ff9a6b; --bad-soft: rgba(255, 154, 107, 0.1);
+      --shadow: none;
+      color-scheme: dark;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; width: 320px; background: var(--bg); color: var(--ink); font: 13px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-  h1 { margin: 0; font-size: 14px; }
-  .sub { color: var(--ink-2); font-size: 12px; }
-  main { padding: 12px 14px 14px; display: grid; gap: 14px; }
-  .label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; font-weight: 600; }
-  .value { color: var(--accent); font-weight: 700; }
-  input[type=range] { width: 100%; accent-color: var(--accent); }
-  .scale { display: flex; justify-content: space-between; color: var(--ink-2); font-size: 11px; }
-  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .seg button { flex: 1; border: 0; background: none; color: var(--ink); padding: 6px 4px; font: inherit; cursor: pointer; }
-  .seg button + button { border-left: 1px solid var(--line); }
-  .seg button[aria-checked=true] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-  .switch { position: relative; width: 36px; height: 20px; flex: none; }
-  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-  .track { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background 0.15s; pointer-events: none; }
-  .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+  body { margin: 0; width: 340px; background: var(--bg); color: var(--ink);
+         font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif; }
+  button { font: inherit; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px 7px; }
+  .mark { width: 32px; height: 32px; border-radius: 9px; flex: none; position: relative;
+          background: linear-gradient(145deg, #ffcf6e, #e08a12); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
+  .mark::before { content: "A"; position: absolute; inset: 0; display: grid; place-items: center;
+                  font: 800 17px/1 "Segoe UI", system-ui, sans-serif; color: #2a1a02; padding-bottom: 5px; }
+  .mark::after { content: ""; position: absolute; left: 7px; right: 7px; bottom: 6px; height: 3px; border-radius: 2px; background: rgba(42, 26, 2, 0.55); }
+  .brand { flex: 1; min-width: 0; }
+  h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
+  .tagline { color: var(--ink-2); font-size: 12px; }
+
+  .switch { position: relative; width: 38px; height: 22px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
+  .track { position: absolute; inset: 0; border-radius: 999px; background: var(--track); transition: background 0.15s; }
+  .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+                  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s; }
   .switch input:checked + .track { background: var(--accent); }
   .switch input:checked + .track::after { transform: translateX(16px); }
   .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .status { padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
-  .status.ok { color: var(--ok); } .status.bad { color: var(--bad); }
-  footer { padding: 0 14px 12px; color: var(--ink-2); font-size: 11px; }
-  .setup-btn { width: 100%; padding: 7px 10px; border: 1px solid var(--accent); border-radius: 8px; background: none;
-    color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; margin-top: -6px; }
-  .setup-btn:hover { background: var(--accent-soft); }
+
+  main { padding: 0 12px 2px; display: grid; gap: 6px; transition: opacity 0.15s; }
+  .chip { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; font-size: 12px;
+          background: var(--card); box-shadow: var(--shadow); color: var(--ink-2); }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; margin-top: 5px; }
+  .chip.ok { background: var(--ok-soft); color: var(--ink); box-shadow: none; } .chip.ok i { background: var(--ok); }
+  .chip.bad { background: var(--bad-soft); color: var(--ink); box-shadow: none; } .chip.bad i { background: var(--bad); }
+
+  .card { background: var(--card); border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow); border: 1px solid var(--line); }
+  .level-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .k { font-size: 12px; color: var(--ink-2); font-weight: 600; }
+  .big { font-size: 22px; font-weight: 750; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .note { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; min-height: 0; }
+  input[type=range] { width: 100%; margin: 6px 0 0; accent-color: var(--accent); }
+  .scale { display: flex; justify-content: space-between; color: var(--ink-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .profile { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-2); }
+  .profile > div { flex: 1; min-width: 0; line-height: 1.45; }
+  .profile.todo { flex-direction: column; align-items: stretch; gap: 8px; }
+  .profile b { color: var(--ink); font-weight: 650; }
+  .profile.todo { color: var(--ink); }
+  .btn { padding: 6px 12px; border-radius: 9px; cursor: pointer; font-weight: 650; white-space: nowrap; flex: none;
+         border: 1px solid var(--accent); background: var(--accent-soft); color: var(--ink); }
+  .btn:hover { background: var(--accent); color: var(--accent-ink); }
+  .profile.todo .btn { background: var(--accent); color: var(--accent-ink); }
+
+  section.group { background: var(--card); border-radius: 12px; padding: 2px 12px 4px; box-shadow: var(--shadow); border: 1px solid var(--line); }
+  h2 { margin: 8px 0 0; font-size: 11px; font-weight: 700; color: var(--ink-3); letter-spacing: 0.08em; }
+  .row { display: grid; grid-template-columns: 62px 1fr; align-items: center; gap: 8px; padding: 4px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row > span { color: var(--ink-2); font-size: 12px; }
+  .row.toggle { grid-template-columns: 1fr auto; }
+  .seg { display: flex; background: var(--track); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button { flex: 1; border: 0; background: none; color: var(--ink-2); padding: 3px 2px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  .seg button:hover { color: var(--ink); }
+  .seg button[aria-checked=true] { background: var(--card); color: var(--ink); font-weight: 650; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { font-size: 11.5px; color: var(--ink-3); padding: 0 0 4px 70px; margin-top: -1px; }
+  .hint a { color: var(--accent); }
+
+  footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 14px 10px; color: var(--ink-3); font-size: 11px; }
+  .link { border: 0; background: none; color: var(--ink-2); cursor: pointer; padding: 0; font-size: 12px; white-space: nowrap; }
+  .link:hover { color: var(--accent); }
+  img.mark { background: none; box-shadow: 0 2px 8px rgba(46, 79, 184, 0.25); object-fit: cover; display: block; }
 </style>
 </head>
 <body>
 <header>
-  <div>
+  <img class="mark" src="icons/icon48.png" alt="">
+  <div class="brand">
     <h1>Adaptive Subs</h1>
-    <div class="sub">只给你不认识的词配中文 · B 站原型</div>
+    <div class="tagline">B 站英语字幕 · 只注释你不认识的词</div>
   </div>
   <label class="switch" title="开 / 关">
-    <input type="checkbox" id="enabled" aria-label="启用">
+    <input type="checkbox" id="enabled" aria-label="启用 Adaptive Subs">
     <span class="track"></span>
   </label>
 </header>
+
 <main>
-  <div class="status" id="status">正在检查本地程序…</div>
-  <button type="button" class="setup-btn" id="openSetup" hidden>打开设置（API key / 注释模型）</button>
-  <div>
-    <div class="label"><label for="level">你的词汇量</label><span class="value" id="levelValue"></span></div>
+  <div class="chip" id="status" role="status"><i></i><span>正在连接本地程序…</span></div>
+
+  <div class="card">
+    <div class="level-head"><label class="k" for="level">你的词汇量</label><span class="big" id="levelValue"></span></div>
+    <div class="note" id="levelNote"></div>
     <input type="range" id="level" min="0" max="11" step="1">
     <div class="scale"><span>1.5k</span><span>4k</span><span>8k</span><span>15k</span></div>
-  </div>
-  <div>
-    <div class="label">注释多少</div>
-    <div class="seg" role="radiogroup" data-key="pref">
-      <button type="button" role="radio" data-v="more">宁多勿缺</button>
-      <button type="button" role="radio" data-v="normal">适中</button>
-      <button type="button" role="radio" data-v="less">精简</button>
+    <div class="profile" id="profileBox" hidden>
+      <div id="profileText"></div>
+      <button type="button" class="btn" id="openProfile">英语画像 ›</button>
     </div>
   </div>
-  <div>
-    <div class="label">字幕</div>
-    <div class="seg" role="radiogroup" data-key="mode">
-      <button type="button" role="radio" data-v="adaptive">自适应</button>
-      <button type="button" role="radio" data-v="plain">纯英文</button>
-      <button type="button" role="radio" data-v="bilingual">中英对照</button>
-    </div>
-  </div>
-  <div>
-    <div class="label">注释位置</div>
-    <div class="seg" role="radiogroup" data-key="gloss">
-      <button type="button" role="radio" data-v="over">单词上方</button>
-      <button type="button" role="radio" data-v="paren">括号</button>
-    </div>
-  </div>
-  <div>
-    <div class="label">字幕位置</div>
-    <div class="seg" role="radiogroup" data-key="pos">
-      <button type="button" role="radio" data-v="bottom">底部</button>
-      <button type="button" role="radio" data-v="top" title="视频画面底部本来就印着字幕时，放到顶部避免重叠">顶部</button>
-    </div>
-  </div>
-  <div class="row">
-    <label for="hideNative">隐藏 B 站自带字幕（避免两行字幕重叠）</label>
-    <label class="switch"><input type="checkbox" id="hideNative"><span class="track"></span></label>
-  </div>
+
+  <section class="group">
+    <h2>显示</h2>
+    <div class="row"><span>注释多少</span>
+      <div class="seg" role="radiogroup" aria-label="注释多少" data-key="pref">
+        <button type="button" role="radio" data-v="more">宁多勿缺</button>
+        <button type="button" role="radio" data-v="normal">适中</button>
+        <button type="button" role="radio" data-v="less">精简</button>
+      </div></div>
+    <div class="row"><span>注释位置</span>
+      <div class="seg" role="radiogroup" aria-label="注释位置" data-key="gloss">
+        <button type="button" role="radio" data-v="over">单词上方</button>
+        <button type="button" role="radio" data-v="paren">括号</button>
+      </div></div>
+    <div class="row"><span>字幕</span>
+      <div class="seg" role="radiogroup" aria-label="字幕模式" data-key="mode">
+        <button type="button" role="radio" data-v="adaptive">自适应</button>
+        <button type="button" role="radio" data-v="plain">纯英文</button>
+        <button type="button" role="radio" data-v="bilingual">中英对照</button>
+      </div></div>
+    <div class="row"><span>字幕位置</span>
+      <div class="seg" role="radiogroup" aria-label="字幕位置" data-key="pos">
+        <button type="button" role="radio" data-v="bottom">底部</button>
+        <button type="button" role="radio" data-v="top" title="视频画面底部本来就印着字幕时，放到顶部避免重叠">顶部</button>
+      </div></div>
+    <h2>画面</h2>
+    <div class="row"><span>遮挡板</span>
+      <div class="seg" role="radiogroup" aria-label="遮挡板" data-key="cover">
+        <button type="button" role="radio" data-v="on">开</button>
+        <button type="button" role="radio" data-v="off">关</button>
+      </div></div>
+    <div class="hint">盖住画面里印着的字幕 · 可拖动、调大小</div>
+    <div class="hint" id="coverOff" hidden></div>
+    <div class="row toggle"><label for="hideNative"><span>隐藏 B 站自带字幕</span></label>
+      <label class="switch"><input type="checkbox" id="hideNative"><span class="track"></span></label></div>
+  </section>
 </main>
-<footer>改动立即生效。注释由你电脑上的 Adaptive Subs 程序生成，API key 只保存在你的电脑上。</footer>
+
+<footer>
+  <span>点字幕里的单词可以标「认识 / 不认识」</span>
+  <button type="button" class="link" id="openSetup" hidden>程序设置 ›</button>
+</footer>
 <script src="popup.js"></script>
 </body>
 </html>

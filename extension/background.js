@@ -57,11 +57,30 @@ async function handle(msg) {
   if (!s) return { error: "noserver" };
   if (msg.type === "health") {
     return { ok: true, base: s.base, ext: !!s.h.ext, key: !!s.h.key, asr: !!s.h.asr, model: s.h.model,
-             provider: s.h.provider_name || "", setup: s.h.setup ? s.base + s.h.setup : "" };
+             provider: s.h.provider_name || "", setup: s.h.setup ? s.base + s.h.setup : "",
+             profile: s.h.profile ? s.base + s.h.profile : "" };
   }
   if (!s.h.ext) return { error: "oldserver" };
 
   try {
+    // learner profile + known-word library (shared with the player and the profile page)
+    if (msg.type === "profile") {
+      if (!s.h.profile) return { error: "oldserver" };
+      const r = await fetch(`${s.base}/api/profile${msg.summary ? "?summary=1" : ""}`, { headers: HEADERS, cache: "no-store" });
+      return await json(r);
+    }
+    if (msg.type === "mark" || msg.type === "setprofile" || msg.type === "explain") {
+      const r = await fetch(`${s.base}/api/${{ mark: "mark", setprofile: "profile", explain: "explain" }[msg.type]}`, {
+        method: "POST",
+        headers: { ...HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(msg.payload),
+      });
+      return await json(r);
+    }
+    if (msg.type === "define") {
+      const r = await fetch(`${s.base}/api/define?w=${encodeURIComponent(msg.word)}`, { headers: HEADERS, cache: "no-store" });
+      return await json(r);
+    }
     if (msg.type === "open") {
       const r = await fetch(`${s.base}/api/ext/open`, {
         method: "POST",
