@@ -15,9 +15,13 @@
 
 **[⬇ 下载 Windows 程序](https://github.com/LuoYu2233/adaptive-subs-app/releases)** · [使用指南](docs/使用指南.md) · [开发说明](docs/开发说明.md)
 
-<img src="docs/images/panel.png" width="760" alt="程序窗口">
-
 </div>
+
+## 一分半钟看懂
+
+https://github.com/user-attachments/assets/09ada614-0493-4e3c-9477-a95adfbd9a39
+
+<p align="center"><img src="docs/images/panel.png" width="760" alt="程序窗口"></p>
 
 ## 为什么做这个
 
