@@ -17,10 +17,11 @@ function render() {
   $("#levelNote").textContent = !prof ? "程序没开时只保存在这个浏览器里" : prof.test
     ? `来自词汇测试（${prof.test.date}）· 拖动可以手动调整`
     : prof.setup ? "按考试成绩 / 身份估计 · 做一次词汇测试会更准" : "拖动调整，或建立英语画像自动设置";
-  document.querySelectorAll(".seg").forEach((seg) => {
+  document.querySelectorAll(".seg[data-key]").forEach((seg) => {
     seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(cfg[seg.dataset.key] === b.dataset.v)));
   });
   document.querySelector("main").style.opacity = cfg.enabled ? "" : "0.45";
+  $("#coverHere").classList.toggle("off", cfg.cover === "off");
 }
 
 function renderProfile() {
@@ -72,16 +73,41 @@ $("#level").addEventListener("input", (e) => {
     clearTimeout(window._lvTimer);           // save to the shared profile once the slider stops
     window._lvTimer = setTimeout(() => {
       chrome.runtime.sendMessage({ type: "setprofile", payload: { level: cfg.level } }, () => {
-        chrome.storage.local.set({ profileRev: Date.now() });     // tell open Bilibili tabs to reload it
+        chrome.storage.local.set({ profileRev: Date.now() });     // tell open video tabs to reload it
       });
     }, 300);
   }
   render();
 });
-document.querySelectorAll(".seg").forEach((seg) => {
+document.querySelectorAll(".seg[data-key]").forEach((seg) => {
   seg.addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (b) { cfg[seg.dataset.key] = b.dataset.v; save(); }
+  });
+});
+
+// the video in the current tab: cover board on / off for its UP 主 / YouTube channel
+// (the tab's content script answers; on other pages nobody does and the row stays hidden)
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  const tab = tabs && tabs[0];
+  if (!tab || tab.id == null) return;
+  chrome.tabs.sendMessage(tab.id, { type: "where" }, (w) => {
+    if (chrome.runtime.lastError || !w || !w.owner) return;
+    const row = $("#coverHere"), seg = row.querySelector(".seg");
+    const name = w.name.length > 14 ? `${w.name.slice(0, 13)}…` : w.name;
+    $("#coverHereLabel").textContent = `${w.here}${name ? `（${name}）` : ""}`;
+    const show = (on) => seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String((b.dataset.v === "on") === on)));
+    show(w.cover);
+    row.hidden = false;
+    seg.addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      chrome.tabs.sendMessage(tab.id, { type: "cover", on: b.dataset.v === "on" }, (r) => {
+        if (chrome.runtime.lastError || !r) return;
+        show(r.cover);
+        chrome.storage.local.get("asubsCover", (c) => renderCoverOff(c && c.asubsCover));
+      });
+    });
   });
 });
 

@@ -1,4 +1,4 @@
-/* Adaptive Subs overlay on Bilibili's player. Everything is prefixed asubs- to stay out of the page's way. */
+/* Adaptive Subs overlay on the Bilibili / YouTube player. Everything is prefixed asubs- to stay out of the page's way. */
 .asubs-root {
   position: absolute; inset: 0; z-index: 30; pointer-events: none;
   --asubs-size: 24px;
@@ -39,9 +39,13 @@
 }
 .asubs-pill.asubs-pill-sticky { border-radius: 10px; color: #ffe2a8; opacity: 1; }
 
-/* hide Bilibili's own subtitle layer while ours is showing (switchable in the popup) */
+/* hide the site's own subtitle layer while ours is showing (switchable in the popup) */
 .asubs-hide-native .bpx-player-subtitle-wrap,
-.asubs-hide-native .bili-subtitle-x-subtitle-panel-wrap { display: none !important; }
+.asubs-hide-native .bili-subtitle-x-subtitle-panel-wrap,
+.asubs-hide-native .ytp-caption-window-container { display: none !important; }
+
+/* YouTube: nothing of ours while an ad plays in the same <video> */
+.asubs-root.asubs-ad { display: none; }
 
 /* button in the status pill (e.g. "语音识别英文字幕") */
 .asubs-pill-btn {

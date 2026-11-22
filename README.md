@@ -4,12 +4,13 @@
 
 # Adaptive Subs
 
-看 B 站英语视频时，字幕保持英文，只给你**不认识的词**配中文。
+看 B 站和 YouTube 的英语视频时，字幕保持英文，只给你**不认识的词**配中文。
 
 [![最新版本](https://img.shields.io/github/v/release/LuoYu2233/adaptive-subs-app?include_prereleases&label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/LuoYu2233/adaptive-subs-app/releases)
 [![下载次数](https://img.shields.io/github/downloads/LuoYu2233/adaptive-subs-app/total?label=%E4%B8%8B%E8%BD%BD)](https://github.com/LuoYu2233/adaptive-subs-app/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)](#下载安装)
 [![Chrome / Edge](https://img.shields.io/badge/Chrome%20%2F%20Edge-%E6%8F%92%E4%BB%B6-4285F4)](#下载安装)
+[![B 站 · YouTube](https://img.shields.io/badge/B%20%E7%AB%99%20%C2%B7%20YouTube-%E6%94%AF%E6%8C%81-FB7299)](#快速开始)
 [![License: MIT](https://img.shields.io/github/license/LuoYu2233/adaptive-subs-app)](LICENSE)
 
 **[⬇ 下载 Windows 程序](https://github.com/LuoYu2233/adaptive-subs-app/releases)** · [使用指南](docs/使用指南.md) · [开发说明](docs/开发说明.md)
@@ -31,6 +32,7 @@ Adaptive Subs 取中间：**字幕整句都是英文，只在你可能不认识�
 - **按你的水平注释**：填考试成绩（高考 / 四六级 / 考研 / 雅思 / 托福）、做 3 分钟自适应词汇测试，生成你的熟词库，熟词库里的词不再注释
 - **结合上下文**：注释是这句话里的意思；能标出短语、习语和熟词僻义（认识 upset，也会解释 "upset the order" 里的"打乱"）
 - **点单词**：点字幕里任意一个词，看它在这句里的意思和词典释义，一键标「我认识」或「我不认识」，以后自动按你的标记来
+- **B 站和 YouTube 都能用**：插件直接显示在网站自己的播放器上，切换视频、全屏都跟着走
 - **没有英文字幕也能用**：语音识别生成英文字幕，边下载边识别，几秒钟出第一句；被接口审核拒绝的句子由本机模型补上
 - **画面里印着字幕的视频**：一块可拖动的遮挡板盖住原来的中文字幕，眼睛只看英文
 - **只用你自己的 key**：注释模型可选 DeepSeek / 小米 MiMo / OpenAI，key 只保存在你的电脑上；生成过的视频会保存，再看不花钱
@@ -42,7 +44,7 @@ Adaptive Subs 取中间：**字幕整句都是英文，只在你可能不认识�
 | 文件 | 作用 |
 |---|---|
 | `程序/AdaptiveSubs.exe` | 本地程序：生成注释、语音识别，看视频时保持运行（可以最小化） |
-| `浏览器插件/` | Chrome / Edge 插件：在 B 站播放器上显示字幕和注释 |
+| `浏览器插件/` | Chrome / Edge 插件：在 B 站和 YouTube 的播放器上显示字幕和注释 |
 | `使用说明.txt` | 离线版使用说明 |
 
 **系统要求**：Windows 10 / 11（需要系统自带的 Edge WebView2，Windows 11 已内置），Chrome 或 Edge 浏览器，一个注释模型的 API key。
@@ -55,22 +57,25 @@ Adaptive Subs 取中间：**字幕整句都是英文，只在你可能不认识�
    - 想用语音识别，再填一个[小米 MiMo](https://platform.xiaomimimo.com) 的 key（可选）
 3. **装插件**：浏览器打开 `chrome://extensions`（Edge 是 `edge://extensions`），打开「开发者模式」，点「加载已解压的扩展程序」，选 `浏览器插件` 文件夹
 4. **建立英语画像**：在程序窗口「准备情况 → 英语画像」点「开始」，填考试成绩、做词汇测试（约 3 分钟，可以跳过，之后再做）
-5. **看视频**：登录 B 站，打开一个英语视频
-   - 有英文字幕：自动显示，注释边看边生成
+5. **看视频**：打开一个英语视频
+   - **B 站**：先登录（B 站只把字幕给登录用户）。有英文字幕的马上显示，注释边看边生成
+   - **YouTube**：程序去取英文字幕（上传者的或 YouTube 自动生成的），几秒后显示
    - 没有英文字幕：点视频左上角的「语音识别英文字幕」
 
-更多用法（插件设置、遮挡板、点词、YouTube 播放器、常见问题）见 **[使用指南](docs/使用指南.md)**。
+更多用法（插件设置、遮挡板、点词、语音识别、常见问题）见 **[使用指南](docs/使用指南.md)**。
 
 <p align="center"><img src="docs/images/popup.png" width="300" alt="插件弹窗"></p>
 
 ## 费用与隐私
 
 - **费用**：按你自己的 key 计费。注释每 10 分钟视频约 ¥0.1–0.3（看模型），语音识别每 10 分钟约 ¥0.1，只在你点了按钮时才用；本机模型补识别不花钱
-- **隐私**：key、英语画像、生成过的视频都只保存在你的电脑上（`%LOCALAPPDATA%\AdaptiveSubs`）；程序只在本机 `127.0.0.1` 运行；你的 B 站登录信息不会离开浏览器
+- **隐私**：key、英语画像、生成过的视频都只保存在你的电脑上（`%LOCALAPPDATA%\AdaptiveSubs`）；程序只在本机 `127.0.0.1` 运行；你的 B 站、YouTube 登录信息不会离开浏览器
 
 ## 常见问题
 
-**插件提示"程序没开"**：确认 Adaptive Subs 程序开着（可以最小化），然后刷新 B 站页面。
+**插件提示"程序没开"**：确认 Adaptive Subs 程序开着（可以最小化），然后刷新视频页面。
+
+**YouTube 提示"连不上 YouTube"**：YouTube 的字幕由程序去取，程序要能连上 YouTube。用代理软件的话，打开它的「系统代理」，再点「重试」。
 
 **字幕和画面里原有的字幕重叠了**：插件弹窗里打开「遮挡板」，在视频上把它拖到原字幕的位置，按 UP 主记住。
 
@@ -95,7 +100,7 @@ start.bat
 
 ```
 app/          本地程序（Python 服务器 + 程序窗口的网页）
-extension/    B 站浏览器插件
+extension/    浏览器插件（B 站、YouTube）
 docs/         使用指南、开发说明
 packaging/    打包成 Windows 程序
 tools/        生成考试词表、题库、图标、在线演示的脚本

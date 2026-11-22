@@ -72,6 +72,7 @@ def key_missing_msg() -> str:
 # ------------------------------------------------------------ subtitles ---
 
 VIDEO_ID_RE = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})")
+YT_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 
 
 def parse_video_id(s: str) -> str | None:
@@ -309,7 +310,7 @@ def run_job(job: Job):
     except NoSubtitles:
         job.state = "error"
         print(f"[{job.vid}] no English subtitles")
-        job.emit("fail", {"msg": "这个视频没有英文字幕（人工字幕和自动字幕都没有），暂时没法处理。"})
+        job.emit("fail", {"msg": "这个视频没有英文字幕（人工字幕和自动字幕都没有），暂时没法处理。", "nosubs": True})
     except FetchFailed as e:
         job.state = "error"
         print(f"[{job.vid}] 连不上 YouTube（{e}一直超时），网页上可以点「重试」")
@@ -565,6 +566,15 @@ def bili_page(bvid: str, cid: str) -> int:
     return next((p["page"] for p in pages if str(p.get("cid")) == cid), 1)
 
 
+def asr_source_url(vid: str) -> str | None:
+    """The page whose audio a speech-recognition result came from (Bilibili part or YouTube video)."""
+    m = re.fullmatch(r"bili_(BV[0-9A-Za-z]{10})_(\d+)_asr", vid)
+    if m:
+        return f"https://www.bilibili.com/video/{m[1]}/?p={bili_page(m[1], m[2])}"
+    m = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
+    return f"https://www.youtube.com/watch?v={m[1]}" if m else None
+
+
 def repair_saved(vid: str, path: Path):
     """A video recognised before refusals were detected has the filter's refusal sentence as some lines.
     Download the audio up to the last such line, recognise those lines with the local model, annotate and
@@ -576,11 +586,9 @@ def repair_saved(vid: str, path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         cues, bad = data["cues"], refusal_lines(data)
-        m = re.fullmatch(r"bili_(BV[0-9A-Za-z]{10})_(\d+)_asr", vid)
         fixed = {}
-        if m and LOCAL_ASR.available():
-            bvid, cid = m.groups()
-            url = f"https://www.bilibili.com/video/{bvid}/?p={bili_page(bvid, cid)}"
+        url = asr_source_url(vid) if LOCAL_ASR.available() else None
+        if url:
             print(f"[{vid}] repairing {len(bad)} lines the speech filter refused (local model)")
             need = max(cues[i]["e"] for i in bad) + 2
             gen = ASR.stream_audio(url)
@@ -878,8 +886,9 @@ def recent_videos(limit: int = 8) -> list:
                 continue
             vid = f.stem
             bv = re.match(r"bili_(BV[0-9A-Za-z]{10})", vid)
-            url = f"https://www.bilibili.com/video/{bv.group(1)}" if bv else (
-                f"https://www.youtube.com/watch?v={vid}" if kind == "youtube" else "")
+            yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
+            url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
+                   f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or kind == "youtube" else "")
             out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
                         "mtime": f.stat().st_mtime})
     out.sort(key=lambda x: -x["mtime"])
@@ -970,7 +979,7 @@ class Handler(SimpleHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
             self.note_extension()
-            return self.send_json({"ok": True, "ext": 1, "asr": ASR.configured(), "provider": P.current(),
+            return self.send_json({"ok": True, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path == "/api/profile":
@@ -1100,9 +1109,17 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/settings/test":
             return self.test_settings()
         vid = str(body.get("id", ""))
-        if not EXT_ID_RE.fullmatch(vid):
+        youtube = body.get("source") == "youtube"
+        # YouTube: the id is the video id; the server fetches the subtitles itself (the page can't: YouTube's
+        # caption files only answer its own player) and keeps the result with the player's, so a video done
+        # in one shows up done in the other. A video without English subtitles may have been recognised
+        # before (speech recognition result, kept with the extension's).
+        if not (YT_ID_RE if youtube else EXT_ID_RE).fullmatch(vid):
             return self.send_json({"error": "bad id"}, 400)
-        saved = EXT_DATA / f"{vid}.json"
+        saved = (DATA if youtube else EXT_DATA) / f"{vid}.json"
+        if youtube and not saved.exists() and (EXT_DATA / f"yt_{vid}_asr.json").exists():
+            vid = f"yt_{vid}_asr"
+            saved = EXT_DATA / f"{vid}.json"
         if saved.exists():          # done before: send the whole result at once
             data = json.loads(saved.read_text(encoding="utf-8"))
             tags = tag_only_lines(data)
@@ -1130,19 +1147,27 @@ class Handler(SimpleHTTPRequestHandler):
             if body.get("source") == "asr" and not ASR.configured():
                 return self.send_json({"error": "noasr"})
             return self.send_json({"id": vid, "cached": False})
+        if youtube:
+            get_job(vid, start=True)
+            return self.send_json({"id": vid, "cached": False})
         if body.get("source") == "asr":
-            # no subtitles: recognise the speech. The server builds the URL itself (Bilibili only).
-            bvid = str(body.get("bvid", ""))
-            if not re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
-                return self.send_json({"error": "bad bvid"}, 400)
-            try:
-                page = min(max(int(body.get("p") or 1), 1), 1000)
-            except (TypeError, ValueError):
-                page = 1
+            # no subtitles: recognise the speech. The server builds the URL itself, from a Bilibili BV id or a
+            # YouTube video id only (never a URL from the page).
+            bvid, yt = str(body.get("bvid", "")), str(body.get("yt", ""))
+            if re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
+                try:
+                    page = min(max(int(body.get("p") or 1), 1), 1000)
+                except (TypeError, ValueError):
+                    page = 1
+                url = f"https://www.bilibili.com/video/{bvid}/?p={page}"
+            elif YT_ID_RE.fullmatch(yt) and vid == f"yt_{yt}_asr":
+                url = f"https://www.youtube.com/watch?v={yt}"
+            else:
+                return self.send_json({"error": "bad video"}, 400)
             if not ASR.configured():
-                return self.send_json({"error": "还没有填写小米 MiMo 的 API key（语音识别用）：在插件里点「打开设置」填写"}, 400)
+                return self.send_json({"error": "还没有填写小米 MiMo 的 API key（语音识别用）：在插件弹窗里点「程序设置」填写"}, 400)
             get_job(vid, start=True, sub={"title": title, "duration": duration, "source": "asr", "cues": []},
-                    save_dir=EXT_DATA, asr_url=f"https://www.bilibili.com/video/{bvid}/?p={page}")
+                    save_dir=EXT_DATA, asr_url=url)
             return self.send_json({"id": vid, "cached": False})
         cues = clean_ext_cues(body.get("cues"))
         if not cues:

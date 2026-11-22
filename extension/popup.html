@@ -75,6 +75,9 @@
   .row + .row { border-top: 1px solid var(--line); }
   .row > span { color: var(--ink-2); font-size: 12px; }
   .row.toggle { grid-template-columns: 1fr auto; }
+  .row.here { grid-template-columns: minmax(0, 1fr) 124px; }
+  .row.here > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.here.off { opacity: 0.45; pointer-events: none; }        /* board switched off for every video */
   .seg { display: flex; background: var(--track); border-radius: 8px; padding: 2px; gap: 2px; }
   .seg button { flex: 1; border: 0; background: none; color: var(--ink-2); padding: 3px 2px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
   .seg button:hover { color: var(--ink); }
@@ -94,7 +97,7 @@
   <img class="mark" src="icons/icon48.png" alt="">
   <div class="brand">
     <h1>Adaptive Subs</h1>
-    <div class="tagline">B 站英语字幕 · 只注释你不认识的词</div>
+    <div class="tagline">B 站 / YouTube · 只注释你不认识的词</div>
   </div>
   <label class="switch" title="开 / 关">
     <input type="checkbox" id="enabled" aria-label="启用 Adaptive Subs">
@@ -147,8 +150,13 @@
         <button type="button" role="radio" data-v="off">关</button>
       </div></div>
     <div class="hint">盖住画面里印着的字幕 · 可拖动、调大小</div>
+    <div class="row here" id="coverHere" hidden><span id="coverHereLabel">这个 UP 主</span>
+      <div class="seg" role="radiogroup" aria-label="这个作者的视频用不用遮挡板">
+        <button type="button" role="radio" data-v="on">显示</button>
+        <button type="button" role="radio" data-v="off">不显示</button>
+      </div></div>
     <div class="hint" id="coverOff" hidden></div>
-    <div class="row toggle"><label for="hideNative"><span>隐藏 B 站自带字幕</span></label>
+    <div class="row toggle"><label for="hideNative"><span>隐藏网站自带的字幕</span></label>
       <label class="switch"><input type="checkbox" id="hideNative"><span class="track"></span></label></div>
   </section>
 </main>

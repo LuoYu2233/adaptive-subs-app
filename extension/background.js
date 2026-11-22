@@ -1,6 +1,6 @@
 /* Adaptive Subs extension — service worker.
-   Does the network work the content script on bilibili.com can't do itself:
-     - downloads the subtitle file from Bilibili's file server (hdslb.com)
+   Does the network work the content script on bilibili.com / youtube.com can't do itself:
+     - downloads Bilibili subtitle files from Bilibili's file server (hdslb.com)
      - talks to the local Adaptive Subs server (server.py on 127.0.0.1), which keeps the OpenAI key
        and generates the annotations. A web page may not call 127.0.0.1; the extension may. */
 "use strict";
@@ -61,6 +61,10 @@ async function handle(msg) {
              profile: s.h.profile ? s.base + s.h.profile : "" };
   }
   if (!s.h.ext) return { error: "oldserver" };
+  // YouTube videos need a program that fetches YouTube subtitles for the extension (v0.3+, ext >= 2)
+  if (msg.type === "open" && msg.payload && (msg.payload.source === "youtube" || msg.payload.yt) && (s.h.ext | 0) < 2) {
+    return { error: "oldserver" };
+  }
 
   try {
     // learner profile + known-word library (shared with the player and the profile page)

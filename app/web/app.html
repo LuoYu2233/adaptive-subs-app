@@ -297,7 +297,7 @@
 <div class="shell" id="shell">
   <header class="glass bar" style="--i:0">
     <div class="avatar"><img src="/assets/icon-256.png" alt=""></div>
-    <div class="brand"><b>Adaptive Subs</b><span>B 站英语字幕，只给你不认识的词配中文</span></div>
+    <div class="brand"><b>Adaptive Subs</b><span>B 站和 YouTube 英语字幕，只给你不认识的词配中文</span></div>
     <span class="live" id="live"><i></i><span>正在连接</span></span>
   </header>
 
@@ -364,7 +364,7 @@
 
 <dialog id="quitDlg">
   <h3>退出 Adaptive Subs？</h3>
-  <p>退出后 B 站插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
+  <p>退出后浏览器插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
   <div class="dlg-actions">
     <button class="btn" type="button" data-close>取消</button>
     <button class="btn primary" type="button" id="quitYes">退出程序</button>
@@ -510,12 +510,12 @@
     } else {
       stage("ready", `<div class="kicker"><i></i>一切就绪</div>
         <div class="line">${gl("", "Ready", "准备好了", " when you are.")}</div>
-        <div class="sub">在 B 站打开一个英语视频，注释会边看边生成</div>`, null);
+        <div class="sub">在 B 站或 YouTube 打开一个英语视频，注释会边看边生成</div>`, null);
     }
 
     status(1, s.key ? "ok" : "warn", s.key ? `${s.provider}，模型 ${s.model}` : "还没填 API key，没有它就不能生成注释");
     const seen = s.ext_seen;
-    status(2, seen != null ? "ok" : "idle", seen == null ? "还没连接过。装好后打开一个 B 站视频，这里会变成已连接" : `已连接，最近一次联系是${ago(seen)}`);
+    status(2, seen != null ? "ok" : "idle", seen == null ? "还没连接过。装好后打开一个 B 站或 YouTube 视频，这里会变成已连接" : `已连接，最近一次联系是${ago(seen)}`);
     const p = s.profile;
     status(3, p.setup ? "ok" : "idle", p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
       : "还没建立。做个 3 分钟的词汇测试，注释会准很多");

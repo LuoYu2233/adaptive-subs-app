@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Adaptive Subs（B 站原型）",
-  "version": "0.2.0",
-  "description": "在 B 站视频的英文字幕上，只给你可能不认识的词配中文。注释由本机的 Adaptive Subs 服务器生成。",
+  "name": "Adaptive Subs",
+  "version": "0.3.0",
+  "description": "在 B 站和 YouTube 视频的英文字幕上，只给你可能不认识的词配中文。注释由本机的 Adaptive Subs 程序生成。",
   "permissions": [
     "storage"
   ],
@@ -16,7 +16,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.bilibili.com/*"
+        "https://www.bilibili.com/*",
+        "https://www.youtube.com/*"
       ],
       "js": [
         "md5.js",

@@ -83,7 +83,7 @@
 
   <section>
     <h2>2. 语音识别：小米 MiMo（固定）</h2>
-    <p class="sub">B 站视频没有英文字幕时，用它把英语语音转成字幕（10 分钟约 ¥0.1）。有英文字幕的视频用不到。</p>
+    <p class="sub">视频没有英文字幕时，用它把英语语音转成字幕（10 分钟约 ¥0.1）。有英文字幕的视频用不到。</p>
     <div id="asrBox">
       <label class="k" for="key-mimo-asr">小米 MiMo API key</label>
       <input type="password" id="key-mimo-asr" autocomplete="off" spellcheck="false" placeholder="sk-…">
@@ -98,7 +98,7 @@
   </div>
   <div class="results" id="results"></div>
 
-  <p class="foot">保存位置：<code id="cfg"></code><br>留空的输入框表示保留已保存的 key。设置好后，打开带英文字幕（或英语语音）的 B 站视频即可。</p>
+  <p class="foot">保存位置：<code id="cfg"></code><br>留空的输入框表示保留已保存的 key。设置好后，打开带英文字幕（或英语语音）的 B 站或 YouTube 视频即可。</p>
 </main>
 
 <script>
@@ -163,7 +163,7 @@
       const bad = needed.filter((id) => res[id] !== "ok");
       $("#results").innerHTML = needed.filter((v, i, a) => a.indexOf(v) === i).map((id) =>
         `<div>${esc(id === "mimo" ? "小米 MiMo（语音识别" + (provider === "mimo" ? " + 注释" : "") + "）" : name[id] + "（注释）")}：${res[id] === "ok" ? '<span style="color:var(--ok)">连接正常</span>' : `<span style="color:var(--bad)">${esc(res[id] || "未测试")}</span>`}</div>`).join("");
-      if (!bad.length) { msg.className = "ok"; msg.textContent = "都设置好了，可以去 B 站看视频了"; }
+      if (!bad.length) { msg.className = "ok"; msg.textContent = "都设置好了，可以去 B 站或 YouTube 看视频了"; }
       else if (bad.length === 1 && bad[0] === "mimo" && provider !== "mimo") { msg.className = "ok"; msg.textContent = "注释可以用了；语音识别还没设置好（只影响没有英文字幕的视频）"; }
       else { msg.className = "bad"; msg.textContent = "还有 key 没设置好，见下方"; }
       document.querySelectorAll('input[type="password"]').forEach((el) => { el.value = ""; });

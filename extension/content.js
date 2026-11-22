@@ -1,9 +1,12 @@
-/* Adaptive Subs extension — runs inside www.bilibili.com/video/… pages.
-   1. Reads the video's English subtitle track from Bilibili's API. The request is made from the page,
-      so it carries the viewer's own login (Bilibili only lists subtitles to logged-in viewers).
-   2. Shows the English lines over Bilibili's own player right away, synced to the <video> element.
-   3. Sends the lines to the local Adaptive Subs server (via background.js) and adds Chinese glosses
-      as they arrive — only for words above the viewer's vocabulary level (same rules as the player). */
+/* Adaptive Subs extension — runs on Bilibili video pages (www.bilibili.com/video/…) and YouTube watch pages.
+   1. Gets the video's English subtitles:
+      - Bilibili: from Bilibili's API. The request is made from the page, so it carries the viewer's own
+        login (Bilibili only lists subtitles to logged-in viewers). Shown right away, before any glosses.
+      - YouTube: the local server fetches them (YouTube's caption files only answer its own player).
+   2. Shows the English lines over the site's own player, synced to the <video> element.
+   3. Adds Chinese glosses from the local Adaptive Subs server (via background.js) as they are generated —
+      only for words above the viewer's vocabulary level (same rules as the player).
+   Videos without English subtitles: the server can recognise the speech (started by a click). */
 (() => {
   "use strict";
   if (window.__adaptiveSubs) return;
@@ -36,6 +39,23 @@
   };
   const ui = { root: null, box: null, line: null, zh: null, pill: null, host: null, ro: null, pillTimer: 0, card: null, cover: null };
 
+  // What differs between the two sites: where the player is, and whose videos the cover board and the
+  // subtitle position are remembered for (UP 主 / channel). Where the subtitles come from: load().
+  const YOUTUBE = /(^|\.)youtube\.com$/.test(location.hostname);
+  const SITE = YOUTUBE ? {
+    here: "这个频道",
+    video: "#movie_player video.html5-main-video, #movie_player video",
+    host: "#movie_player",
+    controls: ".ytp-chrome-bottom",
+    coverByDefault: false,      // few YouTube videos have subtitles printed in the picture: off until asked for
+  } : {
+    here: "这个 UP 主",
+    video: ".bpx-player-video-wrap video, .bpx-player-video-wrap bwp-video, #bilibili-player video",
+    host: ".bpx-player-video-area, .bpx-player-container",
+    controls: ".bpx-player-control-wrap",
+    coverByDefault: true,
+  };
+
   // Learner profile from the local program (shared with the profile page and the player):
   //   known   = known-word library (exam lists + frequent words + test + "我认识" marks)
   //   unknown = always gloss ("我不认识" marks + words answered 不认识 in the test)
@@ -55,6 +75,13 @@
     if (text != null) e.textContent = text;
     return e;
   };
+  // element with children (strings become text): no HTML strings — YouTube enforces Trusted Types,
+  // where assigning innerHTML throws
+  const h = (tag, cls, ...kids) => {
+    const e = el(tag, cls);
+    for (const k of kids) if (k != null && k !== false && k !== "") e.append(k);
+    return e;
+  };
   const bg = (msg) => new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(msg, (r) => resolve(chrome.runtime.lastError ? { error: "ext" } : (r || { error: "ext" })));
@@ -63,7 +90,7 @@
     }
   });
   const SERVER_MSG = {
-    noserver: "Adaptive Subs 程序没开：先运行它（AdaptiveSubs.exe 或 start.bat），再刷新本页（现在先显示纯英文字幕）",
+    noserver: "Adaptive Subs 程序没开：先运行它（AdaptiveSubs.exe 或 start.bat），再刷新本页" + (YOUTUBE ? "" : "（现在先显示纯英文字幕）"),
     oldserver: "Adaptive Subs 程序是旧版本：关掉它的窗口重新打开，再刷新本页",
     ext: "插件刚被重新加载：请刷新本页",
   };
@@ -95,6 +122,11 @@
   }
 
   function pageKey() {
+    if (YOUTUBE) {
+      const v = location.pathname === "/watch" ? new URLSearchParams(location.search).get("v")
+        : (location.pathname.match(/^\/live\/([A-Za-z0-9_-]{11})/) || [])[1];
+      return v && /^[A-Za-z0-9_-]{11}$/.test(v) ? { v, str: `yt:${v}` } : null;
+    }
     const m = location.pathname.match(/\/video\/(BV[0-9A-Za-z]{10})/) || location.search.match(/[?&]bvid=(BV[0-9A-Za-z]{10})/);
     if (!m) return null;
     const p = parseInt(new URLSearchParams(location.search).get("p") || "1", 10) || 1;
@@ -111,13 +143,50 @@
   // ------------------------------------------------------------- loading ---
   async function load(key) {
     const gen = ++S.gen;
-    Object.assign(S, { key: key.str, id: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true, owner: null });
+    Object.assign(S, { key: key.str, page: key, id: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
+      owner: null, ownerName: "" });
     lastLayout = "";
     if (!cfg.enabled) return;
+    return YOUTUBE ? loadYouTube(gen, key) : loadBili(gen, key);
+  }
+
+  // YouTube: the local server fetches the English subtitles (manual ones first, else YouTube's automatic
+  // ones) and generates the glosses; the lines arrive with its first event
+  async function loadYouTube(gen, key) {
+    pill("正在获取 YouTube 英文字幕…");
+    const r = await bg({ type: "open", payload: { id: key.v, source: "youtube" } });
+    if (gen !== S.gen) return;
+    if (r.error) return pill(serverMsg(r), { sticky: true });
+    if (r.cached) {
+      S.id = r.id;
+      setCues(r.data.cues);
+      return pill(r.id === key.v ? "注释已载入（这个视频之前生成过）" : "已载入之前语音识别的英文字幕和注释", { hideAfter: 4000 });
+    }
+    follow(gen, r.id, "正在获取 YouTube 英文字幕…");
+  }
+
+  function ytASR(key) {
+    const v = findVideo();
+    const title = document.title.replace(/^\(\d+\)\s*/, "").replace(/\s*-\s*YouTube$/, "").trim() || key.v;
+    return { id: `yt_${key.v}_asr`, title: title.slice(0, 200), duration: (v && isFinite(v.duration) && v.duration) || 0, source: "asr", yt: key.v };
+  }
+
+  // the channel of the video on screen (YouTube updates it a moment after switching videos)
+  function ytOwner(v) {
+    const f = document.querySelector("ytd-watch-flexy");
+    if (!f || f.getAttribute("video-id") !== v) return null;
+    const a = f.querySelector("ytd-watch-metadata ytd-video-owner-renderer a[href], #owner ytd-channel-name a[href]");
+    const href = a && (a.getAttribute("href") || "").replace(/^https?:\/\/(www\.)?youtube\.com/, "").split(/[?#]/)[0];
+    if (!href) return null;
+    const name = f.querySelector("#owner ytd-channel-name #text, ytd-video-owner-renderer ytd-channel-name a");
+    return { key: `yt:${href}`, name: ((name && name.textContent) || "").trim() };
+  }
+
+  async function loadBili(gen, key) {
     pill("正在读取 B 站字幕…");
     try {
       const view = await biliJSON(`/x/web-interface/view?bvid=${key.bvid}`);
-      if (gen === S.gen) { S.owner = view.owner ? view.owner.mid : null; lastLayout = ""; }
+      if (gen === S.gen) { S.owner = view.owner ? view.owner.mid : null; S.ownerName = (view.owner && view.owner.name) || ""; lastLayout = ""; }
       const pages = view.pages || [];
       const page = pages.find((x) => x.page === key.p) || pages[0] || { cid: view.cid, page: 1, part: "" };
       const title = pages.length > 1 ? `${view.title} · P${page.page} ${page.part}` : view.title;
@@ -136,7 +205,8 @@
         const why = !subs.length
           ? (info.need_login_subtitle && !w.loggedIn ? "没登录 B 站，拿不到字幕（登录后可能有英文字幕）" : "这个视频没有字幕文件")
           : !track ? `这个视频没有英文字幕（只有：${subs.map((s) => s.lan_doc).join("、")}）` : "拿不到字幕文件地址";
-        return offerASR(gen, key, page, view, title, why);
+        return offerASR(gen, { id: `bili_${key.bvid}_${page.cid}_asr`, title, duration: page.duration || view.duration || 0,
+          source: "asr", bvid: key.bvid, p: page.page || key.p }, why);
       }
 
       const sub = await bg({ type: "subtitle", url: new URL(url, "https://www.bilibili.com").href.replace(/^http:/, "https:") });
@@ -170,9 +240,7 @@
   // Videos without English subtitles: the local server downloads the audio and recognises the speech.
   // Started by a click (it costs a little, and most videos without English subtitles are in Chinese),
   // unless it was done before — then the result just loads.
-  async function offerASR(gen, key, page, view, title, why) {
-    const payload = { id: `bili_${key.bvid}_${page.cid}_asr`, title, duration: page.duration || view.duration || 0,
-      source: "asr", bvid: key.bvid, p: page.page || key.p };
+  async function offerASR(gen, payload, why) {
     const probe = await bg({ type: "open", payload: { ...payload, probe: true } });
     if (gen !== S.gen) return;
     if (probe.cached) {
@@ -182,7 +250,7 @@
     }
     if (probe.running) return follow(gen, payload.id, "语音识别进行中…");
     if (probe.error && probe.error !== "noasr") return pill(`${why}。${serverMsg(probe)}`, { sticky: true });
-    if (probe.error === "noasr") return pill(`${why}。本地服务器没有配置语音识别（.env 里的 MIMO_API_KEY）`, { sticky: true });
+    if (probe.error === "noasr") return pill(`${why}。要用语音识别，先在程序设置里填写小米 MiMo 的 API key`, { sticky: true });
     pill(`${why}。视频说的是英语的话，可以用语音识别生成英文字幕（10 分钟约 ¥0.1）`, {
       sticky: true,
       action: { label: "语音识别英文字幕", fn: () => startASR(gen, payload) },
@@ -253,7 +321,8 @@
           pill(`注释已全部生成（用时 ${d.seconds} 秒），下次打开会直接载入`, { hideAfter: 5000 });
         } else if (type === "fail") {
           finished = true;
-          pill(d.msg, { sticky: true });
+          if (d.nosubs && YOUTUBE && S.page) offerASR(gen, ytASR(S.page), "这个视频没有英文字幕");
+          else pill(d.msg, d.retry ? { sticky: true, action: { label: "重试", fn: () => { S.key = null; } } } : { sticky: true });
         } else if (type === "status") {
           pill(d.msg);
         }
@@ -363,11 +432,11 @@
 
   // ------------------------------------------------------------ overlay ---
   function findVideo() {
-    return document.querySelector(".bpx-player-video-wrap video, .bpx-player-video-wrap bwp-video, #bilibili-player video");
+    return document.querySelector(SITE.video);
   }
 
   function ensureOverlay(video) {
-    const host = video.closest(".bpx-player-video-area") || video.closest(".bpx-player-container") || video.parentElement;
+    const host = video.closest(SITE.host) || video.parentElement;
     if (ui.root && ui.host === host && host.contains(ui.root)) return true;
     if (ui.ro) ui.ro.disconnect();
     if (ui.root) ui.root.remove();
@@ -382,9 +451,11 @@
     ui.pill.hidden = true;
     ui.cover = el("div", "asubs-cover");     // frosted board over subtitles printed in the picture
     ui.cover.hidden = true;
-    ui.cover.innerHTML = '<span class="asubs-cover-hint">遮挡板 · 拖动移动 · 拖边缘调大小 · 双击恢复默认</span>' +
-      '<button type="button" class="asubs-cover-x" title="这个 UP 主不用遮挡板" aria-label="关闭遮挡板">×</button>' +
-      ["t", "b", "l", "r"].map((k) => `<span class="asubs-cover-edge asubs-cover-${k}" data-edge="${k}"></span>`).join("");
+    const coverX = el("button", "asubs-cover-x", "×");
+    Object.assign(coverX, { type: "button", title: `${SITE.here}不用遮挡板` });
+    coverX.setAttribute("aria-label", "关闭遮挡板");
+    ui.cover.append(el("span", "asubs-cover-hint", "遮挡板 · 拖动移动 · 拖边缘调大小 · 双击恢复默认"), coverX,
+      ...["t", "b", "l", "r"].map((k) => { const e = el("span", `asubs-cover-edge asubs-cover-${k}`); e.dataset.edge = k; return e; }));
     ui.card = el("div", "asubs-card");
     ui.card.hidden = true;
     ui.card.setAttribute("role", "dialog");
@@ -420,18 +491,27 @@
   // The viewer drags it to move it, drags its edges to resize it; it is remembered per UP 主 (and the
   // last one used is the default for new UP 主s). Double-click: back to the default. ×: no board for
   // this UP 主 (the popup can bring it back). The board sits under Bilibili's control bar (z-index 75),
-  // so the progress bar stays usable.
+  // so the progress bar stays usable. On YouTube (few videos have printed subtitles) it is off until the
+  // viewer turns it on for a channel in the popup; the same dragging applies there.
   const COVER_DEFAULT = { x0: 0.1, y0: 0.78, x1: 0.9, y1: 0.95 };
   let COVER = {};           // UP 主 -> {x0, y0, x1, y1} (shares of the picture) | {off: true}; "_last": last used
   let POS = {};             // UP 主 -> our line dragged by the viewer (bottom gap as a share of the player height)
   let lastLayout = "";
   const posKey = () => (S.owner != null ? String(S.owner) : "_");
   const posFor = () => (POS[posKey()] != null ? POS[posKey()] : null);
-  function coverRect() {
-    if (cfg.cover === "off" || !cfg.enabled) return null;
+  function coverHere() {        // does this UP 主 / channel get the board (when the board is switched on)?
     const c = COVER[posKey()];
-    if (c && c.off) return null;
-    return c || COVER._last || COVER_DEFAULT;
+    return c ? !c.off : SITE.coverByDefault;
+  }
+  function coverRect() {
+    if (cfg.cover === "off" || !cfg.enabled || !coverHere()) return null;
+    const c = COVER[posKey()];
+    return (c && !c.off && c) || COVER._last || COVER_DEFAULT;
+  }
+  function setCoverHere(on) {
+    if (on) saveCover({ ...(COVER._last || COVER_DEFAULT) });
+    else if (SITE.coverByDefault) saveCover({ off: true });
+    else { delete COVER[posKey()]; chrome.storage.local.set({ asubsCover: COVER }); lastLayout = ""; }      // back to the default: off
   }
   function saveCover(rect) {
     COVER[posKey()] = rect;
@@ -451,7 +531,7 @@
   // Bilibili's control bar (progress bar + buttons) covers the bottom of the player when the mouse is
   // there: our line stays above it, or it could not be clicked or dragged.
   function controlsHeight() {
-    const c = ui.host && ui.host.querySelector(".bpx-player-control-wrap");
+    const c = ui.host && ui.host.querySelector(SITE.controls);
     const h = c ? c.getBoundingClientRect().height : 0;
     return h > 20 ? h : 56;
   }
@@ -535,13 +615,13 @@
     });
     ui.cover.querySelector(".asubs-cover-x").addEventListener("click", (e) => {
       e.stopPropagation();
-      saveCover({ off: true });
-      pill("这个 UP 主的视频不再显示遮挡板（插件设置里可以恢复）", { hideAfter: 5000 });
+      setCoverHere(false);
+      pill(`${SITE.here}的视频不再显示遮挡板（点浏览器右上角的插件图标可以再打开）`, { hideAfter: 5000 });
     });
     for (const ev of ["mousedown", "mouseup", "click", "dblclick"]) ui.cover.addEventListener(ev, (e) => e.stopPropagation());
   }
 
-  // our line: drag its background up or down; remembered per UP 主 (never into the control bar)
+  // our line: drag its background up or down; remembered per UP 主 / channel (never into the control bar)
   function enableDrag() {
     let drag = null;
     ui.box.addEventListener("pointerdown", (e) => {
@@ -571,7 +651,7 @@
       POS[posKey()] = +(d.last / ui.root.getBoundingClientRect().height).toFixed(4);
       chrome.storage.local.set({ asubsPos: POS });
       lastLayout = "";
-      pill("已记住这个 UP 主的字幕位置（双击字幕空白处恢复自动）", { hideAfter: 4000 });
+      pill(`已记住${SITE.here}的字幕位置（双击字幕空白处恢复自动）`, { hideAfter: 4000 });
     });
     ui.box.addEventListener("dblclick", (e) => {
       if (e.target.closest(".asubs-t") || posFor() == null) return;
@@ -645,38 +725,41 @@
 
   function renderCard() {
     const n = CARD.note, mk = PF.marks.get(CARD.key);
-    const kind = n && KIND[n.kind] ? `<span class="asubs-card-kind">${KIND[n.kind]}</span>` : "";
-    const e = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     const known = n && n.kind !== "word" ? "我懂这个意思" : "我认识";
-    const dict = `https://dict.youdao.com/result?word=${encodeURIComponent(CARD.word)}&lang=en`;
+    const dim = (t) => h("div", "asubs-card-dim", t);
+    const zhLine = (pos, zh) => h("div", "asubs-card-zh", pos ? h("span", "asubs-card-pos", pos) : null, zh);
     let meaning;
     if (n && !n.local) {                       // annotated: the gloss already is the meaning in this line
-      meaning = `<div class="asubs-card-zh">${e(n.zh)}</div><div class="asubs-card-dim">（这句话里的意思）</div>`;
+      meaning = [zhLine("", n.zh), dim("（这句话里的意思）")];
     } else {
       const c = CARD.ctx, d = CARD.dict;
-      const ctxLine = CARD.ctxState === "done"
-        ? `<div class="asubs-card-zh">${c.pos ? `<span class="asubs-card-pos">${e(c.pos)}</span>` : ""}${e(c.zh)}</div>
-           <div class="asubs-card-dim">（这句话里的意思${c.note ? `；${e(c.note)}` : ""}）</div>`
-        : CARD.ctxState === "loading" ? `<div class="asubs-card-dim">正在查这句话里的意思…</div>`
-        : CARD.ctxState === "error" && CARD.ctxError ? `<div class="asubs-card-dim">这句话里的意思没查到：${e(CARD.ctxError)}</div>` : "";
-      const dictLine = CARD.dictState === "done"
-        ? `<div class="asubs-card-dict"><span class="asubs-card-dim">词典</span> ${e(d.zh)}</div>`
-        : CARD.dictState === "loading" ? "" : `<div class="asubs-card-dim">词典里没有这个词</div>`;
+      const ctxLine = CARD.ctxState === "done" ? [zhLine(c.pos, c.zh), dim(`（这句话里的意思${c.note ? `；${c.note}` : ""}）`)]
+        : CARD.ctxState === "loading" ? [dim("正在查这句话里的意思…")]
+        : CARD.ctxState === "error" && CARD.ctxError ? [dim(`这句话里的意思没查到：${CARD.ctxError}`)] : [];
+      const dictLine = CARD.dictState === "done" ? [h("div", "asubs-card-dict", h("span", "asubs-card-dim", "词典"), ` ${d.zh}`)]
+        : CARD.dictState === "loading" ? [] : [dim("词典里没有这个词")];
       const nothing = CARD.dictState === "none" && (CARD.ctxState === "none" || CARD.ctxState === "error");
-      meaning = nothing ? `<div class="asubs-card-zh asubs-card-none">没查到释义，可以点右下角「查词典」</div>${ctxLine}` : ctxLine + dictLine;
+      meaning = nothing ? [h("div", "asubs-card-zh asubs-card-none", "没查到释义，可以点右下角「查词典」"), ...ctxLine] : [...ctxLine, ...dictLine];
     }
-    ui.card.innerHTML = `
-      <div class="asubs-card-head"><span class="asubs-card-word">${e(CARD.word)}</span>${kind}
-        <button type="button" class="asubs-card-x" data-act="close" aria-label="关闭">×</button></div>
-      ${meaning}
-      ${CARD.lists && CARD.lists.length ? `<div class="asubs-card-dim">考试词表：${e(CARD.lists.join("、"))}</div>` : ""}
-      <div class="asubs-card-why">${e(cardReason())}</div>
-      <div class="asubs-card-btns">
-        <button type="button" data-act="known" aria-pressed="${mk === "known"}" ${PF.ok ? "" : "disabled"}>${known}</button>
-        <button type="button" data-act="unknown" aria-pressed="${mk === "unknown"}" ${PF.ok ? "" : "disabled"}>我不认识</button>
-        ${mk ? `<button type="button" data-act="clear">恢复默认</button>` : ""}
-        <a href="${dict}" target="_blank" rel="noopener">查词典 ↗</a>
-      </div>`;
+    const btn = (act, text, pressed) => {
+      const b = h("button", null, text);
+      b.type = "button";
+      b.dataset.act = act;
+      if (pressed != null) { b.setAttribute("aria-pressed", String(pressed)); b.disabled = !PF.ok; }
+      return b;
+    };
+    const x = btn("close", "×");
+    x.className = "asubs-card-x";
+    x.setAttribute("aria-label", "关闭");
+    const dict = h("a", null, "查词典 ↗");
+    Object.assign(dict, { href: `https://dict.youdao.com/result?word=${encodeURIComponent(CARD.word)}&lang=en`, target: "_blank", rel: "noopener" });
+    ui.card.replaceChildren(
+      h("div", "asubs-card-head", h("span", "asubs-card-word", CARD.word), n && KIND[n.kind] ? h("span", "asubs-card-kind", KIND[n.kind]) : null, x),
+      ...meaning,
+      ...(CARD.lists && CARD.lists.length ? [dim(`考试词表：${CARD.lists.join("、")}`)] : []),
+      h("div", "asubs-card-why", cardReason()),
+      h("div", "asubs-card-btns", btn("known", known, mk === "known"), btn("unknown", "我不认识", mk === "unknown"),
+        mk ? btn("clear", "恢复默认") : null, dict));
     ui.card.hidden = false;
   }
 
@@ -793,13 +876,21 @@
 
   function tick() {
     const k = pageKey();
-    if ((k && k.str) !== S.key) {           // Bilibili changes video / part without reloading the page
+    if ((k && k.str) !== S.key) {           // both sites change video / part without reloading the page
       if (k) load(k); else { S.key = null; S.gen++; S.cues = []; }
+    }
+    if (YOUTUBE && k && S.owner == null) {
+      const o = ytOwner(k.v);
+      if (o) { S.owner = o.key; S.ownerName = o.name; lastLayout = ""; }
     }
     document.documentElement.classList.toggle("asubs-hide-native", cfg.enabled && cfg.hideNative && S.cues.length > 0);
     const video = findVideo();
     if (!video) return;
     ensureOverlay(video);
+    // YouTube plays ads in the same <video>: its time is the ad's, so nothing of ours shows meanwhile
+    const ad = YOUTUBE && ui.host.classList.contains("ad-showing");
+    ui.root.classList.toggle("asubs-ad", ad);
+    if (ad) return;
     layout(video);
     const t = video.currentTime || 0;
     const i = S.cues.length ? cueAt(t) : -1;
@@ -832,6 +923,17 @@
     setInterval(checkProfile, 5000);
     document.addEventListener("visibilitychange", () => { PF.lastCheck = 0; checkProfile(); });
   });
+  // the popup asks whose video this is, and turns the cover board on / off for that UP 主 / channel
+  chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+    if (sender.id !== chrome.runtime.id || !msg) return;
+    if (msg.type === "where") {
+      reply({ here: SITE.here, owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
+    } else if (msg.type === "cover" && S.key && S.owner != null) {
+      setCoverHere(!!msg.on);
+      reply({ ok: true, cover: coverHere() });
+    }
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
