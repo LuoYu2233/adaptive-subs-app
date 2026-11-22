@@ -19,7 +19,7 @@
 
 ## 一分半钟看懂
 
-https://github.com/user-attachments/assets/09ada614-0493-4e3c-9477-a95adfbd9a39
+https://github.com/user-attachments/assets/221990b0-7ff8-42eb-b053-d14300c0efad
 
 
 ## 为什么做这个
