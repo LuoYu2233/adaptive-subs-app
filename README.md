@@ -21,15 +21,15 @@
 
 https://github.com/user-attachments/assets/09ada614-0493-4e3c-9477-a95adfbd9a39
 
-<p align="center"><img src="docs/images/panel.png" width="760" alt="程序窗口"></p>
 
 ## 为什么做这个
+
+<p align="center"><img src="docs/images/intro.png" width="420" alt="效果示意：只给 boring 标了中文"></p>
 
 看英语视频学英语，字幕怎么选都别扭：开中英双语，眼睛会不由自主地去读中文；只开英文，一句话里有两个生词就整句听不懂。
 
 Adaptive Subs 取中间：**字幕整句都是英文，只在你可能不认识的单词、短语和"熟词僻义"上方标一个简短的中文**。它先通过考试成绩和词汇测试了解你的水平，再结合每句话的上下文判断该标哪些词、该怎么解释。
 
-<p align="center"><img src="docs/images/intro.png" width="420" alt="效果示意：只给 boring 标了中文"></p>
 
 ## 功能
 
@@ -54,6 +54,8 @@ Adaptive Subs 取中间：**字幕整句都是英文，只在你可能不认识�
 **系统要求**：Windows 10 / 11（需要系统自带的 Edge WebView2，Windows 11 已内置），Chrome 或 Edge 浏览器，一个注释模型的 API key。
 
 ## 快速开始
+
+<p align="center"><img src="docs/images/panel.png" width="760" alt="程序窗口"></p>
 
 1. **打开程序**：解压后双击 `程序/AdaptiveSubs.exe`
    - Windows 提示"已保护你的电脑"时，点「更多信息」→「仍要运行」（程序没有数字签名）
