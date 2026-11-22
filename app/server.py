@@ -1,7 +1,7 @@
 """Adaptive Subs local server: the player + instant annotation of any YouTube video.
 
-    .venv/Scripts/python server.py              # http://127.0.0.1:8765/player.html
-    .venv/Scripts/python server.py --port 8770
+    .venv/Scripts/python app/server.py --open      # http://127.0.0.1:8765/player.html (browser, no window)
+    .venv/Scripts/python app/main.py               # the program window (= AdaptiveSubs.exe, = start.bat)
 
 Paste a YouTube link in the player:
   1. English subtitles are fetched (human-made preferred, auto-generated as fallback) and sent
@@ -44,9 +44,12 @@ import providers as P
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
 FROZEN = bool(getattr(sys, "frozen", False))
-ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))          # player.html, setup.html, assets/
+BUNDLE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))        # app/ in the source tree; the bundle when packaged
+WEB = BUNDLE / "web"                                                  # pages + assets
+BUNDLE_DATA = BUNDLE / "data"                                         # read-only data shipped with the program
+# settings, results, cache: %LOCALAPPDATA%\AdaptiveSubs when packaged; the repository root when run from source
 HOME = Path(os.environ["ASUBS_HOME"]) if os.environ.get("ASUBS_HOME") else (
-    (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs") if FROZEN else Path(__file__).parent)
+    (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs") if FROZEN else BUNDLE.parent)
 DATA = HOME / "data"
 CONFIG = HOME / ("config.env" if FROZEN else ".env")                  # API keys + chosen model
 PROFILE = PS.Store(HOME / "profile.json")                              # learner profile + known words
@@ -853,7 +856,7 @@ def extension_dir() -> Path:
     """The browser extension folder: next to the program in the release zip, or in the source folder."""
     if FROZEN:
         return Path(sys.executable).resolve().parent.parent / "浏览器插件"
-    return Path(__file__).parent / "extension"
+    return Path(__file__).resolve().parent.parent / "extension"
 
 
 def recent_videos(limit: int = 8) -> list:
@@ -924,12 +927,12 @@ class Handler(SimpleHTTPRequestHandler):
     def serve_static(self, path: str):
         """Only the page files are served: never the project folder (which holds .env with the keys)."""
         if path in STATIC_PAGES:
-            f, base = ROOT / STATIC_PAGES[path], ROOT
+            f, base = WEB / STATIC_PAGES[path], WEB
         elif path.startswith("/assets/"):
-            f, base = ROOT / path.lstrip("/"), ROOT / "assets"
+            f, base = WEB / path.lstrip("/"), WEB / "assets"
         elif re.fullmatch(r"/data/[A-Za-z0-9_.-]+\.json", path):
             name = path.split("/")[-1]
-            f, base = (DATA / name, DATA) if (DATA / name).exists() else (ROOT / "data" / name, ROOT / "data")
+            f, base = (DATA / name, DATA) if (DATA / name).exists() else (BUNDLE_DATA / name, BUNDLE_DATA)
         else:
             return self.send_error(404)
         try:
@@ -1292,6 +1295,8 @@ def main():
     print(f"  annotation model: {P.PROVIDERS[P.current()]['name']} ({P.model()}), key: {key} | speech recognition key: {asr}")
     print(f"  settings: http://{args.host}:{port}/setup   (saved in {CONFIG})\n")
     open_browser(port)
+    if args.gui and os.environ.get("ASUBS_HEADLESS"):
+        args.gui = False             # tests / automation: serve only, no window
     if args.gui:
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         # always the control panel (its intro plays); without a key its stage leads to the settings

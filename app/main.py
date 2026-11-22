@@ -1,8 +1,8 @@
-"""Entry point of the packaged Windows program (AdaptiveSubs.exe, built by build_app.py).
+"""Entry point of the Windows program (AdaptiveSubs.exe, built by packaging/build.py; start.bat runs it from source).
 
 A windowed program (no console): it starts the local server on this computer only and shows the
-control panel in its own window (Edge WebView2). On first run the window opens on the settings page,
-where the user picks the annotation model and enters their own API keys. Everything that used to be
+control panel in its own window (Edge WebView2). Until an API key is set, the panel points the user to
+the settings page, where they pick the annotation model and enter their own keys. Everything that used to be
 printed to the console goes to %LOCALAPPDATA%\\AdaptiveSubs\\logs\\adaptive-subs.log (and the panel's log).
 Closing the window stops the program.
 """
@@ -13,9 +13,12 @@ from pathlib import Path
 
 
 def home() -> Path:
+    """Where settings and logs live: %LOCALAPPDATA%/AdaptiveSubs for the program, the repository root from source."""
     if os.environ.get("ASUBS_HOME"):
         return Path(os.environ["ASUBS_HOME"])
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs"
+    if getattr(sys, "frozen", False):
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AdaptiveSubs"
+    return Path(__file__).resolve().parent.parent
 
 
 def main():

@@ -1,6 +1,6 @@
-"""Build data/exam_words.json from ECDICT (https://github.com/skywind3000/ECDICT, MIT License).
+"""Build app/data/exam_words.json from ECDICT (https://github.com/skywind3000/ECDICT, MIT License).
 
-    python make_exam_words.py path/to/ecdict.csv
+    .venv/Scripts/python tools/make_exam_words.py path/to/ecdict.csv
 
 For every common English word it keeps:
   - which Chinese exam word lists it belongs to (中考 / 高考 / 四级 / 六级 / 考研 / 雅思 / 托福 / GRE),
@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent     # repository root
 TAGS = ["zk", "gk", "cet4", "cet6", "ky", "ielts", "toefl", "gre"]   # ECDICT's tag names, in this bit order
 MAX_RANK = 10**9           # also keep every untagged word that has a corpus frequency rank (for meanings)
 WORD_RE = re.compile(r"[a-z][a-z-]*[a-z]")
@@ -54,7 +54,7 @@ def main():
             if not zh and not mask:
                 continue
             out[w] = [mask, zh]
-    dest = ROOT / "data" / "exam_words.json"
+    dest = ROOT / "app" / "data" / "exam_words.json"
     dest.write_text(json.dumps({"tags": TAGS, "source": "ECDICT (MIT License)", "words": out},
                                ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     counts = {t: sum(1 for m, _ in out.values() if m >> i & 1) for i, t in enumerate(TAGS)}

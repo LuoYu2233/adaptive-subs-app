@@ -1,8 +1,8 @@
-"""Build the vocabulary-test word bank: data/vocab_test.json
+"""Build the vocabulary-test word bank: app/data/vocab_test.json
 
-    python make_vocab_test.py
+    .venv/Scripts/python tools/make_vocab_test.py     # uses the OpenAI key in .env
 
-- 8 frequency bands (wordfreq ranks). For each band we sample candidate words, and the LLM
+- 9 frequency bands (wordfreq ranks). For each band we sample candidate words, and the LLM
   keeps clean test items (no names / brands / slang) with a Chinese meaning, an example
   sentence and 3 wrong options (used for the meaning check that catches over-claiming).
 - Pseudo-words (pronounceable, not real) catch "yes to everything" answering.
@@ -13,10 +13,12 @@ import json
 import os
 import random
 import sys
+from pathlib import Path
 from openai import OpenAI
 from wordfreq import top_n_list, zipf_frequency
 
-from annotate import ROOT, call_json, load_dotenv, nlp
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+from annotate import PROJECT, ROOT, call_json, load_dotenv, nlp  # noqa: E402
 
 BANDS = [(1, 1000), (1001, 2000), (2001, 3000), (3001, 4500),
          (4501, 6000), (6001, 8000), (8001, 11000), (11001, 15000), (15001, 20000)]
@@ -40,7 +42,7 @@ Reply with JSON only: {"items": ["...", "..."]}"""
 
 
 def main():
-    load_dotenv(ROOT / ".env")
+    load_dotenv(PROJECT / ".env")
     if not os.environ.get("OPENAI_API_KEY"):
         sys.exit("OPENAI_API_KEY is not set (.env).")
     model = os.environ.get("OPENAI_MODEL", "gpt-6-luna")

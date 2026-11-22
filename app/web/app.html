@@ -274,6 +274,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
+    .st .draw { stroke-dashoffset: 0; }       /* the tick is drawn by an animation: show it drawn */
   }
 </style>
 </head>

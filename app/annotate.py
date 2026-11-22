@@ -38,8 +38,9 @@ import srt
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-ROOT = Path(__file__).parent
-CACHE_DIR = ROOT / ".cache"
+ROOT = Path(__file__).parent          # app/: data/ next to the code
+PROJECT = ROOT.parent                 # repository root: .env and the API cache when run from source
+CACHE_DIR = PROJECT / ".cache"
 MIN_RANK = 1500
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000]
 
@@ -473,7 +474,7 @@ def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
 # -------------------------------------------------------------------- main ---
 
 def main():
-    load_dotenv(ROOT / ".env")
+    load_dotenv(PROJECT / ".env")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("srt_file")
     ap.add_argument("--title", default="")

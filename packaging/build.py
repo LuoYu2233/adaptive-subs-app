@@ -1,8 +1,8 @@
 """Build the Windows package for testers: program + browser extension + instructions, as one zip.
 
-    .venv/Scripts/python build_app.py          # -> release/AdaptiveSubs-Windows.zip
+    .venv/Scripts/python packaging/build.py    # -> release/AdaptiveSubs-Windows.zip
 
-Needs (once): .venv/Scripts/python -m pip install pyinstaller av
+Needs (once): .venv/Scripts/python -m pip install pyinstaller
 The program holds no API keys: each tester enters their own on its settings page.
 """
 import shutil
@@ -11,7 +11,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent     # repository root
+APP = ROOT / "app"
 BUILD = ROOT / "build"
 RELEASE = ROOT / "release"
 NAME = "AdaptiveSubs-Windows"
@@ -28,7 +29,7 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 2. 双击「程序」文件夹里的 AdaptiveSubs.exe。
    - Windows 可能提示"Windows 已保护你的电脑"：点「更多信息」→「仍要运行」。
    - 杀毒软件如果拦截，请选择允许（程序没有数字签名，所以容易被误报）。
-3. 程序窗口会先打开设置页（以后也可以在窗口里点「API key 和模型」）：
+3. 程序窗口里点「填写 API key」（以后在「准备情况 → 注释模型」旁点「更改」）：
    - 选择注释模型并填写它的 API key。推荐 DeepSeek（国内可直接用、速度最快）：
        DeepSeek：https://platform.deepseek.com/api_keys
        小米 MiMo：https://platform.xiaomimimo.com
@@ -47,10 +48,11 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 2. 在浏览器里登录 B 站，打开带英文的视频：
    - 有英文字幕的视频：自动显示字幕，注释边看边补上。
    - 没有英文字幕的：视频左上角点「语音识别英文字幕」。
-3. 第一次用：点工具栏的插件图标 →「建立英语画像」，填身份和考试成绩、做 3 分钟词汇测试。
-   字幕会按你的熟词库判断哪些词不用注释（以后在插件图标里也能重新测）。
+3. 第一次用：在程序窗口「准备情况 → 英语画像」点「开始」（或插件图标 →「建立英语画像」），
+   填身份和考试成绩、做 3 分钟词汇测试。字幕会按你的熟词库判断哪些词不用注释，以后随时可以重新测。
 4. 看视频时点字幕里任意单词：显示释义，可以标「我认识」（不再注释）或「我不认识」（总会注释）。
-5. 插件图标里还能调词汇量、注释多少、中英对照、字幕位置；「打开设置」可以换模型或 key。
+5. 插件图标里还能调词汇量、注释多少、中英对照、字幕位置、遮挡板；「程序设置」可以换模型或 key。
+6. 画面里本来印着字幕的视频：遮挡板会盖住原字幕，可以拖动、拖边缘调大小，按 UP 主记住。
 
 三、费用
 用的是你自己的 API key，按用量付费，大约：
@@ -66,9 +68,11 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 
 五、常见问题
   - 插件提示"程序没开"：确认 AdaptiveSubs.exe 的窗口开着，然后刷新 B 站页面。
-  - 提示 key 无效：插件图标 →「打开设置」，重新填写后「保存并测试」。
+  - 提示 key 无效：程序窗口「准备情况 → 注释模型」点「更改」，重新填写后「保存并测试」。
   - 8765 端口被占用：程序会自动换一个端口，插件会自己找到，不用管。
   - 提示"这个视频说的主要是中文"：语音识别只支持英语视频。
+  - 更多说明：https://github.com/LuoYu2233/adaptive-subs-app/blob/main/docs/使用指南.md
+  - 新版本：https://github.com/LuoYu2233/adaptive-subs-app/releases
 
 本程序包含开源组件和数据：Python、spaCy（MIT）、FFmpeg（LGPL，经 PyAV）、yt-dlp（Unlicense）、
 ECDICT 词典数据（MIT，考试词表和释义）等。
@@ -81,7 +85,7 @@ def main():
             __import__(mod)
         except ImportError:
             sys.exit(f"缺少 {mod}：先运行 .venv/Scripts/python -m pip install pyinstaller av faster-whisper")
-    model = ROOT / "models" / "faster-whisper-base.en"
+    model = APP / "models" / "faster-whisper-base.en"
     # local speech model, bundled (Hugging Face is often blocked in China). The release uses an int8 copy
     # (76 MB instead of 145 MB, same results), made once with:
     #   ct2-transformers-converter --model openai/whisper-base.en --output_dir models/faster-whisper-base.en
@@ -90,13 +94,13 @@ def main():
     if not (model / "model.bin").exists():
         from huggingface_hub import snapshot_download
         snapshot_download("Systran/faster-whisper-base.en", local_dir=str(model), allow_patterns=["*.bin", "*.json", "*.txt"])
-    if not (ROOT / "data" / "ranks_en.txt").exists():
+    if not (APP / "data" / "ranks_en.txt").exists():
         from wordfreq import top_n_list
-        (ROOT / "data" / "ranks_en.txt").write_text("\n".join(top_n_list("en", 100_000)), encoding="utf-8")
+        (APP / "data" / "ranks_en.txt").write_text("\n".join(top_n_list("en", 100_000)), encoding="utf-8")
 
     dist = BUILD / "dist"
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--log-level", "WARN",
-                    "--distpath", str(dist), "--workpath", str(BUILD / "work"), str(ROOT / "AdaptiveSubs.spec")],
+                    "--distpath", str(dist), "--workpath", str(BUILD / "work"), str(ROOT / "packaging" / "AdaptiveSubs.spec")],
                    check=True, cwd=ROOT)
 
     out = RELEASE / NAME

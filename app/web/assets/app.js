@@ -645,8 +645,7 @@
       <p class="muted">现在的地址以 <code>file://</code> 开头，说明是直接双击打开的网页文件。浏览器出于安全限制，
       不允许这样的页面读取字幕和词汇测试数据，YouTube 视频也不能在本地文件里播放。</p>
       <ol class="intro-list">
-        <li><b>最简单</b>：回到项目文件夹 <code>adaptive-subs</code>，双击 <code>start.bat</code>，会自动在浏览器打开正确的地址</li>
-        <li>或者在这个文件夹里打开命令行，运行 <code>python -m http.server 8765</code>，然后访问 <code>http://127.0.0.1:8765/player.html</code></li>
+        <li><b>最简单</b>：打开 Adaptive Subs 程序（AdaptiveSubs.exe，从源码运行则双击 <code>start.bat</code>），再访问 <code>http://127.0.0.1:8765/player.html</code></li>
         <li>或者直接用部署好的 GitHub Pages 链接</li>
       </ol>
       <div class="modal-actions"><button class="btn btn-primary" data-act="tclose">知道了</button></div>`;
@@ -672,7 +671,7 @@
           <h3>题库没有加载出来</h3>
           <p class="muted">读取 <code>data/vocab_test.json</code> 失败（${esc(err.message || err)}）。
           如果是部署到 GitHub Pages 的版本，请确认上传了 <code>site/data/</code> 里的 vocab_test.json；
-          如果是直接双击打开的本地文件，需要先用 <code>python -m http.server</code> 启动本地服务器。</p>
+          如果是直接双击打开的本地文件，请先打开 Adaptive Subs 程序，再通过 <code>http://127.0.0.1:8765/player.html</code> 访问。</p>
           <div class="modal-actions"><button class="btn btn-ghost" data-act="tclose">关闭</button><button class="btn btn-primary" data-act="tretry">重试</button></div>`;
         if (!dlg.open) dlg.showModal();
         return;
@@ -1010,10 +1009,10 @@
     if (!v) return;
     const saved = index.find((x) => x.id === v);
     if (saved) return loadSaved(saved);
-    if (!live) { toast("打开新视频需要先运行本地服务器：双击 start.bat"); return; }
+    if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
     let r;
     try { r = await (await fetch(`api/open?url=${encodeURIComponent(v)}`)).json(); }
-    catch { toast("连不上本地服务器，请确认 start.bat 的窗口还开着"); return; }
+    catch { toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
     if (r.error) { toast(r.error); return; }
     if (r.cached) {
       await loadIndex();
@@ -1068,7 +1067,7 @@
       toast(d.msg);
     });
     src.onerror = () => {   // EventSource retries on its own; give up only if the server is gone
-      if (es === src && src.readyState === EventSource.CLOSED) { es = null; toast("和本地服务器的连接断开了，请确认 start.bat 的窗口还开着"); }
+      if (es === src && src.readyState === EventSource.CLOSED) { es = null; toast("和本地服务器的连接断开了，请确认 Adaptive Subs 程序还开着"); }
     };
   }
 
@@ -1078,7 +1077,7 @@
     renderControls();
     renderStage();
     if (IS_FILE) {
-      $("#line").innerHTML = `<span class="placeholder">请通过本地服务器打开：双击项目文件夹里的 start.bat</span>`;
+      $("#line").innerHTML = `<span class="placeholder">请通过本地服务器打开：先打开 Adaptive Subs 程序</span>`;
       showFileNotice();
       return;
     }

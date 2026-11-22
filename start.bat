@@ -1,29 +1,17 @@
 @echo off
-rem Double-click to watch locally: starts the local server in this folder and opens the player.
-rem With the project's .venv it runs server.py (paste any YouTube link, annotations stream in live);
-rem server.py picks a free port by itself and opens the browser at the right address.
-rem Without .venv, a plain file server (saved videos only).
-rem (Opening player.html directly does not work: browsers block loading data from file:// pages.)
+rem Run Adaptive Subs from the source code (developers). Users: download the Windows program from
+rem GitHub Releases instead. Needs the .venv described in docs/开发说明.md.
+rem Opens the same window as AdaptiveSubs.exe; settings, results and logs stay in this folder.
 cd /d "%~dp0"
-title Adaptive Subs - local server
-if not defined PORT set PORT=8765
-echo.
-echo   Keep this window open while watching. Close it to stop.
-if exist ".venv\Scripts\python.exe" goto live
-
-echo   .venv not found: saved videos only. See README to enable opening any YouTube link.
-echo   Player: http://127.0.0.1:%PORT%/player.html
-if not defined ASUBS_NO_BROWSER start "" /min cmd /c "timeout /t 2 /nobreak >nul & start http://127.0.0.1:%PORT%/player.html"
-python -m http.server %PORT% --bind 127.0.0.1
-goto after
-
-:live
-".venv\Scripts\python.exe" -u server.py --port %PORT% --open
-
-:after
-if errorlevel 1 (
+title Adaptive Subs (source)
+if not exist ".venv\Scripts\python.exe" (
   echo.
-  echo   Could not start the server. Check that Python is installed: run  python --version
+  echo   .venv not found. Set it up first, see docs\开发说明.md:
+  echo     python -m venv .venv
+  echo     .venv\Scripts\python -m pip install -r requirements.txt
   echo.
   pause
+  exit /b 1
 )
+".venv\Scripts\python.exe" -u app\main.py %*
+if errorlevel 1 pause

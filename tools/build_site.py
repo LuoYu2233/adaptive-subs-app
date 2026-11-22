@@ -1,9 +1,9 @@
 """Build a static folder for GitHub Pages: site/
 
-    python build_site.py
+    .venv/Scripts/python tools/build_site.py
 
-Copies player.html -> site/index.html, assets/, and the player data
-(data/index.json, each video's <id>.json, data/vocab_test.json).
+Copies app/web/player.html -> site/index.html, app/web/assets/, and the player data
+(data/index.json and each video's <id>.json from the videos you processed, app/data/vocab_test.json).
 Never copies .env, .cache, raw subtitles or old per-level files.
 """
 
@@ -12,7 +12,9 @@ import json
 import shutil
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent     # repository root
+WEB = ROOT / "app" / "web"                        # the player page and its assets
+VIDEOS = ROOT / "data"                            # videos you processed (from source: the repository root)
 SITE = ROOT / "site"
 
 SITE_README = """# Adaptive Subs Demo
@@ -35,20 +37,20 @@ def main():
         shutil.rmtree(SITE)
     (SITE / "data").mkdir(parents=True)
 
-    shutil.copytree(ROOT / "assets", SITE / "assets")
+    shutil.copytree(WEB / "assets", SITE / "assets")
     # cache-busting: browsers / GitHub Pages' CDN must not serve an old app.js with a new page
-    html = (ROOT / "player.html").read_text(encoding="utf-8")
+    html = (WEB / "player.html").read_text(encoding="utf-8")
     for name in ("app.js", "style.css"):
-        digest = hashlib.sha1((ROOT / "assets" / name).read_bytes()).hexdigest()[:8]
+        digest = hashlib.sha1((WEB / "assets" / name).read_bytes()).hexdigest()[:8]
         html = html.replace(f'assets/{name}"', f'assets/{name}?v={digest}"')
     (SITE / "index.html").write_text(html, encoding="utf-8")
 
-    index_file = ROOT / "data" / "index.json"     # absent in a fresh clone: no videos processed yet
+    index_file = VIDEOS / "index.json"     # absent in a fresh clone: no videos processed yet
     index = json.loads(index_file.read_text(encoding="utf-8")) if index_file.exists() else []
     for v in index:
-        shutil.copy(ROOT / "data" / v["file"], SITE / "data" / v["file"])
+        shutil.copy(VIDEOS / v["file"], SITE / "data" / v["file"])
     (SITE / "data" / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    shutil.copy(ROOT / "data" / "vocab_test.json", SITE / "data" / "vocab_test.json")
+    shutil.copy(ROOT / "app" / "data" / "vocab_test.json", SITE / "data" / "vocab_test.json")
     (SITE / "README.md").write_text(SITE_README, encoding="utf-8")
 
     total = sum(p.stat().st_size for p in SITE.rglob("*") if p.is_file())

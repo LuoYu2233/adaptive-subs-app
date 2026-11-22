@@ -27,7 +27,7 @@ from pathlib import Path
 
 import annotate as A
 
-EXAM_FILE = Path(__file__).parent / "data" / "exam_words.json"     # built by make_exam_words.py (ECDICT)
+EXAM_FILE = Path(__file__).parent / "data" / "exam_words.json"     # built by tools/make_exam_words.py (ECDICT)
 TAGS = ["zk", "gk", "cet4", "cet6", "ky", "ielts", "toefl", "gre"]
 TAG_NAMES = {"zk": "中考", "gk": "高考", "cet4": "四级", "cet6": "六级", "ky": "考研",
              "ielts": "雅思", "toefl": "托福", "gre": "GRE"}
