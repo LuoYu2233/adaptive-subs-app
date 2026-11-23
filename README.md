@@ -13,7 +13,7 @@
 [![B 站 · YouTube](https://img.shields.io/badge/B%20%E7%AB%99%20%C2%B7%20YouTube-%E6%94%AF%E6%8C%81-FB7299)](#快速开始)
 [![License: MIT](https://img.shields.io/github/license/LuoYu2233/adaptive-subs-app)](LICENSE)
 
-**[⬇ 下载 Windows 程序](https://github.com/LuoYu2233/adaptive-subs-app/releases)** · [使用指南](docs/使用指南.md) · [开发说明](docs/开发说明.md)
+**[⬇ 下载 Windows 程序](https://github.com/LuoYu2233/adaptive-subs-app/tags)** · [使用指南](docs/使用指南.md) · [开发说明](docs/开发说明.md)
 
 </div>
 
