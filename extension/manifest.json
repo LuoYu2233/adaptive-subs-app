@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Adaptive Subs",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "在 B 站和 YouTube 视频的英文字幕上，只给你可能不认识的词配中文。注释由本机的 Adaptive Subs 程序生成。",
   "permissions": [
     "storage"

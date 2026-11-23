@@ -38,6 +38,15 @@
   opacity: 0.85;
 }
 .asubs-pill.asubs-pill-sticky { border-radius: 10px; color: #ffe2a8; opacity: 1; }
+.asubs-zh.asubs-zh-wait { color: #9aa5b2; }     /* Z pressed before this line's translation arrived */
+
+/* feedback for the shortcuts (B: "字幕：纯英文"), in the middle of the picture like the players' own */
+.asubs-toast {
+  position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); max-width: 86%;
+  padding: 7px 16px; border-radius: 10px; background: rgba(6, 8, 12, 0.8); color: #fff; text-align: center;
+  font: 600 15px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; pointer-events: none;
+}
+.asubs-toast[hidden] { display: none !important; }
 
 /* hide the site's own subtitle layer while ours is showing (switchable in the popup) */
 .asubs-hide-native .bpx-player-subtitle-wrap,

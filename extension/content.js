@@ -37,7 +37,13 @@
     cur: -2, dirty: true,
     lastT: 0, lastFocusAt: 0,
   };
-  const ui = { root: null, box: null, line: null, zh: null, pill: null, host: null, ro: null, pillTimer: 0, card: null, cover: null };
+  const ui = { root: null, box: null, line: null, zh: null, pill: null, host: null, ro: null, pillTimer: 0, card: null, cover: null,
+               toast: null, toastTimer: 0 };
+  // Z: this line's Chinese while the key is held; a quick tap keeps it until the next line starts
+  const PEEK = { hold: false, sticky: false, line: -1, downAt: 0, wasSticky: false };
+  const MODES = ["adaptive", "plain", "bilingual"];          // B cycles through them (same setting as the popup)
+  const MODE_NAMES = { adaptive: "自适应（只注释生词）", plain: "纯英文", bilingual: "中英对照" };
+  let keysHint = true;      // false until the one-time shortcut hint has been shown (chrome.storage: asubsKeysHint)
 
   // What differs between the two sites: where the player is, and whose videos the cover board and the
   // subtitle position are remembered for (UP 主 / channel). Where the subtitles come from: load().
@@ -53,7 +59,7 @@
     video: ".bpx-player-video-wrap video, .bpx-player-video-wrap bwp-video, #bilibili-player video",
     host: ".bpx-player-video-area, .bpx-player-container",
     controls: ".bpx-player-control-wrap",
-    coverByDefault: true,
+    coverByDefault: false,      // off until the viewer turns it on for an UP 主 (P, or the popup)
   };
 
   // Learner profile from the local program (shared with the profile page and the player):
@@ -154,15 +160,38 @@
   // ones) and generates the glosses; the lines arrive with its first event
   async function loadYouTube(gen, key) {
     pill("正在获取 YouTube 英文字幕…");
-    const r = await bg({ type: "open", payload: { id: key.v, source: "youtube" } });
+    const r = await bg({ type: "open", payload: { id: key.v, source: "youtube", subs_only: true } });
     if (gen !== S.gen) return;
-    if (r.error) return pill(serverMsg(r), { sticky: true });
     if (r.cached) {
       S.id = r.id;
       setCues(r.data.cues);
       return pill(r.id === key.v ? "注释已载入（这个视频之前生成过）" : "已载入之前语音识别的英文字幕和注释", { hideAfter: 4000 });
     }
-    follow(gen, r.id, "正在获取 YouTube 英文字幕…");
+    if (r.nosubs && S.page) return offerASR(gen, ytASR(S.page), "这个视频没有英文字幕");
+    if (r.error) return pill(serverMsg(r), r.retry ? { sticky: true, action: { label: "重试", fn: () => { S.key = null; } } } : { sticky: true });
+    // started before (another tab), or an older program that starts generating right away
+    if (r.running || !r.cues) return follow(gen, r.id || key.v, "正在获取 YouTube 英文字幕…");
+    setCues(r.cues);                               // plain English now; glosses after a click
+    offerGloss(gen, { id: key.v, source: "youtube" }, `已载入 YouTube ${r.source === "auto" ? "自动生成的" : "上传者提供的"}英文字幕`);
+  }
+
+  // Glosses cost a little (the viewer's own API key): videos with English subtitles show them right away
+  // as plain English, and the glosses are generated only after a click — like speech recognition. A video
+  // done (or started) before just loads.
+  function offerGloss(gen, payload, label) {
+    pill(`${label} · 生词注释按你的 key 计费（10 分钟约 ¥0.1–0.3）`, {
+      sticky: true,
+      action: { label: "生成注释", fn: () => startGloss(gen, payload, label) },
+    });
+  }
+  async function startGloss(gen, payload, label) {
+    if (gen !== S.gen) return;
+    pill("正在开始生成注释…", { sticky: true });
+    const r = await bg({ type: "open", payload });
+    if (gen !== S.gen) return;
+    if (r.error) return pill(serverMsg(r), { sticky: true, action: { label: "重试", fn: () => startGloss(gen, payload, label) } });
+    if (r.cached) { S.id = r.id || payload.id; setCues(r.data.cues); return pill("注释已载入", { hideAfter: 3000 }); }
+    follow(gen, r.id || payload.id, "正在生成注释，先处理你正在看的位置…");
   }
 
   function ytASR(key) {
@@ -218,19 +247,21 @@
       if (!cues.length) return pill("字幕文件是空的", { sticky: true });
       setCues(cues);                                    // plain English right away
       const ai = /^ai-/i.test(track.lan);
-      pill(`已载入${ai ? " B 站 AI 生成的" : "UP 主上传的"}英文字幕，正在连接本地服务器…`);
+      const label = `已载入${ai ? " B 站 AI 生成的" : " UP 主上传的"}英文字幕`;
+      pill(`${label}，正在连接本地程序…`);
 
       S.id = `bili_${key.bvid}_${page.cid}_${track.lan}`.replace(/[^A-Za-z0-9_.-]/g, "_");
-      const r = await bg({ type: "open", payload: { id: S.id, title, duration: page.duration || view.duration || 0, source: ai ? "auto" : "manual", cues } });
+      const meta = { id: S.id, title, duration: page.duration || view.duration || 0, source: ai ? "auto" : "manual" };
+      // done before / being generated? (asks only: generating starts with the 生成注释 click)
+      const r = await bg({ type: "open", payload: { ...meta, probe: true } });
       if (gen !== S.gen) return;
       if (r.error) return pill(serverMsg(r), { sticky: true });
       if (r.cached) {
         setCues(r.data.cues);
         return pill("注释已载入（这个视频之前生成过）", { hideAfter: 4000 });
       }
-      S.annDone = new Set();
-      pill("正在生成注释，先处理你正在看的位置…");
-      poll(gen);
+      if (r.running) return follow(gen, S.id, "正在生成注释，先处理你正在看的位置…");
+      offerGloss(gen, { ...meta, cues }, label);
     } catch (e) {
       if (gen === S.gen) pill(`读取字幕失败：${e.message || e}`, { sticky: true });
     }
@@ -454,12 +485,15 @@
     const coverX = el("button", "asubs-cover-x", "×");
     Object.assign(coverX, { type: "button", title: `${SITE.here}不用遮挡板` });
     coverX.setAttribute("aria-label", "关闭遮挡板");
-    ui.cover.append(el("span", "asubs-cover-hint", "遮挡板 · 拖动移动 · 拖边缘调大小 · 双击恢复默认"), coverX,
+    ui.cover.append(el("span", "asubs-cover-hint", "遮挡板 · 拖动移动 · 拖边缘调大小 · 双击恢复默认 · 按 P 关闭"), coverX,
       ...["t", "b", "l", "r"].map((k) => { const e = el("span", `asubs-cover-edge asubs-cover-${k}`); e.dataset.edge = k; return e; }));
     ui.card = el("div", "asubs-card");
     ui.card.hidden = true;
     ui.card.setAttribute("role", "dialog");
-    ui.root.append(ui.cover, ui.box, ui.pill, ui.card);
+    ui.toast = el("div", "asubs-toast");     // short feedback for shortcuts ("字幕：纯英文"); the pill keeps the status
+    ui.toast.hidden = true;
+    ui.toast.setAttribute("role", "status");
+    ui.root.append(ui.cover, ui.box, ui.pill, ui.card, ui.toast);
     enableDrag();
     enableCover();
     lastLayout = "";
@@ -616,7 +650,7 @@
     ui.cover.querySelector(".asubs-cover-x").addEventListener("click", (e) => {
       e.stopPropagation();
       setCoverHere(false);
-      pill(`${SITE.here}的视频不再显示遮挡板（点浏览器右上角的插件图标可以再打开）`, { hideAfter: 5000 });
+      pill(`${SITE.here}的视频不再显示遮挡板（按 P 可以再打开）`, { hideAfter: 5000 });
     });
     for (const ev of ["mousedown", "mouseup", "click", "dblclick"]) ui.cover.addEventListener(ev, (e) => e.stopPropagation());
   }
@@ -794,6 +828,86 @@
   }
 
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && CARD.open) closeCard(); }, true);
+
+  // ------------------------------------------------------------ shortcuts ---
+  // Only keys neither site uses (Bilibili: Q W E R G D F M [ ] Enter, arrows, Space…; YouTube: K J L C F T I M
+  // , . < > 0-9 + -…), only while our subtitles are showing for this video, never while typing in a box.
+  // Physical keys (e.code), so a Chinese input method or Caps Lock doesn't matter.
+  function typingIn(e) {
+    const t = (e.composedPath && e.composedPath()[0]) || e.target;   // Bilibili's comment box is inside shadow DOM
+    return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ""));
+  }
+  function shortcutsOn() {
+    return cfg.enabled && S.cues.length > 0 && !!ui.root && ui.root.isConnected && !ui.root.classList.contains("asubs-ad");
+  }
+  function toast(text, ms = 1400) {
+    if (!ui.toast) return;
+    clearTimeout(ui.toastTimer);
+    ui.toast.textContent = text;
+    ui.toast.hidden = false;
+    ui.toastTimer = setTimeout(() => { ui.toast.hidden = true; }, ms);
+  }
+  function cycleMode() {
+    cfg.mode = MODES[(MODES.indexOf(cfg.mode) + 1) % MODES.length];
+    try { chrome.storage.local.set({ settings: cfg }); } catch { /* extension reloaded: still switch on this page */ }
+    computeVisible();
+    toast(`字幕：${MODE_NAMES[cfg.mode]}`);
+  }
+  function startPeek() {
+    const v = findVideo();
+    const i = S.cur >= 0 ? S.cur : v ? cueAt(v.currentTime || 0) : -1;   // in a silence: the line just spoken
+    if (i < 0) return toast("还没到第一句字幕");
+    PEEK.wasSticky = PEEK.sticky && PEEK.line === i;    // tapping again on the same line hides it
+    Object.assign(PEEK, { hold: true, line: i, downAt: performance.now() });
+    S.dirty = true;
+  }
+  function endPeek(tap) {
+    if (!PEEK.hold) return;
+    PEEK.hold = false;
+    PEEK.sticky = tap && !PEEK.wasSticky;
+    S.dirty = true;
+  }
+  // P: cover board on / off for this UP 主 / channel (remembered); works without our subtitles too
+  function toggleCover() {
+    const on = !(cfg.cover !== "off" && coverHere());
+    if (on && cfg.cover === "off") {           // switched off for every video in the popup: switch it back on
+      cfg.cover = "on";
+      try { chrome.storage.local.set({ settings: cfg }); } catch { /* extension reloaded */ }
+    }
+    try { setCoverHere(on); } catch { /* extension reloaded: still shows / hides on this page */ }
+    lastLayout = "";
+    toast(on ? `遮挡板：开（${SITE.here}的视频会记住）` : "遮挡板：关");
+  }
+  window.addEventListener("keydown", (e) => {
+    if (e.code !== "KeyZ" && e.code !== "KeyB" && e.code !== "KeyP") return;
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing || typingIn(e)) return;
+    if (e.code === "KeyP") {
+      if (!cfg.enabled || !ui.root || !ui.root.isConnected || ui.root.classList.contains("asubs-ad") || !S.key) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) toggleCover();
+      return;
+    }
+    if (!shortcutsOn()) {
+      // on a video page without our subtitles: say why nothing happens (the key still goes to the site)
+      if (!e.repeat && cfg.enabled && ui.root && ui.root.isConnected && !S.cues.length) toast("这个视频还没有英文字幕，快捷键暂时用不了", 2500);
+      return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();       // ours: the site's own handlers don't see it
+    if (e.repeat) return;               // holding the key sends repeats
+    if (e.code === "KeyB") cycleMode();
+    else startPeek();
+  }, true);
+  window.addEventListener("keyup", (e) => {
+    if (e.code !== "KeyZ" || !PEEK.hold) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    endPeek(performance.now() - PEEK.downAt < 300);
+  }, true);
+  // switching tabs / windows while holding Z: the keyup never comes
+  window.addEventListener("blur", () => endPeek(false));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) endPeek(false); });
   document.addEventListener("pointerdown", (e) => {
     if (CARD.open && ui.card && !ui.card.contains(e.target) && !(e.target.closest && e.target.closest(".asubs-t"))) closeCard();
   }, true);
@@ -860,9 +974,12 @@
       pos = n.e;
     });
     plainText(c.text.slice(pos));
-    const zh = cfg.mode === "bilingual" ? c.zh : "";
+    const peek = PEEK.hold || (PEEK.sticky && PEEK.line === i);
+    const wait = peek && !c.zh;             // translations arrive after the glosses
+    const zh = cfg.mode === "bilingual" || peek ? (c.zh || (wait ? "这句的中文翻译还没生成好" : "")) : "";
     ui.zh.textContent = zh;
     ui.zh.hidden = !zh;
+    ui.zh.classList.toggle("asubs-zh-wait", wait);
   }
 
   function cueAt(t) {      // last line starting at or before t (binary search)
@@ -874,7 +991,14 @@
     return ans;
   }
 
+  let orphanNoted = false;
   function tick() {
+    // the extension was reloaded or updated: this copy keeps showing subtitles but is the old code and can't
+    // reach the program any more — the page has to be refreshed to get the new one
+    if (!orphanNoted && !(chrome.runtime && chrome.runtime.id)) {
+      orphanNoted = true;
+      pill(SERVER_MSG.ext, { sticky: true });
+    }
     const k = pageKey();
     if ((k && k.str) !== S.key) {           // both sites change video / part without reloading the page
       if (k) load(k); else { S.key = null; S.gen++; S.cues = []; }
@@ -894,7 +1018,15 @@
     layout(video);
     const t = video.currentTime || 0;
     const i = S.cues.length ? cueAt(t) : -1;
-    const live = i >= 0 && t <= S.cues[i].e + GAP_GRACE ? i : -1;   // silences: nothing on screen
+    let live = i >= 0 && t <= S.cues[i].e + GAP_GRACE ? i : -1;   // silences: nothing on screen
+    // peeking at the Chinese (Z): the line just spoken stays on screen through the silence after it
+    if (PEEK.sticky && i !== PEEK.line) { PEEK.sticky = false; S.dirty = true; }
+    if (live < 0 && i >= 0 && (PEEK.hold || PEEK.sticky)) live = i;
+    if (live >= 0 && !keysHint) {
+      keysHint = true;
+      try { chrome.storage.local.set({ asubsKeysHint: 1 }); } catch { /* extension reloaded */ }
+      toast("快捷键：按住 Z 看这一句的中文 · 按 B 切换字幕模式", 6000);
+    }
     if (live !== S.cur || S.dirty) {
       S.cur = live; S.dirty = false;
       renderLine(live);
@@ -911,7 +1043,8 @@
   }
 
   // ------------------------------------------------------------ settings ---
-  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover"], (r) => {
+  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover", "asubsKeysHint"], (r) => {
+    keysHint = !!(r && r.asubsKeysHint);
     POS = (r && r.asubsPos) || {};
     COVER = (r && r.asubsCover) || {};
     cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };

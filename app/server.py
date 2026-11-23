@@ -243,6 +243,8 @@ class Job:
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+YT_SUBS: dict[str, dict] = {}     # YouTube subtitles fetched for the extension, waiting for "生成注释"
+YT_SUBS_LOCK = threading.Lock()
 
 
 def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | None = None,
@@ -1133,6 +1135,13 @@ class Handler(SimpleHTTPRequestHandler):
                     data["cues"][i].update(text="", notes=[], zh="")
                 threading.Thread(target=repair_saved, args=(vid, saved), daemon=True).start()
             return self.send_json({"id": vid, "cached": True, "data": data})
+        if youtube and body.get("subs_only"):
+            # the extension shows the plain English first; glosses are generated only after a click
+            # (then the subtitles fetched here are used, not fetched again). No API key needed for this.
+            job = get_job(vid, start=False)
+            if job and job.state == "running":
+                return self.send_json({"id": vid, "cached": False, "running": True})
+            return self.youtube_subs(vid)
         if not P.has_key():
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
@@ -1148,7 +1157,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "noasr"})
             return self.send_json({"id": vid, "cached": False})
         if youtube:
-            get_job(vid, start=True)
+            with YT_SUBS_LOCK:
+                sub = YT_SUBS.pop(vid, None)
+            get_job(vid, start=True, sub=sub)
             return self.send_json({"id": vid, "cached": False})
         if body.get("source") == "asr":
             # no subtitles: recognise the speech. The server builds the URL itself, from a Bilibili BV id or a
@@ -1176,6 +1187,28 @@ class Handler(SimpleHTTPRequestHandler):
                "source": "auto" if body.get("source") == "auto" else "manual", "cues": cues}
         get_job(vid, start=True, sub=sub, save_dir=EXT_DATA)
         return self.send_json({"id": vid, "cached": False})
+
+    def youtube_subs(self, vid: str):
+        """English subtitles of a YouTube video for the extension, without generating glosses."""
+        try:
+            sub = fetch_subtitles(vid)
+        except NoSubtitles:
+            return self.send_json({"id": vid, "nosubs": True, "error": "这个视频没有英文字幕"})
+        except FetchFailed as e:
+            print(f"[{vid}] 连不上 YouTube（{e}一直超时）")
+            return self.send_json({"id": vid, "retry": True,
+                                   "error": f"连不上 YouTube：{e}超时，已自动重试 {NET_TRIES} 次。可能是网络或代理不稳定，请点「重试」。"})
+        except Exception as e:
+            if e.__class__.__name__ == "DownloadError":      # private / removed / region-locked ...
+                return self.send_json({"id": vid, "error": f"YouTube 拒绝了这个视频：{short_err(e)}"})
+            traceback.print_exc()
+            return self.send_json({"id": vid, "error": f"获取字幕失败：{short_err(e)}"})
+        with YT_SUBS_LOCK:
+            YT_SUBS[vid] = sub
+            while len(YT_SUBS) > 30:                       # videos opened but never glossed
+                YT_SUBS.pop(next(iter(YT_SUBS)))
+        print(f"[{vid}] {len(sub['cues'])} lines of English subtitles ({sub['source']}); glosses when asked: {sub['title']}")
+        return self.send_json({"id": vid, "cached": False, "cues": sub["cues"], "source": sub["source"]})
 
     def explain(self, body: dict):
         """Meaning of a clicked word in its sentence (words the annotations didn't cover).

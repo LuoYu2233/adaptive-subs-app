@@ -41,24 +41,9 @@ function save() {
   render();
 }
 
-// UP 主s whose cover board was closed with × on the video: offer to bring it back for all of them
-function renderCoverOff(cover) {
-  const off = Object.keys(cover || {}).filter((k) => cover[k] && cover[k].off);
-  const el = $("#coverOff");
-  el.hidden = !off.length;
-  if (!off.length) return;
-  el.innerHTML = `已对 ${off.length} 个 UP 主关掉了遮挡板 · <a href="#" id="coverRestore">全部恢复</a>`;
-  $("#coverRestore").onclick = (e) => {
-    e.preventDefault();
-    const next = { ...cover };
-    off.forEach((k) => delete next[k]);
-    chrome.storage.local.set({ asubsCover: next });
-    renderCoverOff(next);
-  };
-}
-
-chrome.storage.local.get(["settings", "asubsCover"], (r) => {
-  renderCoverOff(r && r.asubsCover);
+// (The cover board is off by default for every UP 主 / channel — P on the video or the row
+// below turns it on — so there is no list of UP 主s it was closed for any more.)
+chrome.storage.local.get(["settings"], (r) => {
   cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
   render();
 });
@@ -105,7 +90,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       chrome.tabs.sendMessage(tab.id, { type: "cover", on: b.dataset.v === "on" }, (r) => {
         if (chrome.runtime.lastError || !r) return;
         show(r.cover);
-        chrome.storage.local.get("asubsCover", (c) => renderCoverOff(c && c.asubsCover));
       });
     });
   });
