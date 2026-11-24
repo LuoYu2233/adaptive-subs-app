@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -30,3 +31,17 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 
 def write_json(path: Path, value) -> None:
     atomic_write(path, json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+
+
+def atomic_copy(source: Path, destination: Path) -> None:
+    """Preserve large local files without loading them all into memory."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, destination)
+    finally:
+        Path(name).unlink(missing_ok=True)

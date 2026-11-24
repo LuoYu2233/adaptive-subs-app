@@ -43,7 +43,7 @@ import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
 from storage import atomic_write, write_json
-from task_store import TaskStore
+from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
 from version import VERSION
 from result_validation import valid_result
 
@@ -293,9 +293,11 @@ class Job:
             try:
                 TASK_STORE.save(self.vid, state, payload)
                 self.persistence_error = False
+                return True
             except (OSError, ValueError, sqlite3.Error) as exc:
                 self.persistence_error = True
                 print(f"[{self.vid}] 进度保存失败：{short_err(exc)}")
+                return False
 
     def emit(self, typ: str, data: dict):
         with self.cond:
@@ -357,7 +359,11 @@ def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | Non
             if asr_url:
                 job.asr_client = ASR.client()
             if old is None:
-                job.checkpoint()
+                if not job.checkpoint():
+                    raise JobBusy("任务进度无法保存，请先检查控制台的任务记录或磁盘状态")
+            else:
+                # Preserve the entire old checkpoint until the worker merges it into the new job.
+                TASK_STORE.save(vid, "running", old)
             job.thread = threading.Thread(target=run_job, args=(job,), daemon=True)
             JOBS[vid] = job
             job.thread.start()
@@ -1116,7 +1122,16 @@ def app_status(port: int) -> dict:
                         "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started,
                         "persistence_error": j.persistence_error})
     live_ids = {j.vid for j in jobs}
-    for saved in TASK_STORE.recent():
+    task_issue = None
+    try:
+        saved_tasks = TASK_STORE.recent()
+    except TaskStoreCorrupt as error:
+        saved_tasks = []
+        task_issue = {"error": str(error), "recoverable": bool(error.fingerprint), "fingerprint": error.fingerprint}
+    except (OSError, sqlite3.Error):
+        saved_tasks = []
+        task_issue = {"error": "任务记录暂时无法读取，请检查磁盘空间、文件权限或其他占用程序", "recoverable": False}
+    for saved in saved_tasks:
         if saved["id"] in live_ids or saved["state"] == "done":
             continue
         p = saved["payload"]
@@ -1139,7 +1154,7 @@ def app_status(port: int) -> dict:
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
         "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
                     "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"], "error": profile_error},
-        "jobs": running, "recent": recent_videos(),
+        "jobs": running, "recent": recent_videos(), "task_issue": task_issue,
         "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
     }
 
@@ -1207,6 +1222,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.get_request()
         except PS.ProfileCorrupt as error:
             return self.profile_problem(error)
+        except TaskStoreCorrupt as error:
+            return self.send_json({"error": str(error), "task_store": True}, 503)
         except (OSError, sqlite3.Error):
             return self.send_json({"error": "本地数据无法读取，请检查文件权限和磁盘状态"}, 503)
 
@@ -1312,6 +1329,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.post_request()
         except PS.ProfileCorrupt as error:
             return self.profile_problem(error)
+        except TaskStoreCorrupt as error:
+            return self.send_json({"error": str(error), "task_store": True}, 503)
         except JobBusy as exc:
             return self.send_json({"error": str(exc), "retry": True}, 409)
         except SubtitleLimit as exc:
@@ -1325,13 +1344,25 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
                         "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume",
-                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear", "/api/profile/recover"):
+                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear", "/api/profile/recover",
+                        "/api/jobs/recover"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/jobs/recover":
+            if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
+                return self.send_json({"error": "请刷新控制台后重新确认恢复"}, 400)
+            with JOBS_LOCK:
+                if any(j.state in ("running", "cancelling") or (j.thread and j.thread.is_alive()) for j in JOBS.values()):
+                    raise JobBusy("请先等待任务完成，或取消任务并等待停止后再重建")
+                try:
+                    backup_path = TASK_STORE.recover(body["fingerprint"])
+                except TaskStoreConflict as error:
+                    return self.send_json({"error": str(error)}, 409)
+            return self.send_json({"ok": True, "backup_path": backup_path})
         if path == "/api/profile/recover":
             if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
                 return self.send_json({"error": "请重新打开画像页并确认恢复"}, 400)
@@ -1675,7 +1706,10 @@ def main():
     if httpd is None:
         sys.exit(f"No free port between {args.port} and {args.port + 19}.")
 
-    TASK_STORE.mark_interrupted()
+    try:
+        TASK_STORE.mark_interrupted()
+    except (TaskStoreCorrupt, OSError, sqlite3.Error) as error:
+        print(f"任务记录暂不可用，控制台仍可打开：{short_err(error)}")
 
     # warm up spaCy + the frequency list in the background, so the first video starts faster
     def warm():

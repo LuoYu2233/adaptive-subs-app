@@ -58,6 +58,26 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+def test_task_corruption_keeps_status_and_profile_usable_and_recovery_is_protected(http_server, monkeypatch):
+    monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
+    raw = b"damaged task database"
+    S.TASK_STORE.path.write_bytes(raw)
+    status, body = request(http_server, "GET", "/api/status", headers=H)
+    issue = json.loads(body)["task_issue"]
+    assert status == 200 and issue["recoverable"]
+    assert request(http_server, "GET", "/api/profile", headers=H)[0] == 200
+    body = json.dumps({"fingerprint": issue["fingerprint"]})
+    assert request(http_server, "POST", "/api/jobs/recover", body)[0] == 403
+    assert S.TASK_STORE.path.read_bytes() == raw
+    j = job(S.DATA)
+    S.JOBS[j.vid] = j
+    assert request(http_server, "POST", "/api/jobs/recover", body, H)[0] == 409
+    S.JOBS.clear()
+    assert request(http_server, "POST", "/api/jobs/recover", body, H)[0] == 200
+    assert S.TASK_STORE.recent() == []
+    assert next((S.TASK_STORE.path.parent / "recovery").iterdir()).read_bytes() == raw
+
+
 def test_backup_preview_and_restore_are_protected_and_revision_checked(http_server, monkeypatch):
     monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
     S.PROFILE.mark("bank", "known")

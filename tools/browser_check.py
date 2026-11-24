@@ -28,10 +28,8 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="adaptive-subs-browser-") as temp:
         home = Path(temp)
-        TaskStore(home / "tasks.sqlite3").save("abcdefghijk", "running", {
-            "version": 1, "title": "断点恢复示例", "started": time.time(), "done": 1, "total": 2,
-            "provider": "deepseek", "model": "test", "ann": {}, "zh": {}, "cues": [],
-        })
+        damaged_tasks = b"damaged original task database"
+        (home / "tasks.sqlite3").write_bytes(damaged_tasks)
         env = {k: v for k, v in os.environ.items() if k not in (
             "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")}
         env.update(ASUBS_HOME=temp, ASUBS_NO_BROWSER="1", ASUBS_HEADLESS="1", ANNOTATION_PROVIDER="deepseek")
@@ -64,6 +62,18 @@ def main():
                     page.on("pageerror", lambda error: errors.append(str(error)))
 
                     page.goto(base + "/app")
+                    expect(page.locator("#taskIssue")).to_be_visible(timeout=20000)
+                    assert (home / "tasks.sqlite3").read_bytes() == damaged_tasks
+                    page.screenshot(path=str(output / "task-recovery.png"), full_page=True)
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.locator("#recoverTasks").click()
+                    expect(page.locator("#taskIssue")).to_be_hidden()
+                    assert next((home / "recovery").glob("tasks-*")).read_bytes() == damaged_tasks
+                    TaskStore(home / "tasks.sqlite3").save("abcdefghijk", "interrupted", {
+                        "version": 1, "title": "断点恢复示例", "started": time.time(), "done": 1, "total": 2,
+                        "provider": "deepseek", "model": "test", "ann": {}, "zh": {}, "cues": [],
+                    })
+                    page.reload()
                     expect(page.locator("[data-job='resume']")).to_be_visible(timeout=20000)
                     expect(page.locator("#videos")).to_contain_text("待恢复")
                     page.locator("[data-job='resume']").click()
@@ -224,7 +234,7 @@ def main():
                     page.once("dialog", lambda dialog: dialog.accept())
                     page.locator("#rebuildProfile").click()
                     expect(page.locator("#dataMessage")).to_contain_text("原始文件已保留")
-                    assert next((home / "recovery").iterdir()).read_bytes() == damaged_profile
+                    assert next((home / "recovery").glob("profile-*")).read_bytes() == damaged_profile
                     page.locator("#backupFile").set_input_files(str(backup_path))
                     expect(page.locator("#restorePreview")).to_be_visible()
                     page.locator("#restoreProfile").click()

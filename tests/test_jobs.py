@@ -128,6 +128,13 @@ def test_failed_client_setup_does_not_leave_running_ghost(runtime, monkeypatch):
     assert not S.JOBS
 
 
+def test_failed_initial_checkpoint_cannot_start_billable_work(runtime, monkeypatch):
+    monkeypatch.setattr(S.TASK_STORE, "save", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(S.JobBusy, match="进度无法保存"):
+        S.get_job("abcdefghijk", True, sub=subtitles())
+    assert not S.JOBS and runtime == []
+
+
 def test_active_job_limit_is_enforced_before_start(runtime):
     for i in range(S.MAX_ACTIVE_JOBS):
         S.JOBS[str(i)] = S.Job(str(i))

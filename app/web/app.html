@@ -175,6 +175,8 @@
 
   /* videos */
   .videos { padding: 0 8px; }
+  #taskIssue { margin: 8px 18px 14px; padding: 12px; border: 1px solid rgba(180, 116, 20, 0.35); border-radius: 12px; }
+  #taskIssue p { margin: 0 0 10px; line-height: 1.65; }
   .vid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 9px 10px; border-radius: 12px; align-items: center; transition: background 0.2s, transform 0.2s var(--ease); }
   .vid:hover { background: rgba(125, 184, 255, 0.1); transform: translateX(3px); }
   .vid-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -326,6 +328,11 @@
 
     <section class="glass panel spot" style="--i:2">
       <div class="head"><h2>最近的视频</h2></div>
+      <div id="taskIssue" hidden>
+        <p id="taskIssueText"></p>
+        <p>已经生成的字幕和英语画像仍然保留。重建会先保存任务库原文件，再建立空任务记录；未完成的视频需要重新发起处理。</p>
+        <button class="btn" id="recoverTasks" type="button">保留副本并重建任务记录</button>
+      </div>
       <div class="videos" id="videos"></div>
     </section>
 
@@ -504,6 +511,10 @@
       stage("profileerror", `<div class="kicker"><i></i>画像需要恢复</div>
         <div class="line">学习记录暂时无法读取</div><div class="sub">原文件没有改动。保留副本后可重建画像，再导入有效备份。</div>
         <a class="btn primary" href="/profile?app=1">恢复画像</a>`, null);
+    } else if (s.task_issue) {
+      stage("ready", `<div class="kicker"><i></i>任务记录需要检查</div>
+        <div class="line">已生成的字幕和画像仍可使用</div><div class="sub">查看最近视频区域的错误说明，再继续处理新视频。</div>
+        <a class="btn primary" href="#taskIssue">查看任务记录</a>`, null);
     } else {
       stage("ready", `<div class="kicker"><i></i>一切就绪</div>
         <div class="line">${gl("", "Ready", "准备好了", " when you are.")}</div>
@@ -547,6 +558,10 @@
     else showVocab($("#num"), p.level, "<small>词</small>");
 
     // videos (redrawn only when they change)
+    $("#taskIssue").hidden = !s.task_issue;
+    $("#taskIssueText").textContent = s.task_issue?.error || "";
+    $("#recoverTasks").hidden = !s.task_issue?.recoverable;
+    $("#recoverTasks").dataset.fingerprint = s.task_issue?.fingerprint || "";
     const rows = [];
     for (const j of s.jobs) {
       const pct = j.total ? Math.min(100, Math.round((100 * j.done) / j.total)) : 0;
@@ -601,6 +616,18 @@
     const c = e.target.closest("[data-close]");
     if (c) c.closest("dialog").close();
   });
+  $("#recoverTasks").onclick = async () => {
+    const button = $("#recoverTasks");
+    const fingerprint = button.dataset.fingerprint;
+    if (!fingerprint || !confirm("先保存原任务库副本，再重建空任务记录？已经生成的字幕和画像不变，未完成视频需要重新处理，可能产生新的模型用量。")) return;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/jobs/recover", { method: "POST", headers: H, body: JSON.stringify({ fingerprint }) });
+      const result = await response.json();
+      toast(result.error || "任务记录已重建；原文件保留在数据目录 recovery 文件夹中");
+    } catch { toast("恢复结果未确认，请刷新控制台查看，暂勿重复操作"); }
+    finally { button.disabled = false; await refresh(); }
+  };
   $("#extHelp").onclick = () => $("#extDlg").showModal();
   $("#copyUrl").onclick = async () => {
     try { await navigator.clipboard.writeText("chrome://extensions"); toast("已复制，粘贴到浏览器地址栏"); }
