@@ -146,7 +146,7 @@ NET_ERR_RE = re.compile(r"timed? ?out|timeout|connection|connect|reset|refused|s
 
 
 def short_err(e: Exception) -> str:
-    msg = str(e).splitlines()[0] if str(e) else e.__class__.__name__
+    msg = applog.redact(str(e)).splitlines()[0] if str(e) else e.__class__.__name__
     return re.sub(r"^(ERROR: )?(\[\w+\] )?([\w-]{11}: )?", "", msg)[:160]
 
 
@@ -461,7 +461,7 @@ def _run_job(job: Job):
             return
         job.state = "error"
         print(f"[{job.vid}] {e}")
-        job.emit("fail", {"msg": str(e)})
+        job.emit("fail", {"msg": applog.redact(str(e))})
     except NoSubtitles:
         if job.state == "cancelling":
             return
@@ -485,7 +485,7 @@ def _run_job(job: Job):
             return
         job.state = "error"
         traceback.print_exc()
-        msg = str(e).splitlines()[0][:200] if str(e) else e.__class__.__name__
+        msg = short_err(e)
         job.emit("fail", {"msg": f"处理失败：{msg}"})
 
 
@@ -1607,6 +1607,8 @@ def main():
     args = ap.parse_args()
     if args.host not in ("127.0.0.1", "localhost"):
         sys.exit("Adaptive Subs only listens on this computer (127.0.0.1): it holds your API keys.")
+    if applog.LOG_FILE is None:
+        applog.install(HOME / "logs")
     want_browser = (args.open or args.app) and not args.gui and not os.environ.get("ASUBS_NO_BROWSER")
 
     def open_browser(port):
