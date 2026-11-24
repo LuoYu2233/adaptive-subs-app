@@ -710,27 +710,31 @@
     const word = note ? c.text.slice(note.s, note.e) : tok.dataset.w;
     const key = note ? markKey(note) : (lemmaGuesses(word).find((k) => PF.known.has(k) || PF.unknown.has(k)) || word.toLowerCase());
     if (CARD.open && CARD.key === key) return closeCard();
+    const req = ++CARD.defReq;  // Switching to an annotated card also invalidates pending lookups.
     const v = findVideo();
     if (!CARD.open && v && !v.paused) { v.pause(); CARD.paused = true; }
     const looking = !note || note.local;
     Object.assign(CARD, { open: true, key, word, note, ci: S.cur, zh: note && !note.local ? note.zh : "", short: note ? note.zh : "",
-      lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "" });
+      lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "", ctxError: "" });
     renderCard();
     placeCard(tok);
     if (!looking) return;
     // A word without an annotation: dictionary meaning (instant, general) + its meaning in this line
     // (asks the annotation model, 1-2 s) — the dictionary alone can be wrong here ("ligature" = 绳 in a video on fonts)
-    const req = ++CARD.defReq;
     const live = () => req === CARD.defReq && CARD.open;
     (async () => {
       let d = await bg({ type: "define", word });
+      if (!live()) return;
+      let resolvedKey = key;
       if (!d.zh) {                               // try base forms ("decided" -> "decide")
         for (const g of lemmaGuesses(word).slice(1)) {
           const r2 = await bg({ type: "define", word: g });
-          if (r2.zh) { d = r2; if (!note) CARD.key = g; break; }
+          if (!live()) return;
+          if (r2.zh) { d = r2; if (!note) resolvedKey = g; break; }
         }
       }
       if (!live()) return;
+      CARD.key = resolvedKey;
       CARD.dict = d.zh ? d : null;
       CARD.dictState = d.zh ? "done" : "none";
       CARD.lists = d.lists || null;

@@ -44,6 +44,44 @@ def test_legitimate_empty_notes_are_cached():
     assert client.chat.completions.create.call_count == 1
 
 
+@pytest.mark.parametrize("bad", [
+    {}, {"zh": {"text": "银行"}}, {"zh": "", "pos": "n.", "base": "bank"},
+    {"zh": "银行", "pos": 1, "base": "bank"}, {"zh": "银行", "pos": "n.", "base": ["bank"]},
+    {"zh": "银行", "pos": "n.", "base": "bank", "note": None},
+    {"zh": "词" * 41, "pos": "n.", "base": "bank"},
+    {"zh": "\ud800", "pos": "n.", "base": "bank"},
+])
+def test_invalid_context_explanations_are_not_cached(bad):
+    client = fake_client(bad, bad)
+    with pytest.raises(A.ModelResponseError):
+        A.call_json(client, "test", "none", A.EXPLAIN_PROMPT, {"word": "bank", "sentence": "The bank."})
+    assert not list(A.CACHE_DIR.glob("*.json"))
+
+
+def test_context_explanation_cache_is_validated_and_does_not_change_meaning():
+    expected = {"zh": "银行", "pos": "n.", "base": "bank", "note": ""}
+    client = fake_client({**expected, "base": "Bank", "extra": "unused"}, {**expected, "zh": "河岸"})
+    args = (client, "test", "none", A.EXPLAIN_PROMPT, {"word": "bank", "sentence": "The bank."})
+    assert A.call_json(*args) == expected
+    assert A.call_json(*args) == expected
+    assert client.chat.completions.create.call_count == 1
+    cache = next(A.CACHE_DIR.glob("*.json"))
+    cache.write_text('{"zh":{"invalid":"cached"}}')
+    assert A.call_json(*args)["zh"] == "河岸"
+    assert json.loads(cache.read_text())["zh"] == "河岸"
+
+
+def test_explanations_for_different_contexts_do_not_share_cache():
+    first = {"zh": "银行", "pos": "n.", "base": "bank"}
+    second = {**first, "zh": "河岸"}
+    client = fake_client(first, second)
+    assert A.call_json(client, "test", "none", A.EXPLAIN_PROMPT,
+        {"word": "bank", "sentence": "The bank approved my loan."})["zh"] == "银行"
+    assert A.call_json(client, "test", "none", A.EXPLAIN_PROMPT,
+        {"word": "bank", "sentence": "We walked along the river bank."})["zh"] == "河岸"
+    assert client.chat.completions.create.call_count == 2
+
+
 @pytest.mark.parametrize("bad", [[], {"items": []}, {"items": [{}]}, {"items": [{"id": 0, "notes": "bad"}]}])
 def test_missing_or_malformed_annotations_are_not_cached(bad):
     with pytest.raises(A.ModelResponseError):

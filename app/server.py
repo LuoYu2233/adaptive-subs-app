@@ -1056,16 +1056,7 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
 
-EXPLAIN_PROMPT = """A Chinese learner of English clicked a word in a video subtitle.
-Input: {"word": "...", "sentence": "..."} (the subtitle line the word is in).
-Give the word's meaning IN THIS SENTENCE, for a Chinese learner.
-Reply with JSON only:
-{"zh": "<the meaning here, Simplified Chinese, 2-8 characters, one sense only, no alternatives>",
- "pos": "<part of speech here: n. / v. / adj. / adv. / prep. / ...>",
- "base": "<dictionary form, e.g. 'ran' -> 'run'>",
- "note": "<optional, at most 15 Chinese characters: only if the word is part of a phrase or idiom here
-           whose meaning differs, e.g. 'give up' -> 放弃; otherwise empty>"}
-If the word is a name or not English, give its usual Chinese rendering (or a transliteration) in "zh"."""
+EXPLAIN_PROMPT = A.EXPLAIN_PROMPT
 
 STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html",
                 "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html",
@@ -1597,10 +1588,12 @@ class Handler(SimpleHTTPRequestHandler):
         """Meaning of a clicked word in its sentence (words the annotations didn't cover).
         The dictionary only has general senses ("ligature" = 绳); this asks the annotation model what the
         word means here. Cached on disk by call_json, so the same word in the same line costs nothing again."""
-        word = A.clean(str(body.get("word", "")))[:40]
-        sentence = A.clean(str(body.get("sentence", "")))[:400]
-        if not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", word) or not sentence:
-            return self.send_json({"error": "bad request"}, 400)
+        word, sentence = body.get("word"), body.get("sentence")
+        if (not isinstance(word, str) or not isinstance(sentence, str) or len(sentence) > MAX_CUE_CHARS
+                or not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", word)
+                or not re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", sentence, re.IGNORECASE)):
+            return self.send_json({"error": "请选择原句中的英文单词，原句不能超过 2000 个字符"}, 400)
+        sentence = A.clean(sentence)
         if not P.has_key():
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
@@ -1609,12 +1602,7 @@ class Handler(SimpleHTTPRequestHandler):
             data = A.call_json(service, model, "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
         except Exception as e:
             return self.send_json({"error": f"查询失败：{short_err(e)[:80]}"}, 502)
-        zh = A.clean(str(data.get("zh") or ""))[:16]
-        if not zh:
-            return self.send_json({"zh": ""})
-        return self.send_json({"zh": zh, "pos": A.clean(str(data.get("pos") or ""))[:8],
-                               "base": A.clean(str(data.get("base") or ""))[:40].lower(),
-                               "note": A.clean(str(data.get("note") or ""))[:40]})
+        return self.send_json(data)
 
     def save_settings(self, body: dict):
         updates = {}

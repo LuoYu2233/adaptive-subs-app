@@ -1,4 +1,4 @@
-# 0.4.0-alpha.7 本地试用版
+# 0.4.0-alpha.8 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -13,6 +13,8 @@ alpha.5 增加损坏任务库的控制台恢复入口，先保留副本再重建
 alpha.6 改用精简任务摘要降低控制台读取开销，区分 YouTube 验证、限流和权限错误；修复音频提前断流后的无限等待，校验分段响应并限制缓冲区增长。语音识别上限为 3 小时，流式压缩音频文件上限为 384 MB，超限会明确报错；不同音频格式可能有不同文件大小。
 
 alpha.7 增加生词本 JSON 备份与合并恢复，修复删除和撤销保存失败后的误报；播放器各页面通过 Web Locks 协调写入，显示设置不再覆盖其他页面的收藏。损坏的浏览器记录会阻止普通写入，支持先保留原文再重建，副本可下载。升级时请关闭或刷新所有旧播放器页面；旧版页面没有参与新的写入协调。不支持 Web Locks 的浏览器可读取已有记录，但会明确拒绝保存。
+
+alpha.8 为大生词本增加搜索和分页，筛选下备份仍保留所有记录；修复快速切换插件词卡时旧查询可能改写新词卡标记对象的问题。语境查词严格校验模型返回值和缓存，传入完整有效原句，不再截掉第 400 字后的上下文。以上是数据与交互正确性改进，尚不代表真实模型的词义准确度已通过验收。
 
 ## 这一版的变化
 
@@ -46,8 +48,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.7-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.7-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.8-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.8-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。

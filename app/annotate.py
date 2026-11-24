@@ -14,7 +14,7 @@ Pipeline:
   3. LLM: keep/drop candidates, add idioms / phrasal verbs / uncommon senses,
      short Chinese gloss for this context, difficulty level per item
   4. LLM: natural Chinese translation of every line (for the bilingual comparison mode)
-  5. post-process: locate spans, normalise glosses, lemma keys, one gloss per key
+  5. post-process: locate spans, normalise each context's gloss, assign lemma keys
 Output: data/ID.json (read by player.html)
 """
 
@@ -221,6 +221,17 @@ Reply with JSON only: {"items": [{"id": 0, "zh": "...", "level": 6000}]}"""
 
 FALLBACK_RANK = 4000   # rare candidates the annotation step skipped get a second, focused pass
 
+EXPLAIN_PROMPT = """A Chinese learner of English clicked a word in a video subtitle.
+Input: {"word": "...", "sentence": "..."} (the subtitle line the word is in).
+Give the word's meaning IN THIS SENTENCE, for a Chinese learner.
+Reply with JSON only:
+{"zh": "<the meaning here, Simplified Chinese, 2-8 characters, one sense only, no alternatives>",
+ "pos": "<part of speech here: n. / v. / adj. / adv. / prep. / ...>",
+ "base": "<dictionary form, e.g. 'ran' -> 'run'>",
+ "note": "<optional, at most 15 Chinese characters: only if the word is part of a phrase or idiom here
+           whose meaning differs, e.g. 'give up' -> 放弃; otherwise empty>"}
+If the word is a name or not English, give its usual Chinese rendering (or a transliteration) in "zh"."""
+
 
 def missing_candidates(texts: list[str], ids, cands: list[list[dict]], placed: dict) -> list[tuple[int, str]]:
     """Rare candidate words (rank >= FALLBACK_RANK) that no annotation on their line covers."""
@@ -331,6 +342,21 @@ def request_slot(lock, cancelled=None):
 def validate_response(data, system: str, payload) -> dict:
     if not isinstance(data, dict):
         raise ModelResponseError("模型返回格式错误：需要 JSON 对象")
+    if system == EXPLAIN_PROMPT:
+        result = {}
+        for field, limit in (("zh", 40), ("pos", 16), ("base", 40), ("note", 80)):
+            value = data.get(field, "" if field == "note" else None)
+            if not isinstance(value, str) or len(value) > limit or (field != "note" and not value.strip()):
+                raise ModelResponseError("模型返回了无效或不完整的语境释义")
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ModelResponseError("模型返回了无效的释义字符") from None
+            result[field] = clean(value)
+        if not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", result["base"]):
+            raise ModelResponseError("模型返回了无效的词典词形")
+        result["base"] = result["base"].lower()
+        return result
     if system in (ANNOTATE_PROMPT, GLOSS_PROMPT, TRANSLATE_PROMPT):
         items = data.get("items")
         if not isinstance(items, list) or any(not isinstance(it, dict) for it in items):
@@ -401,7 +427,7 @@ def _call_json(client, model, effort, system, payload, usage, cache_file, cancel
             return validate_response(json.loads(cache_file.read_text(encoding="utf-8")), system, payload)
         except (OSError, ValueError, ModelResponseError):
             pass  # Interrupted/obsolete cache: regenerate, and replace it atomically on success.
-    label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss"}.get(system, "other")
+    label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss", EXPLAIN_PROMPT: "explain"}.get(system, "other")
     import providers
     extra = providers.chat_options(model, effort)    # GPT reasoning effort / DeepSeek & MiMo thinking switch
     last_err = None

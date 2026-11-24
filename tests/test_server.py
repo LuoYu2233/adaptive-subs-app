@@ -49,6 +49,33 @@ def test_get_never_starts_paid_work(http_server, monkeypatch):
     start.assert_not_called()
 
 
+@pytest.mark.parametrize("body", [
+    {"word": "bank", "sentence": None}, {"word": ["bank"], "sentence": "The bank."},
+    {"word": "bank", "sentence": "The riverbank."}, {"word": "bank", "sentence": "x" * 2000 + " bank"},
+    {"word": "x" * 41, "sentence": "x" * 41},
+])
+def test_bad_explanation_input_never_requests_a_model(http_server, monkeypatch, body):
+    call = Mock(side_effect=AssertionError("Must not request a model"))
+    monkeypatch.setattr(A, "call_json", call)
+    status, raw = request(http_server, "POST", "/api/explain", json.dumps(body), H)
+    assert status == 400 and "原句" in json.loads(raw)["error"]
+    call.assert_not_called()
+
+
+def test_explanation_preserves_clicked_word_after_first_400_characters(http_server, monkeypatch):
+    service = object()
+    result = {"zh": "河岸", "pos": "n.", "base": "bank", "note": ""}
+    call = Mock(return_value=result)
+    monkeypatch.setattr(S.P, "has_key", lambda: True)
+    monkeypatch.setattr(S, "client", lambda: service)
+    monkeypatch.setattr(A, "call_json", call)
+    sentence = "We continued our walk. " * 30 + "We reached the river bank."
+    status, raw = request(http_server, "POST", "/api/explain", json.dumps({"word": "bank", "sentence": sentence}), H)
+    assert status == 200 and json.loads(raw) == result
+    assert call.call_args.args[4]["sentence"] == sentence
+    assert call.call_args.args[0] is service
+
+
 def test_extension_receives_platform_restriction_without_model_work(http_server, monkeypatch):
     error = S.video_access_error(RuntimeError("Sign in to confirm you're not a bot"))
     monkeypatch.setattr(S, "fetch_subtitles", Mock(side_effect=error))

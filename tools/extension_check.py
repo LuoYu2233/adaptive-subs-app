@@ -30,6 +30,8 @@ def check_extension(playwright, base, home, output):
         external = []
         fail_mark = False
         fail_profile = False
+        delay_lookup = False
+        pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
         with wave.open(sound, "wb") as wav:
@@ -40,6 +42,14 @@ def check_extension(playwright, base, home, output):
         def route_request(route):
             url = route.request.url
             if url.startswith(base + "/"):
+                if delay_lookup and "/api/define?w=" in url:
+                    if url.endswith("w=approved"):
+                        return route.fulfill(json={"word": "approved", "zh": ""})
+                    pending_lookup.append(route)
+                    return
+                if delay_lookup and url.endswith("/api/explain"):
+                    pending_lookup.append(route)
+                    return
                 if (fail_mark and url.endswith("/api/mark")) or (fail_profile and url.endswith("/api/profile") and route.request.method == "POST"):
                     return route.fulfill(status=507, content_type="application/json", body=json.dumps({"error": "测试磁盘不可写"}))
                 return route.continue_()
@@ -84,6 +94,31 @@ def check_extension(playwright, base, home, output):
             gloss = page.locator(".asubs-gz")
             expect(gloss).to_have_text("银行", timeout=20000)
             expect(page.locator(".asubs-w")).to_have_text("bank")
+            # Delayed lookups for an earlier word must never alter a later card's mark key.
+            delay_lookup = True
+            page.locator('.asubs-t[data-w="approved"]').click()
+            for _ in range(200):
+                if any("/api/define?" in route.request.url for route in pending_lookup):
+                    break
+                page.wait_for_timeout(10)
+            else:
+                raise AssertionError("The lemma lookup was not observed")
+            page.locator(".asubs-t").filter(has_text="bank").click()
+            expect(page.locator(".asubs-card-word")).to_have_text("bank")
+            for route in pending_lookup:
+                route.fulfill(json={"word": "approve", "zh": "批准", "short": "批准", "base": "approve", "pos": "v.", "note": ""})
+            pending_lookup.clear()
+            delay_lookup = False
+            page.wait_for_timeout(150)
+            expect(page.locator(".asubs-card-zh")).to_contain_text("银行")
+            page.locator('.asubs-card [data-act="known"]').click()
+            expect(page.locator(".asubs-pill")).to_contain_text("已加入熟词库")
+            marked = json.loads((home / "profile.json").read_text())
+            assert len(marked["known"]) == 1 and marked["known"][0].startswith("ctx:bank:"), marked["known"]
+            assert next(iter(marked["mark_details"].values()))["zh"] == "银行"
+            worker.evaluate("() => handle({type:'setprofile',payload:{reset_marks:true}})")
+            page.reload()
+            expect(gloss).to_have_text("银行", timeout=20000)
             page.locator(".asubs-t").filter(has_text="bank").click()
             expect(page.locator(".asubs-card-zh")).to_contain_text("银行")
             fail_mark = True
