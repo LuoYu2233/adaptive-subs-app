@@ -396,6 +396,57 @@ def main():
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
+                    # Thousands of saved words stay searchable without thousands of DOM rows.
+                    page.goto(base + "/player.html?v=zzzzzzzzzzz")
+                    page.locator(".tabs [data-tab='book']").click()
+                    long_book = [{**book_backup["entries"][0], "key": f"benchmark-{i}", "term": f"term{i}",
+                                  "zh": "测试词语", "sentence": f"Original example number {i}."} for i in range(5000)]
+                    long_book[-1]["term"] = "x" * 500
+                    page.locator("#bookBackupFile").set_input_files({"name": "large-book.json", "mimeType": "application/json",
+                        "buffer": json.dumps({**book_backup, "entries": long_book}).encode()})
+                    expect(page.locator("#bookImportSummary")).to_contain_text("将新增 5000 条")
+                    page.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookCount")).to_have_text("5002")
+                    expect(page.locator("#bookList .wrow")).to_have_count(50)
+                    expect(page.locator("#bookPageSummary")).to_contain_text("第 1 / 101 页")
+                    book_timings = []
+                    for mode in ("plain", "adaptive", "plain"):
+                        begin = time.monotonic()
+                        page.locator(f'#modeSeg [data-mode="{mode}"]').click()
+                        page.wait_for_function("mode => JSON.parse(localStorage.getItem('adaptive-subs:v2')).mode === mode", arg=mode)
+                        book_timings.append(round((time.monotonic() - begin) * 1000))
+                    page.locator("#bookNext").click()
+                    expect(page.locator("#bookPageSummary")).to_contain_text("第 2 / 101 页")
+                    expect(page.locator("#bookList .w-term").first).to_have_text("term4949")
+                    search = page.locator("#bookSearch").element_handle()
+                    page.locator("#bookSearch").fill("ORIGINAL EXAMPLE NUMBER 1234.")
+                    expect(page.locator("#bookList .wrow")).to_have_count(1)
+                    expect(page.locator("#bookList .w-term")).to_have_text("term1234")
+                    assert search.evaluate("e => e.isConnected && document.activeElement === e")
+                    with page.expect_download() as download:
+                        page.locator('[data-act="backup-book"]').click()
+                    filtered_backup = home / "filtered-backup.json"
+                    download.value.save_as(filtered_backup)
+                    assert len(json.loads(filtered_backup.read_text())["entries"]) == 5002
+                    page.locator('[data-act="unbook"]').click()
+                    expect(page.locator("#bookList")).to_contain_text("没有匹配的记录")
+                    page.locator("#toast button").click()
+                    expect(page.locator("#bookList .wrow")).to_have_count(1)
+                    page.locator("#bookSearch").fill("测试词语")
+                    expect(page.locator("#bookPageSummary")).to_contain_text("找到 5000 条")
+                    page.locator("#bookSearch").fill("不存在的搜索记录")
+                    expect(page.locator("#bookList .wrow")).to_have_count(0)
+                    page.locator('[data-act="book-clear"]').click()
+                    expect(page.locator("#bookList .wrow")).to_have_count(50)
+                    page.set_viewport_size({"width": 390, "height": 844})
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Long word overflow"
+                    page.screenshot(path=str(output / "wordbook-search-mobile.png"), full_page=True)
+                    page.set_viewport_size({"width": 1280, "height": 900})
+                    (output / "wordbook-performance.json").write_text(json.dumps({"entries": 5002,
+                        "rendered_rows": page.locator("#bookList .wrow").count(), "mode_switch_ms": book_timings}))
+                    await_script = "entries => AdaptivePlayerStore.create().update(current => ({ ...current, book: entries }))"
+                    page.evaluate(await_script, book_backup["entries"])
+
                     # Long transcripts keep unaffected DOM rows when mode/gloss state changes.
                     response = page.request.post(base + "/api/profile", data={"reset_marks": True}, headers={"X-Adaptive-Subs": "1"})
                     assert response.status == 200

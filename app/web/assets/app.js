@@ -331,15 +331,29 @@
   }
 
   // wordbook
+  const BOOK_PAGE_SIZE = 50;
+  let bookPage = 0, bookQuery = "";
   function renderBook() {
     const panel = $("#tab-book");
-    const tools = `<div class="panel-foot book-tools"><span>保存在这个浏览器中，请定期备份</span><button class="btn btn-ghost btn-sm" data-act="backup-book">备份 JSON</button><button class="btn btn-ghost btn-sm" data-act="import-book">恢复备份</button><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（Anki）</button></div>`;
-    if (!S.book.length) {
-      panel.innerHTML = `<div class="empty"><div class="empty-title">生词本还是空的</div>点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存，之后可以一键回到原片段重听。</div>` + tools;
-      return;
+    if (!$("#bookSearch", panel)) {
+      panel.innerHTML = `<div class="book-controls">
+        <div class="panel-foot book-tools"><span>保存在这个浏览器中，请定期备份</span><button class="btn btn-ghost btn-sm" data-act="backup-book">备份 JSON</button><button class="btn btn-ghost btn-sm" data-act="import-book">恢复备份</button><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（Anki）</button></div>
+        <div class="book-search"><label for="bookSearch">搜索生词本</label><input id="bookSearch" type="search" maxlength="200" placeholder="词语、释义或原句" autocomplete="off"></div>
+        <div class="book-pagination"><span id="bookPageSummary" role="status"></span><button class="btn btn-ghost btn-sm" id="bookPrev" data-act="book-prev" aria-label="生词本上一页">上一页</button><button class="btn btn-ghost btn-sm" id="bookNext" data-act="book-next" aria-label="生词本下一页">下一页</button></div>
+      </div><div id="bookList"></div>`;
+      $("#bookSearch").value = bookQuery;
+      $("#bookSearch").addEventListener("input", event => { bookQuery = event.target.value; bookPage = 0; renderBook(); });
     }
-    const items = S.book.slice().reverse();
-    panel.innerHTML = items.map(b => {
+    const normalize = value => value.normalize("NFKC").toLowerCase();
+    const query = normalize(bookQuery.trim());
+    const matches = S.book.filter(b => !query || [b.term, b.zh, b.sentence].some(value => normalize(value).includes(query))).reverse();
+    const pages = Math.max(1, Math.ceil(matches.length / BOOK_PAGE_SIZE));
+    bookPage = Math.min(bookPage, pages - 1);
+    $("#bookPageSummary").textContent = `${query ? `找到 ${matches.length} 条 / 全部 ${S.book.length} 条` : `共 ${S.book.length} 条`} · 第 ${bookPage + 1} / ${pages} 页`;
+    $("#bookPrev").disabled = bookPage === 0;
+    $("#bookNext").disabled = bookPage >= pages - 1;
+    const items = matches.slice(bookPage * BOOK_PAGE_SIZE, (bookPage + 1) * BOOK_PAGE_SIZE);
+    $("#bookList").innerHTML = items.length ? items.map(b => {
       const sameVideo = S.video && b.vid === S.video.id;
       return `
       <div class="wrow">
@@ -351,7 +365,9 @@
           ${sameVideo ? `<button class="time-link" data-act="seekt" data-t="${b.t}">▶ 回到 ${fmtTime(b.t)} 重听</button>` : ""}
         </div>
       </div>`;
-    }).join("") + tools;
+    }).join("") : `<div class="empty"><div class="empty-title">${query ? "没有匹配的记录" : "生词本还是空的"}</div>${query
+      ? '试试其他词语、中文释义或原句。<button class="link-btn" data-act="book-clear">清除搜索</button>'
+      : '点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存。'}</div>`;
   }
 
   function markTerm(sentence, term) {
@@ -1012,6 +1028,10 @@
     else if (act === "export") exportCSV();
     else if (act === "backup-book") exportBook();
     else if (act === "import-book") $("#bookBackupFile").click();
+    else if (act === "book-prev" || act === "book-next") {
+      bookPage = Math.max(0, bookPage + (act === "book-next" ? 1 : -1)); renderBook(); $("#tab-book").scrollTop = 0;
+    }
+    else if (act === "book-clear") { bookQuery = ""; bookPage = 0; $("#bookSearch").value = ""; renderBook(); $("#bookSearch").focus(); }
     else if (act === "close") closeCard(true);
   }
 
