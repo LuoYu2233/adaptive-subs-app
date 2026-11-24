@@ -179,7 +179,7 @@
   // as plain English, and the glosses are generated only after a click — like speech recognition. A video
   // done (or started) before just loads.
   function offerGloss(gen, payload, label) {
-    pill(`${label} · 生词注释按你的 key 计费（10 分钟约 ¥0.1–0.3）`, {
+    pill(`${label} · 生词注释按所选模型和实际用量计费`, {
       sticky: true,
       action: { label: "生成注释", fn: () => startGloss(gen, payload, label) },
     });

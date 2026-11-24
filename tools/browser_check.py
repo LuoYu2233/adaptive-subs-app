@@ -207,6 +207,8 @@ def main():
                         page.screenshot(path=str(output / f"{path}-mobile.png"), full_page=True)
                     assert not errors, errors
                     browser.close()
+                    from extension_check import check_extension
+                    check_extension(p, base, home, output)
                 print("Browser checks passed: recovery, settings, profile persistence, separate meaning feedback/wordbook, mobile layout.")
             finally:
                 server.terminate()
