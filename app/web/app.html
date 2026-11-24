@@ -340,6 +340,7 @@
   </div>
 
   <footer style="--i:3">
+    <span id="appVersion"></span><a href="/privacy">数据与隐私</a>
     <span class="grow">看视频时让程序保持运行，可以最小化窗口</span>
     <button class="btn" type="button" id="quit">退出程序</button>
   </footer>
@@ -482,6 +483,7 @@
   let lastVideos = "", lastVocab = "";
 
   function render(s) {
+    $("#appVersion").textContent = s.version ? `v${s.version}` : "";
     $("#live").className = "live";
     $("#live span").textContent = "运行中";
 

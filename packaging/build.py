@@ -27,10 +27,9 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 一、第一次使用（约 5 分钟）
 1. 把整个压缩包解压到一个文件夹（不要在压缩包里直接双击运行）。
 2. 双击「程序」文件夹里的 AdaptiveSubs.exe。
-   - Windows 可能提示"Windows 已保护你的电脑"：点「更多信息」→「仍要运行」。
-   - 杀毒软件如果拦截，请选择允许（程序没有数字签名，所以容易被误报）。
+   - 当前试用包没有数字签名。先核对来源和校验值；遇到系统拦截时保留提示，联系发布者核实。
 3. 程序窗口里点「填写 API key」（以后在「准备情况 → 注释模型」旁点「更改」）：
-   - 选择注释模型并填写它的 API key。推荐 DeepSeek（国内可直接用、速度最快）：
+   - 选择注释模型并填写它的 API key。例如 DeepSeek（国内可直接用）：
        DeepSeek：https://platform.deepseek.com/api_keys
        小米 MiMo：https://platform.xiaomimimo.com
        OpenAI：https://platform.openai.com/api-keys （国内需要海外网络和付款方式）
@@ -58,16 +57,16 @@ GUIDE = """Adaptive Subs（测试版）使用说明
    默认不显示，看视频时按 P 打开 / 关闭。
 
 三、费用
-用的是你自己的 API key，按用量付费，大约：
-  - 注释：每 10 分钟视频 ¥0.1–0.3（看选的模型）
-  - 语音识别：每 10 分钟 ¥0.1（只有点了「语音识别」才会用）
-生成过的视频会保存下来，再看不花钱。
+用的是你自己的 API key，按服务商、模型和实际用量计费，以服务商账单为准。
+生成注释、语音识别及点击需要上下文解释的单词时可能请求模型。
+完整缓存可直接复用；重试会尽量复用成功的批次。
 
 四、隐私
   - API key 只保存在这台电脑：%LOCALAPPDATA%\\AdaptiveSubs\\config.env，只发给对应的服务商。
   - 英语画像和标记过的词保存在同一个文件夹的 profile.json，不会上传到任何地方。
-  - 程序只在本机（127.0.0.1）运行，别的电脑和网站访问不到。
-  - 你的 B 站、YouTube 登录信息不会离开浏览器；发给程序的只有字幕文字和视频编号。
+  - 程序监听本机地址（127.0.0.1），不提供公网服务。
+  - 注释和查词会向所选服务商发送字幕上下文；语音识别向 MiMo 发送音频片段。
+  - 画像页支持备份和恢复；控制台「数据与隐私」说明保存位置、外部请求及删除方法。
 
 五、常见问题
   - 插件提示"程序没开"：确认 AdaptiveSubs.exe 的窗口开着，然后刷新视频页面。
@@ -84,6 +83,8 @@ ECDICT 词典数据（MIT，考试词表和释义）等。
 
 
 def main():
+    if sys.platform != "win32":
+        sys.exit("Windows 程序必须在 Windows 环境构建；源码包使用 packaging/source_release.py")
     for mod in ("PyInstaller", "av"):
         try:
             __import__(mod)

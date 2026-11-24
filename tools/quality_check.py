@@ -37,7 +37,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--node", default=os.environ.get("ASUBS_NODE") or shutil.which("node"))
     args = parser.parse_args()
-    commands = [[sys.executable, "-m", "pytest", "-q"], ["git", "diff", "--check"]]
+    commands = [[sys.executable, "-m", "pytest", "-q"]]
+    if (ROOT / ".git").exists():
+        commands.append(["git", "diff", "--check"])
     if not args.node:
         print("Node.js is required for JavaScript checks; set ASUBS_NODE or --node.")
         return 2

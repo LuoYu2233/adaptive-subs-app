@@ -44,6 +44,7 @@ import profile_store as PS
 import providers as P
 from storage import atomic_write, write_json
 from task_store import TaskStore
+from version import VERSION
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
@@ -1121,7 +1122,7 @@ def app_status(port: int) -> dict:
     running.sort(key=lambda x: -x["started"])
     prof = PROFILE.payload()
     return {
-        "port": port, "uptime": int(time.time() - STARTED),
+        "version": VERSION, "port": port, "uptime": int(time.time() - STARTED),
         "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
         "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
@@ -1195,7 +1196,7 @@ class Handler(SimpleHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
             self.note_extension()
-            return self.send_json({"ok": True, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
+            return self.send_json({"ok": True, "version": VERSION, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path.startswith("/api/") and not self.ext_ok():
