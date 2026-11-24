@@ -532,11 +532,20 @@ def place_notes(text: str, notes: list[dict]) -> list[dict]:
 
 
 def add_keys(cues: list[dict]) -> None:
-    """key = lemmatised lowercase span, so 'multipliers' and 'multiplier' count as one word."""
-    spans = [(c, n) for c in cues for n in c["notes"]]
-    docs = nlp().pipe(c["text"][n["s"]:n["e"]] for c, n in spans)
-    for (c, n), d in zip(spans, docs):
-        n["key"] = " ".join(t.lemma_.lower() for t in d if not (t.is_punct or t.is_space)) or c["text"][n["s"]:n["e"]].lower()
+    """Lemmatize each annotated span in its original cue, preserving contextual part of speech.
+
+    Isolated 'saw' can become 'see' even when the sentence describes a tool;
+    'leaves' can become 'leave' instead of 'leaf'. Parse a cue once for all its notes.
+    """
+    annotated = [c for c in cues if c["notes"]]
+    if not annotated:
+        return
+    docs = nlp().pipe(c["text"] for c in annotated)
+    for c, doc in zip(annotated, docs):
+        for note in c["notes"]:
+            terms = [t.lemma_.lower() for t in doc if note["s"] <= t.idx
+                     and t.idx + len(t.text) <= note["e"] and not (t.is_punct or t.is_space)]
+            note["key"] = " ".join(terms) or c["text"][note["s"]:note["e"]].lower()
 
 
 def blend_word_levels(cues: list[dict]) -> None:

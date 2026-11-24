@@ -6,6 +6,21 @@ const L = require("../shared/learning.js");
 const bank = { key: "bank", kind: "word", zh: "银行", lv: 5000 };
 const shore = { key: "bank", kind: "sense", zh: "河岸", lv: 5000 };
 const exportMeanings = require("./fixtures/export_meanings.json");
+test("contextual lemma fixtures keep tools separate from seeing and merge leaf inflections", () => {
+  const cases = require("./fixtures/context_lemmas.json");
+  const note = sentence => ({...cases.find(c => c.text === sentence).notes[0],lv:5000});
+  const tool = note("She cut the board with a saw.");
+  const see = note("She saw the bird.");
+  const leaves = note("The leaves fell from the tree.");
+  const leaf = note("A leaf fell from the tree.");
+  const leave = note("He leaves early each morning.");
+  assert.equal(L.state(tool,new Set(['see']),new Set(),3000),'hard');
+  assert.equal(L.state(see,new Set(['see']),new Set(),3000),'known');
+  assert.equal(L.key(leaves),L.key(leaf));
+  assert.notEqual(L.key(leaves),L.key(leave));
+  assert.equal(L.state(leaves,new Set(['leaf']),new Set(),3000),'known');
+  assert.equal(L.state(leaves,new Set(['leave']),new Set(),3000),'hard');
+});
 for (const fixture of exportMeanings.cases) test(`browser/export agreement: ${fixture.name}`, () => {
   const counts = new Map();
   const actual = fixture.cues.map(ids => {

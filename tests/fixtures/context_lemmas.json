@@ -1,0 +1,10 @@
+[
+  {"text": "She cut the board with a saw.", "notes": [{"span": "saw", "key": "saw", "zh": "锯子", "kind": "word"}]},
+  {"text": "She saw the bird.", "notes": [{"span": "saw", "key": "see", "zh": "看见", "kind": "word"}]},
+  {"text": "The leaves fell from the tree.", "notes": [{"span": "leaves", "key": "leaf", "zh": "树叶", "kind": "word"}]},
+  {"text": "A leaf fell from the tree.", "notes": [{"span": "leaf", "key": "leaf", "zh": "树叶", "kind": "word"}]},
+  {"text": "He leaves early each morning.", "notes": [{"span": "leaves", "key": "leave", "zh": "离开", "kind": "word"}]},
+  {"text": "The plane took off at noon.", "notes": [{"span": "took off", "key": "take off", "zh": "起飞", "kind": "phrase"}]},
+  {"text": "🌿 The leaves fell from the tree.", "notes": [{"span": "leaves", "key": "leaf", "zh": "树叶", "kind": "word"}]},
+  {"text": "She saw a saw.", "notes": [{"span": "saw", "key": "see", "zh": "看见", "kind": "word", "occurrence": 0}, {"span": "saw", "key": "saw", "zh": "锯子", "kind": "word", "occurrence": 1}]}
+]
