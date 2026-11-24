@@ -158,7 +158,7 @@
         + (!S.cues.length && !S.video && live ? ' <a class="btn btn-primary" href="demo">先体验示例</a>' : "")
         + (S.retryId && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">重试</button>` : "");
       const rb = $(".retry-btn", line);
-      if (rb) rb.onclick = () => openVideo(S.retryId);
+      if (rb) rb.onclick = () => openVideo(S.retryId, true);
       zh.hidden = true;
       meta.textContent = S.cues.length ? `共 ${S.cues.length} 句` : "";
       return;
@@ -897,7 +897,7 @@
     $("#density").addEventListener("click", async (e) => {
       const button = e.target.closest("[data-generation]");
       if (!button) return;
-      if (button.dataset.generation === "retry") return openVideo(S.retryId);
+      if (button.dataset.generation === "retry") return openVideo(S.retryId, true);
       button.disabled = true;
       try {
         const r = await fetch("api/jobs/cancel", { method: "POST",
@@ -1030,20 +1030,27 @@
   async function loadSaved(entry) {
     let data;
     try {
-      data = await (await fetch("data/" + entry.file, { cache: "no-store" })).json();
+      const response = await fetch("data/" + entry.file, { cache: "no-store" });
+      data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "字幕读取失败");
       data.cues = data.cues.map(c => ({ ...c, notes: AdaptiveLearning.clientNotes(c.text, c.notes) }));
     }
-    catch { toast(`字幕文件 data/${entry.file} 读取失败`); return; }
+    catch (e) {
+      resetVideo({ id: entry.id, title: entry.title || entry.id });
+      S.statusMsg = e.message || "已保存字幕无法读取";
+      S.retryId = live ? entry.id : null;
+      afterVideoChange(); toast(S.statusMsg); return;
+    }
     resetVideo(data.video);
     S.cues = data.cues;
     afterVideoChange();
   }
 
-  async function openVideo(input) {
+  async function openVideo(input, bypassIndex = false) {
     const v = String(input || "").trim();
     if (!v) return;
     const saved = index.find((x) => x.id === v);
-    if (saved) return loadSaved(saved);
+    if (saved && !bypassIndex) return loadSaved(saved);
     if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
     let r;
     try { r = await (await fetch("api/open", { method: "POST",

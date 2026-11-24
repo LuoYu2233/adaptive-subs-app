@@ -143,3 +143,36 @@ def test_large_transcript_windows_keep_neighbors_without_losing_cues(monkeypatch
     assert [row[0]["source"] for row in result] == texts
     assert any("line 99" in w and "line 100" in w and "line 101" in w for w in windows)
     assert max(map(len, windows)) <= 102
+
+
+@pytest.mark.parametrize("notes", [
+    [{"span": "absent", "zh": "没有", "kind": "word", "level": 5000}],
+    [{"span": "bank", "zh": "银行", "kind": "word", "level": "Infinity"}],
+    [{"span": "bank", "zh": "（解释）", "kind": "word", "level": 5000}],
+])
+def test_unplaceable_or_invalid_gloss_is_not_cached(notes):
+    bad = {"items": [{"id": 0, "notes": notes}]}
+    with pytest.raises(A.ModelResponseError):
+        A.call_json(fake_client(bad, bad), "test", "low", A.ANNOTATE_PROMPT, [{"id": 0, "line": "The bank."}])
+    assert not list(A.CACHE_DIR.glob("*.json"))
+
+
+@pytest.mark.parametrize("prompt,items", [
+    (A.GLOSS_PROMPT, []),
+    (A.GLOSS_PROMPT, [{"id": 0, "skip": "false"}]),
+    (A.GLOSS_PROMPT, [{"id": 0, "zh": ["银行"], "level": 5000}]),
+    (A.TRANSLATE_PROMPT, []),
+    (A.TRANSLATE_PROMPT, [{"id": 0, "src": "The bank", "zh": {"wrong": "type"}}]),
+    (A.TRANSLATE_PROMPT, [{"id": 0, "src": "Another sentence", "zh": "银行。"}]),
+])
+def test_invalid_fallback_or_translation_cannot_poison_cache(prompt, items):
+    bad = {"items": items}
+    with pytest.raises(A.ModelResponseError):
+        A.call_json(fake_client(bad, bad), "test", "low", prompt, [{"id": 0, "line": "The bank."}])
+    assert not list(A.CACHE_DIR.glob("*.json"))
+
+
+def test_explicit_skip_and_aligned_translation_are_valid():
+    payload = [{"id": 0, "line": "The bank."}]
+    assert A.validate_response({"items": [{"id": 0, "skip": True}]}, A.GLOSS_PROMPT, payload)
+    assert A.validate_response({"items": [{"id": 0, "src": "The bank", "zh": "银行。"}]}, A.TRANSLATE_PROMPT, payload)

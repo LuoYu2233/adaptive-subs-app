@@ -137,6 +137,15 @@ def test_nonfinite_subtitle_timestamps_are_dropped():
     assert S.clean_ext_cues([{"s": 0, "e": float("inf"), "text": "bad"}]) == []
 
 
+def test_unpaired_unicode_cannot_reach_profile_storage(http_server):
+    status, _ = request(http_server, "POST", "/api/profile", '{"field":"\\ud800"}', H)
+    assert status == 400 and not S.PROFILE.path.exists()
+
+
+def test_oversized_numeric_focus_is_rejected(http_server):
+    assert request(http_server, "POST", "/api/focus", json.dumps({"t": 10 ** 400}), H)[0] == 400
+
+
 def test_job_capacity_returns_actionable_http_error(http_server, monkeypatch):
     monkeypatch.setattr(S.P, "has_key", lambda: True)
     monkeypatch.setattr(S, "get_job", Mock(side_effect=S.JobBusy("请先完成或取消一个任务")))
@@ -160,8 +169,8 @@ def test_job_mutations_require_header(http_server, path):
 def test_probe_never_repairs_old_asr_with_billable_work(http_server, monkeypatch):
     S.EXT_DATA.mkdir()
     vid = "yt_abcdefghijk_asr"
-    (S.EXT_DATA / f"{vid}.json").write_text(json.dumps({"status": "complete", "source": "asr", "video": {"id": vid},
-        "cues": [{"text": "The request was rejected because it was considered high risk."}]}))
+    (S.EXT_DATA / f"{vid}.json").write_text(json.dumps({"status": "complete", "source": "asr", "video": {"id": vid, "title": "test", "duration": 5},
+        "cues": [{"s": 0, "e": 5, "notes": [], "text": "The request was rejected because it was considered high risk."}]}))
     start, repair = Mock(return_value=None), Mock()
     monkeypatch.setattr(S, "get_job", start)
     monkeypatch.setattr(S, "repair_saved", repair)

@@ -45,6 +45,7 @@ import providers as P
 from storage import atomic_write, write_json
 from task_store import TaskStore
 from version import VERSION
+from result_validation import valid_result
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
@@ -79,10 +80,11 @@ def key_missing_msg() -> str:
 def saved_result(path: Path) -> dict | None:
     """Only complete, well-formed results may short-circuit a generation request."""
     try:
+        if path.stat().st_size > 32 * 1024 * 1024:
+            return None
         data = json.loads(path.read_text(encoding="utf-8"))
-        if (isinstance(data, dict) and data.get("status", "complete") == "complete"
-                and isinstance(data.get("video"), dict) and isinstance(data.get("cues"), list)
-                and not (data.get("source") == "asr" and any(ASR.is_refusal(c.get("text", "")) for c in data["cues"] if isinstance(c, dict)))):
+        if (valid_result(data)
+                and not (data.get("source") == "asr" and any(ASR.is_refusal(c["text"]) for c in data["cues"]))):
             return data
     except (OSError, ValueError):
         pass
@@ -823,7 +825,7 @@ def fix_asr_punctuation(job: Job, ids: list[int]):
     for it in data.get("items", []):
         try:
             i, text = int(it["id"]), A.clean(str(it["text"]))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if i in ids and text != job.texts[i] and words(text) == words(job.texts[i]):
             changed[i] = text
@@ -862,7 +864,7 @@ def run_annotation(job: Job, ids: list[int], effort: str):
     for it in data.get("items", []):
         try:
             by_id[int(it["id"])] = it.get("notes", [])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             pass
     # second chance for rare words the model skipped (misspellings, everyday words it underrated)
     placed = {i: A.place_notes(job.texts[i], by_id.get(i, [])) for i in ids}
@@ -898,7 +900,7 @@ def run_translation(job: Job, t: dict):
     for it in data.get("items", []):
         try:
             i = int(it["id"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if i in t["ids"] and str(it.get("zh", "")).strip() and words(str(it.get("src", ""))) == words(job.texts[i]):
             got[i] = re.sub(r"^\s*>>\s*", "", str(it["zh"]).strip())     # some models copy the ">>" speaker mark
@@ -983,7 +985,7 @@ def clean_ext_cues(raw) -> list[dict]:
         try:
             s, e = float(c["s"]), float(c["e"])
             text = A.clean(str(c["text"]))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if text and math.isfinite(s) and math.isfinite(e) and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):
             total_chars += len(text)
@@ -1156,6 +1158,8 @@ class Handler(SimpleHTTPRequestHandler):
         elif re.fullmatch(r"/data/[A-Za-z0-9_.-]+\.json", path):
             name = path.split("/")[-1]
             f, base = (DATA / name, DATA) if (DATA / name).exists() else (BUNDLE_DATA / name, BUNDLE_DATA)
+            if base == DATA and name != "index.json" and saved_result(f) is None:
+                return self.send_json({"error": "已保存字幕不完整或已损坏，可以重新处理", "retry": True}, 409)
         else:
             return self.send_error(404)
         try:
@@ -1278,8 +1282,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return None
             body = json.loads(self.rfile.read(n).decode("utf-8"),
                               parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+            json.dumps(body, ensure_ascii=False).encode("utf-8")  # Reject unpaired surrogate escapes before storage.
             return body if isinstance(body, dict) else None
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, RecursionError):
             return None
 
     def do_POST(self):
@@ -1356,7 +1361,7 @@ class Handler(SimpleHTTPRequestHandler):
                 focus = float(body.get("t", 0))
                 if not math.isfinite(focus):
                     raise ValueError
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return self.send_json({"error": "invalid playback time"}, 400)
             job = get_job(str(body.get("v", "")), start=False)
             if job:
@@ -1423,7 +1428,7 @@ class Handler(SimpleHTTPRequestHandler):
             duration = float(body.get("duration") or 0)
             if not math.isfinite(duration) or duration < 0:
                 raise ValueError
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return self.send_json({"error": "视频时长必须是有限的非负数"}, 400)
         title = str(body.get("title") or vid)[:200]
         if body.get("probe"):       # the extension asks: done before / still running? (starts nothing)
@@ -1445,7 +1450,7 @@ class Handler(SimpleHTTPRequestHandler):
             if re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
                 try:
                     page = min(max(int(body.get("p") or 1), 1), 1000)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     page = 1
                 url = f"https://www.bilibili.com/video/{bvid}/?p={page}"
             elif YT_ID_RE.fullmatch(yt) and vid == f"yt_{yt}_asr":

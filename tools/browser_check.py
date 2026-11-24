@@ -167,6 +167,19 @@ def main():
                     expect(page.locator("#marks")).to_contain_text("bank · 银行")
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
+                    # A damaged saved file must offer an explicit retry, without starting work on read.
+                    broken = home / "data/zzzzzzzzzzz.json"
+                    complete = broken.read_text()
+                    broken.write_text('{"video":{},"cues":["invalid"]}')
+                    page.goto(base + "/player.html")
+                    expect(page.locator('[data-generation="retry"]')).to_be_visible()
+                    page.locator('.retry-btn').click()
+                    expect(page.locator("#toast")).to_contain_text("API key")
+                    page.locator('[data-generation="retry"]').click()
+                    expect(page.locator("#toast")).to_contain_text("API key")
+                    broken.write_text(complete)
+                    page.goto(base + "/profile")
+
                     with page.expect_download() as download:
                         page.locator("#exportProfile").click()
                     backup_path = home / "browser-backup.json"

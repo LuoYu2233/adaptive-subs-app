@@ -336,6 +336,7 @@ def validate_response(data, system: str, payload) -> dict:
         if not isinstance(items, list) or any(not isinstance(it, dict) for it in items):
             raise ModelResponseError("模型返回格式错误：缺少字幕结果列表")
         expected = {it["id"] for it in payload}
+        originals = {it["id"]: it for it in payload}
         seen = set()
         for item in items:
             i = item.get("id")
@@ -344,15 +345,43 @@ def validate_response(data, system: str, payload) -> dict:
             seen.add(i)
             if system == ANNOTATE_PROMPT:
                 notes = item.get("notes")
-                if not isinstance(notes, list) or any(
+                if not isinstance(notes, list) or len(notes) > 64 or any(
                     not isinstance(n, dict) or not isinstance(n.get("span"), str)
                     or not n["span"].strip() or not isinstance(n.get("zh"), str)
                     or not n["zh"].strip() for n in notes
                 ):
                     raise ModelResponseError("模型返回了不完整的词义注释")
-        if system == ANNOTATE_PROMPT and seen != expected:
+                for note in notes:
+                    line = originals[i].get("line", "")
+                    if (note.get("kind") not in ("word", "phrase", "sense") or not clean_zh(note["zh"])
+                            or len(note["zh"]) > 200 or not re.search(r"(?<!\w)" + re.escape(note["span"].strip()) + r"(?!\w)", line, re.IGNORECASE)):
+                        raise ModelResponseError("模型注释没有对应原句中的词或词义格式无效")
+                    validate_level(note.get("level"))
+            elif system == GLOSS_PROMPT:
+                if "skip" in item and type(item["skip"]) is not bool:
+                    raise ModelResponseError("模型返回了无效的跳过标记")
+                if not item.get("skip"):
+                    if not isinstance(item.get("zh"), str) or not clean_zh(item["zh"]) or len(item["zh"]) > 200:
+                        raise ModelResponseError("模型遗漏了候选词释义")
+                    validate_level(item.get("level"))
+            elif not isinstance(item.get("src"), str) or not isinstance(item.get("zh"), str) or not item["zh"].strip():
+                raise ModelResponseError("模型返回了无效的翻译文本")
+            elif system == TRANSLATE_PROMPT:
+                words = lambda s: re.findall(r"[a-z0-9']+", s.lower().replace("’", "'"))[:3]
+                if words(item["src"]) != words(originals[i].get("line", "")):
+                    raise ModelResponseError("模型翻译与原句没有正确对齐")
+        if seen != expected:
             raise ModelResponseError("模型遗漏了部分字幕，请重试")
     return data
+
+
+def validate_level(value):
+    import math
+    try:
+        if isinstance(value, bool) or not math.isfinite(float(value)) or not 1 <= float(value) <= 100000:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ModelResponseError("模型返回了无效的词汇难度") from None
 
 
 def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None,

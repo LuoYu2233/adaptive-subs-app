@@ -66,7 +66,7 @@ def validate_backup(backup: dict) -> dict:
     if field is not None and (not isinstance(field, str) or len(field) > 40):
         raise ValueError("备份中的专业或行业无效")
     exams = p.get("exams", {})
-    if not isinstance(exams, dict) or any(k not in EXAMS or type(v) not in (int, float) or not math.isfinite(v) or not EXAMS[k][1] <= v <= EXAMS[k][2] for k, v in exams.items()):
+    if not isinstance(exams, dict) or any(k not in EXAMS or type(v) not in (int, float) or not EXAMS[k][1] <= v <= EXAMS[k][2] or not math.isfinite(v) for k, v in exams.items()):
         raise ValueError("备份中的考试成绩无效")
     if "level" in p and (type(p["level"]) is not int or not 1 <= p["level"] <= 100000):
         raise ValueError("备份中的词汇量无效")
@@ -94,11 +94,11 @@ def validate_backup(backup: dict) -> dict:
             raise ValueError("备份中的词汇测试无效")
         try:
             datetime.date.fromisoformat(t.get("date", ""))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError("备份中的测试日期无效") from None
         tk, tu = words(t.get("known", []), 500), words(t.get("unknown", []), 500)
         bands = t.get("bands", [])
-        if tk & tu or not isinstance(bands, list) or len(bands) > 20 or any(type(b) not in (int, float) or not math.isfinite(b) or not 0 <= b <= 1 for b in bands):
+        if tk & tu or not isinstance(bands, list) or len(bands) > 20 or any(type(b) not in (int, float) or not 0 <= b <= 1 or not math.isfinite(b) for b in bands):
             raise ValueError("备份中的测试词表或分段结果无效")
     return p
 
@@ -298,7 +298,7 @@ class Store:
                         continue
                     try:
                         v = float(v)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         return f"{EXAMS[k][0]}的分数不是数字"
                     lo, hi = EXAMS[k][1], EXAMS[k][2]
                     if not lo <= v <= hi:
