@@ -53,6 +53,8 @@ def main():
             report["browser"] = run([sys.executable, "tools/browser_check.py"], timeout=180)
         if (ROOT / "tools/instance_check.py").exists():
             report["instances"] = run([sys.executable, "tools/instance_check.py"], timeout=90)
+        if (ROOT / "tools/runtime_check.py").exists():
+            report["runtime"] = run([sys.executable, "tools/runtime_check.py"], timeout=90)
         filename = folder / (now.strftime("%Y%m%dT%H%M%SZ") + ".json")
         filename.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         (folder / "latest.json").write_text(filename.read_text(encoding="utf-8"), encoding="utf-8")
@@ -66,7 +68,7 @@ def main():
                                       "--message", message, "--resume"], timeout=45)
             filename.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             (folder / "latest.json").write_text(filename.read_text(encoding="utf-8"), encoding="utf-8")
-        passed = all(report.get(key, {}).get("returncode", 0) == 0 for key in ("checks", "browser", "instances"))
+        passed = all(report.get(key, {}).get("returncode", 0) == 0 for key in ("checks", "browser", "instances", "runtime"))
         print(json.dumps({"report": str(filename), "checks_passed": passed,
                           "reminder": report.get("reminder")}, ensure_ascii=False))
         return 0 if passed and report.get("reminder", {}).get("returncode", 0) == 0 else 1

@@ -46,6 +46,7 @@ import profile_store as PS
 import providers as P
 import video_catalog
 from instance_lock import InstanceLock, read_instance
+from runtime_readiness import Readiness, ComponentError
 from storage import atomic_write, write_json
 from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
 from version import VERSION
@@ -73,6 +74,29 @@ NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
 CONFIG_LOCK = threading.RLock()
 INSTANCE_ID = uuid.uuid4().hex
 INSTANCE_GUARD = None
+
+
+def check_local_components():
+    try:
+        with NLP_LOCK:
+            A._nlp = None  # A repaired on-disk model must not reuse a failed in-memory pipeline.
+            model = A.nlp()
+            doc = model("The banks approved the loans.")
+            words = [token for token in doc if token.is_alpha]
+            if model.lang != "en" or not words or any(not token.lemma_ for token in words):
+                raise ValueError("English lemmatization is unavailable")
+    except Exception as error:
+        raise ComponentError("英语语言模型") from error
+    try:
+        A.load_ranks.cache_clear()
+        ranks = A.load_ranks()
+        if not ranks or not all(type(rank) is int and rank >= 1 for rank in ranks.values()):
+            raise ValueError("English word ranks are unavailable")
+    except Exception as error:
+        raise ComponentError("英语词频表") from error
+
+
+RUNTIME = Readiness(check_local_components)
 
 
 
@@ -375,6 +399,11 @@ def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | Non
                 raise JobBusy("正在保存此前的进度，请稍后再试")
             job = None                         # retry a failed video
         if job is None and start:
+            readiness = RUNTIME.snapshot()
+            if readiness["state"] == "unchecked":
+                readiness = RUNTIME.start()
+            if readiness["state"] != "ready":
+                raise JobBusy("本地英语处理组件尚未就绪，请打开控制台查看检查进度或修复提示。")
             if sum(j.state in ("running", "cancelling") for j in JOBS.values()) >= MAX_ACTIVE_JOBS:
                 raise JobBusy("同时最多处理 3 个视频，请先完成或取消一个任务")
             saved = TASK_STORE.load(vid)
@@ -1197,20 +1226,22 @@ def app_status(port: int) -> dict:
                         "done": p.get("done", 0), "total": p.get("total", 0), "asr": bool(p.get("asr_url")),
                         "feeding": False, "started": p.get("started", saved["updated"]), "persistence_error": False})
     running.sort(key=lambda x: -x["started"])
-    profile_error = None
+    profile_error, profile_recoverable = None, False
     try:
         prof = PROFILE.payload()
-    except (PS.ProfileCorrupt, OSError) as error:
-        profile_error = str(error) if isinstance(error, PS.ProfileCorrupt) else "学习档案无法读取，请检查文件权限"
+    except (PS.ProfileCorrupt, PS.LibraryUnavailable, OSError) as error:
+        profile_error = str(error) if isinstance(error, (PS.ProfileCorrupt, PS.LibraryUnavailable)) else "学习档案无法读取，请检查文件权限"
+        profile_recoverable = isinstance(error, PS.ProfileCorrupt)
         prof = {"setup": False, "level": 3000, "test": None, "lists": [],
                 "stats": {"known": 0, "marked_known": 0, "marked_unknown": 0}}
     return {
-        "version": VERSION, "port": port, "uptime": int(time.time() - STARTED),
+        "version": VERSION, "port": port, "uptime": int(time.time() - STARTED), "runtime": RUNTIME.snapshot(),
         "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
         "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
         "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
-                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"], "error": profile_error},
+                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"], "error": profile_error,
+                    "recoverable": profile_recoverable},
         "jobs": running, "recent": recent_videos(), "task_issue": task_issue,
         "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
     }
@@ -1284,6 +1315,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         try:
             return self.get_request()
+        except PS.LibraryUnavailable as error:
+            return self.send_json({"error": str(error), "component": True, "recoverable": False}, 503)
         except PS.ProfileCorrupt as error:
             return self.profile_problem(error)
         except TaskStoreCorrupt as error:
@@ -1302,7 +1335,8 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/health":
             self.note_extension()
             return self.send_json({"ok": True, "app": "adaptive-subs", "version": VERSION, "instance": INSTANCE_ID,
-                                   "instance_locked": INSTANCE_GUARD is not None, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
+                                   "instance_locked": INSTANCE_GUARD is not None, "runtime": RUNTIME.snapshot(),
+                                   "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path.startswith("/api/") and not self.ext_ok():
@@ -1392,6 +1426,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         try:
             return self.post_request()
+        except PS.LibraryUnavailable as error:
+            return self.send_json({"error": str(error), "component": True, "recoverable": False}, 503)
         except PS.ProfileCorrupt as error:
             return self.profile_problem(error)
         except TaskStoreCorrupt as error:
@@ -1410,13 +1446,19 @@ class Handler(SimpleHTTPRequestHandler):
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
                         "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume",
                         "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear", "/api/profile/recover",
-                        "/api/jobs/recover"):
+                        "/api/jobs/recover", "/api/runtime/check"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/runtime/check":
+            return self.send_json(RUNTIME.start())
+        if path in ("/api/profile", "/api/mark", "/api/profile/import", "/api/profile/clear"):
+            PROFILE.payload()  # Do not mutate if the updated learning state cannot be computed/returned.
+        elif path == "/api/profile/recover":
+            PS.library_known(set(), 3000)
         if path == "/api/jobs/recover":
             if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
                 return self.send_json({"error": "请刷新控制台后重新确认恢复"}, 400)
@@ -1828,12 +1870,7 @@ def run_server(httpd, args, port, open_browser):
     except (TaskStoreCorrupt, OSError, sqlite3.Error) as error:
         print(f"任务记录暂不可用，控制台仍可打开：{short_err(error)}")
 
-    # warm up spaCy + the frequency list in the background, so the first video starts faster
-    def warm():
-        with NLP_LOCK:
-            A.nlp()
-        A.load_ranks()
-    threading.Thread(target=warm, daemon=True).start()
+    RUNTIME.start()  # Check locally before permitting new generation work.
 
     key = "yes" if P.has_key() else "NO"
     asr = "yes" if ASR.configured() else "NO"

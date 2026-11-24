@@ -32,6 +32,7 @@ def check_extension(playwright, base, home, output):
         fail_profile = False
         delay_lookup = False
         mismatched_version = False
+        missing_runtime = False
         pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
@@ -45,9 +46,11 @@ def check_extension(playwright, base, home, output):
             if url == "http://127.0.0.1:1/api/health":
                 return route.fulfill(json={"ok": True})
             if url.startswith(base + "/"):
-                if mismatched_version and url.endswith("/api/health"):
-                    return route.fulfill(json={"ok": True, "app": "adaptive-subs", "version": "0.3.0", "ext": 2,
-                        "setup": "/setup", "profile": "/profile", "key": True, "provider_name": "模拟服务商"})
+                if (mismatched_version or missing_runtime) and url.endswith("/api/health"):
+                    version = "0.3.0" if mismatched_version else json.loads((extension / "manifest.json").read_text())["version_name"]
+                    return route.fulfill(json={"ok": True, "app": "adaptive-subs", "version": version, "ext": 2,
+                        "setup": "/setup", "profile": "/profile", "key": True, "provider_name": "模拟服务商",
+                        "runtime": {"state": "error", "message": "英语语言模型无法正常加载"} if missing_runtime else {"state": "ready"}})
                 if delay_lookup and "/api/define?w=" in url:
                     if url.endswith("w=approved"):
                         return route.fulfill(json={"word": "approved", "zh": ""})
@@ -173,6 +176,16 @@ def check_extension(playwright, base, home, output):
         expect(popup.locator("#status")).to_contain_text("与插件版本不同")
         expect(popup.locator("#status")).to_contain_text("0.3.0")
         mismatched_version = False
+        missing_runtime = True
+        popup.reload()
+        expect(popup.locator("#status")).to_contain_text("英语语言模型无法正常加载")
+        expect(popup.locator("#openSetup")).to_have_text("打开控制台")
+        with context.expect_page() as opened:
+            popup.locator("#openSetup").click()
+        control = opened.value
+        control.wait_for_url(base + "/app")
+        control.close()
+        missing_runtime = False
         popup.reload()
         expect(popup.locator("#status")).not_to_contain_text("与插件版本不同")
         popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)

@@ -95,8 +95,33 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+def test_missing_word_library_preserves_profile_and_keeps_status_and_backup_available(http_server, monkeypatch):
+    monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
+    monkeypatch.setattr(S.PS, "base_known", Mock(side_effect=ImportError("synthetic missing wordfreq")))
+    raw = b'{"rev":2,"known":["bank"],"identity":"undergrad"}'
+    S.PROFILE.path.write_bytes(raw)
+    status, body = request(http_server, "GET", "/api/status", headers=H)
+    result = json.loads(body)
+    assert status == 200 and "词库" in result["profile"]["error"]
+    assert result["profile"]["recoverable"] is False
+    status, body = request(http_server, "GET", "/api/profile", headers=H)
+    assert status == 503 and json.loads(body)["recoverable"] is False
+    status, body = request(http_server, "GET", "/api/profile/export", headers=H)
+    backup = json.loads(body)
+    assert status == 200 and backup["profile"]["known"] == ["bank"]
+    for path, value in (("/api/mark", {"key": "bank", "state": "unknown"}),
+                        ("/api/profile", {"level": 5000}), ("/api/profile/clear", {"expected_rev": 2}),
+                        ("/api/profile/import", {"backup": backup, "expected_rev": 2})):
+        assert request(http_server, "POST", path, json.dumps(value), H)[0] == 503
+        assert S.PROFILE.path.read_bytes() == raw
+    S.PROFILE.path.write_bytes(b"broken profile")
+    assert request(http_server, "POST", "/api/profile/recover", json.dumps({"fingerprint": "a" * 64}), H)[0] == 503
+    assert S.PROFILE.path.read_bytes() == b"broken profile"
+
+
 def test_status_remains_available_when_recent_video_title_is_invalid(http_server, monkeypatch):
     monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
     value = {"video": {"id": "abcdefghijk", "title": "\ud800", "duration": 1},
         "cues": [{"s": 0, "e": 1, "text": "Original sample.", "notes": []}]}
     raw = json.dumps(value).encode()
@@ -125,6 +150,7 @@ def test_referrer_policy_allows_only_player_origin_for_youtube(http_server, path
 
 def test_task_corruption_keeps_status_and_profile_usable_and_recovery_is_protected(http_server, monkeypatch):
     monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
     raw = b"damaged task database"
     S.TASK_STORE.path.write_bytes(raw)
     status, body = request(http_server, "GET", "/api/status", headers=H)

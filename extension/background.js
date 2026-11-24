@@ -69,6 +69,7 @@ async function perform(msg) {
   if (msg.type === "health") {
     return { ok: true, base: s.base, ext: !!s.h.ext, key: !!s.h.key, asr: !!s.h.asr, model: s.h.model,
              version: s.h.version, versionMismatch: s.h.version !== chrome.runtime.getManifest().version_name,
+             runtime: s.h.runtime,
              provider: s.h.provider_name || "", setup: s.h.setup ? s.base + s.h.setup : "",
              profile: s.h.profile ? s.base + s.h.profile : "" };
   }

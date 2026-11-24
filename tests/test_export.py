@@ -103,6 +103,7 @@ def test_cli_keeps_completed_result_when_catalog_write_fails(tmp_path, monkeypat
     monkeypatch.setattr(A, "run_batches", lambda *args, **kw: [])
     monkeypatch.setattr(A, "translate_lines", lambda *args, **kw: {0: "原创测试句。"})
     monkeypatch.setattr(A, "blend_word_levels", lambda cues: None)
+    monkeypatch.setattr(A, "add_keys", lambda cues: None)
     monkeypatch.setattr(A, "update_index", Mock(side_effect=OSError("disk full")))
     src = tmp_path / "abcdefghijk.en.srt"
     src.write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal test sentence.\n")

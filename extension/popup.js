@@ -134,6 +134,11 @@ chrome.runtime.sendMessage({ type: "health" }, (r) => {
     status("bad", "程序是旧版本：关掉它的窗口重新打开");
   } else if (r.versionMismatch) {
     status("bad", `已连接程序 ${r.version}，与插件版本不同：请退出正在运行的程序，使用同一版本包内的程序和插件，再刷新视频页`);
+  } else if (r.runtime && r.runtime.state !== "ready") {
+    status("bad", r.runtime.message || "本地英语组件还未就绪，请查看控制台");
+    btn.hidden = false;
+    btn.textContent = "打开控制台";
+    btn.onclick = () => chrome.tabs.create({url: r.base + "/app"});
   } else if (!r.key) {
     status("bad", `已连接，但还没填 ${r.provider || "注释模型"} 的 API key：点右下角「程序设置」`);
   } else {

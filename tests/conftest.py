@@ -1,5 +1,6 @@
 """Tests are isolated from real credentials, user profiles and network model calls."""
 import pytest
+from types import SimpleNamespace
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +14,8 @@ def isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "TASK_STORE", TaskStore(tmp_path / "tasks.sqlite3"))
     monkeypatch.setattr(server, "PROFILE", Store(tmp_path / "profile.json"))
     monkeypatch.setattr(server, "JOBS", {})
+    monkeypatch.setattr(server, "RUNTIME", SimpleNamespace(
+        start=lambda: {"state": "ready"}, snapshot=lambda: {"state": "ready"}))
     for key in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "ANNOTATION_PROVIDER",
                 "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL"):
         monkeypatch.delenv(key, raising=False)

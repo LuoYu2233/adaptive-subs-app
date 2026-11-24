@@ -211,6 +211,18 @@ def base_known(tags: set[str], level: int) -> tuple[set[str], dict]:
 
 # ------------------------------------------------------------- storage ---
 
+class LibraryUnavailable(RuntimeError):
+    def __init__(self):
+        super().__init__("本地英语词库无法加载，请修复程序组件；现有学习记录仍保留")
+
+
+def library_known(tags, level):
+    try:
+        return base_known(tags, level)
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, RecursionError) as error:
+        raise LibraryUnavailable() from error
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -269,7 +281,7 @@ class Store:
                 return self._cache[1]
             tags, prior = mastered_lists(p)
             level = int(p.get("level") or prior)
-            base, stats = base_known(tags, level)
+            base, stats = library_known(tags, level)
             test = p.get("test") or {}
             t_known, t_unknown = set(test.get("known") or []), set(test.get("unknown") or [])
             m_known, m_unknown = set(p.get("known") or []), set(p.get("unknown") or [])

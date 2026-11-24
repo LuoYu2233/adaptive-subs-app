@@ -318,7 +318,12 @@
         <li><span class="st" id="s2"></span><div class="what"><b>浏览器插件</b><span id="d2"></span></div><button class="btn" type="button" id="extHelp">安装方法</button></li>
         <li><span class="st" id="s3"></span><div class="what"><b>英语画像</b><span id="d3"></span></div><a class="btn" href="/profile?app=1" id="b3">打开</a></li>
         <li><span class="st" id="s4"></span><div class="what"><b>语音识别<span class="opt">可选</span></b><span id="d4"></span></div><a class="btn" href="/setup?app=1">更改</a></li>
+        <li><span class="st" id="s5"></span><div class="what"><b>本地英语组件</b><span id="d5"></span></div><button class="btn" type="button" id="runtimeRetry">重新检查</button></li>
       </ol>
+      <div id="runtimeHelp" hidden style="padding:10px 18px;color:var(--ink-2)">
+        <p>源码运行：在运行程序的 Python 环境中重新安装 <code>requirements.txt</code> 的依赖。打包版：先退出，再重新解压完整程序；不要只复制可执行文件。</p>
+        <p>修复后点击「重新检查」。检查只加载本机组件，不下载模型、不调用付费服务；已有字幕和无密钥示例仍可打开。</p>
+      </div>
     </section>
 
     <section class="glass panel spot" style="--i:1">
@@ -497,7 +502,14 @@
     $("#live span").textContent = "运行中";
 
     const job = s.jobs.find((j) => j.state === "running");
-    if (!s.key) {
+    const runtime = s.runtime || {state: "unchecked", message: "本地英语组件尚未检查"};
+    if (runtime.state === "error") {
+      stage("runtimeerror", `<div class="kicker"><i></i>本地组件需要修复</div><div class="line">暂时无法开始新的生成</div>
+        <div class="sub">已有字幕仍保留。请查看下方本地英语组件的修复说明。</div><a class="btn primary" href="/demo">先体验字幕</a>`, null);
+    } else if (runtime.state !== "ready") {
+      stage("runtimechecking", `<div class="kicker"><i></i>正在准备本地组件</div><div class="line">正在加载英语处理能力</div>
+        <div class="sub">完成后即可开始生成；你也可以先体验字幕。</div><a class="btn primary" href="/demo">先体验字幕</a>`, null);
+    } else if (!s.key) {
       stage("nokey", `<div class="kicker"><i></i>还差一步</div>
         <div class="line">${gl("", "Set up", "设置", " a model key to begin.")}</div>
         <div class="sub">先填写注释模型的 API key，插件才能生成注释</div>
@@ -510,9 +522,9 @@
         <div class="sub" id="jobTitle"></div>`, pct);
       $("#jobTitle").textContent = `${job.title}  ${pct}%`;
     } else if (s.profile.error) {
-      stage("profileerror", `<div class="kicker"><i></i>画像需要恢复</div>
-        <div class="line">学习记录暂时无法读取</div><div class="sub">原文件没有改动。保留副本后可重建画像，再导入有效备份。</div>
-        <a class="btn primary" href="/profile?app=1">恢复画像</a>`, null);
+      stage(`profileerror:${s.profile.recoverable}:${s.profile.error}`, `<div class="kicker"><i></i>画像暂不可用</div>
+        <div class="line">学习记录暂时无法读取</div><div class="sub">${esc(s.profile.error)}</div>
+        <a class="btn primary" href="/profile?app=1">${s.profile.recoverable ? "恢复画像" : "查看画像"}</a>`, null);
     } else if (s.task_issue) {
       stage("ready", `<div class="kicker"><i></i>任务记录需要检查</div>
         <div class="line">已生成的字幕和画像仍可使用</div><div class="sub">查看最近视频区域的错误说明，再继续处理新视频。</div>
@@ -529,23 +541,27 @@
     const p = s.profile;
     status(3, p.error ? "warn" : p.setup ? "ok" : "idle", p.error || (p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
       : "还没建立。做个 3 分钟的词汇测试，注释会准很多"));
-    $("#b3").textContent = p.error ? "恢复画像" : p.setup ? "打开" : "开始";
+    $("#b3").textContent = p.error ? (p.recoverable ? "恢复画像" : "查看") : p.setup ? "打开" : "开始";
     $("#b3").className = p.setup ? "btn" : "btn primary";
     status(4, s.asr ? "ok" : "idle", (s.asr ? "小米 MiMo，没有英文字幕的视频也能用" : "没设置，只影响没有英文字幕的视频") +
       (s.local_asr ? "；接口未识别的句子可尝试本机识别" : ""));
-    const todo = [!s.key, seen == null, !p.setup].filter(Boolean).length;
+    status(5, runtime.state === "ready" ? "ok" : runtime.state === "error" ? "warn" : "idle", runtime.message || "本地英语组件已就绪");
+    $("#runtimeRetry").hidden = runtime.state === "ready";
+    $("#runtimeRetry").disabled = runtime.state === "checking";
+    $("#runtimeHelp").hidden = runtime.state !== "error";
+    const todo = [!s.key, seen == null, !p.setup, runtime.state !== "ready"].filter(Boolean).length;
     $("#readyNote").textContent = todo ? `还有 ${todo} 项没完成` : "都准备好了";
 
     // vocabulary (number counts up; bars grow when drawn)
     const bands = (p.test && p.test.bands) || [];
     const labels = ["1k", "2k", "3k", "4.5k", "6k", "8k", "11k", "15k", "20k"];
-    const sig = JSON.stringify([p.setup, p.test && p.test.date, bands, p.known, p.marked]);
+    const sig = JSON.stringify([p.setup, p.test && p.test.date, bands, p.known, p.marked, p.error, p.recoverable]);
     if (sig !== lastVocab) {
       const first = !lastVocab;
       lastVocab = sig;
       $("#vocab").innerHTML = `
         <div class="num" id="num"></div>
-        <div class="facts">${p.setup
+        <div class="facts">${p.error ? `<span>${esc(p.error)}</span>` : p.setup
           ? `<span>${p.test ? `来自 ${esc(p.test.date)} 的词汇测试` : "按考试成绩和身份估计"}</span>
              <span>熟词库 <strong>${fmt(p.known)}</strong> 词，看视频时标记过 <strong>${p.marked}</strong> 个</span>`
           : `<span>还没有建立英语画像，现在按默认水平注释</span>`}</div>
@@ -553,10 +569,10 @@
             `<div title="${labels[i] || ""}：${Math.round(b * 100)}%"><span data-h="${Math.max(4, b * 100)}"></span></div>`).join("")}</div>
           <div class="band-x">${bands.map((_, i) => `<span>${labels[i] || ""}</span>`).join("")}</div>
           <div class="cap">每一栏是一个词频段里你认识的比例，越往右越难</div>`
-          : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
+          : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.error ? (p.recoverable ? "恢复画像" : "查看画像") : p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
       if (introDone || !first) growBars(first ? 400 : 60);
     }
-    if (p.error) $("#num").textContent = "需恢复";
+    if (p.error) $("#num").textContent = p.recoverable ? "需恢复" : "暂不可用";
     else showVocab($("#num"), p.level, "<small>词</small>");
 
     // videos (redrawn only when they change)
@@ -632,6 +648,15 @@
       toast(result.error || "任务记录已重建；原文件保留在数据目录 recovery 文件夹中");
     } catch { toast("恢复结果未确认，请刷新控制台查看，暂勿重复操作"); }
     finally { button.disabled = false; await refresh(); }
+  };
+  $("#runtimeRetry").onclick = async () => {
+    $("#runtimeRetry").disabled = true;
+    try {
+      const response = await fetch("/api/runtime/check", {method: "POST", headers: H, body: "{}", signal: AbortSignal.timeout(5000)});
+      const result = await response.json();
+      toast(result.error || result.message || "已开始检查本地组件");
+    } catch { toast("检查结果未确认，请刷新控制台查看"); }
+    finally { await refresh(); }
   };
   $("#extHelp").onclick = () => $("#extDlg").showModal();
   $("#copyUrl").onclick = async () => {
