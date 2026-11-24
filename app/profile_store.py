@@ -47,6 +47,7 @@ CONTEXT_KEY_RE = re.compile(r"ctx:[a-z][a-z' .-]{0,59}:[0-9a-f]{16}")
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000]
 MAX_MARKS = 10000
 BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown", "mark_details"}
+UNSPECIFIED_REVISION = object()
 
 
 def input_number(value, *, integer=False):
@@ -236,7 +237,7 @@ def library_known(tags, level):
 class Store:
     def __init__(self, path: Path):
         self.path = path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self._cache = None        # (rev, payload) of the computed library
 
     def load(self) -> dict:
@@ -335,7 +336,7 @@ class Store:
             p["rev"] = rev
             self._save(p)
 
-    def update(self, body: dict) -> str | None:
+    def update(self, body: dict, *, expected_rev=UNSPECIFIED_REVISION) -> str | None:
         """Profile fields from the setup page. Returns an error message or None."""
         if not isinstance(body, dict) or set(body) - {"identity", "field", "exams", "level", "test", "reset_marks"}:
             return "画像包含不支持的字段"
@@ -343,6 +344,8 @@ class Store:
             return "重置标记必须明确使用 true 或 false"
         with self.lock:
             p = self.load()
+            if expected_rev is not UNSPECIFIED_REVISION and (type(expected_rev) is not int or expected_rev != p.get("rev", 0)):
+                raise ProfileConflict("画像已在其他页面更新，请重新读取后核对再保存")
             if "identity" in body:
                 ident = body.get("identity")
                 if ident is not None and not isinstance(ident, str):

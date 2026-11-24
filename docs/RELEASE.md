@@ -1,4 +1,4 @@
-# 0.4.0-alpha.19 本地试用版
+# 0.4.0-alpha.20 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -38,6 +38,8 @@ alpha.18 改善插件画像连接与保存：已连接但画像读取失败时�
 
 alpha.19 使用原句上下文还原注释词形，改善 `saw`（锯子/看见）、`leaves`（树叶/离开）等熟词匹配与词频判断；原有字幕、断点已完成注释和历史标记不自动重写。已缓存的模型响应仍可复用，此修正不需要新增模型请求。画像写入严格校验重置开关、数字与考试类型，避免异常参数误清空标记或成绩。上下文词形通过原创例句验证，语言模型仍有歧义，尚不构成真实视频准确率验收。
 
+alpha.20 修复词汇测试保存失败仍显示成功的问题，保留当前页面的作答，支持核对与主动重存；丢失响应时按实际保存的词表和分段结果核对，不自动重复写入。画像初次读取失败时禁止空表单覆盖已有成绩，恢复读取后继续编辑，备份仍可尝试下载。表单、测试和批量重置增加版本冲突保护，旧页面不能静默覆盖新数据；冲突时保留填写，重新读取后再操作。升级后请刷新所有画像页面；关闭页面仍会丢失未保存的测试作答。本版的普通逐词标记也会改变画像版本，可能使旧表单过期。
+
 ## 这一版的变化
 
 - 不同语境的同词异义分别学习；播放器和插件共享筛选、重复提示与标记保存规则。
@@ -70,8 +72,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.19-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.19-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.20-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.20-source.zip
 python tools/instance_check.py           # 临时数据目录，验证重复启动、崩溃恢复和退出
 python tools/runtime_check.py            # 模拟组件缺失，再加载真实本地组件验证修复
 ```

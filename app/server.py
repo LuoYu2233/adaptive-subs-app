@@ -1554,8 +1554,17 @@ class Handler(SimpleHTTPRequestHandler):
                     job.focus = max(0.0, focus)
             return self.send_json({"ok": True})
         if path == "/api/profile":
-            err = PROFILE.update(body)
-            return self.send_json({"error": err}, 400) if err else self.send_json(PROFILE.payload())
+            changes = {k: v for k, v in body.items() if k != "expected_rev"}
+            needs_revision = bool(set(changes) & {"identity", "field", "exams", "test", "reset_marks"}) or "expected_rev" in body
+            try:
+                # Preserve one exact acknowledgement, even if another client writes immediately afterwards.
+                with PROFILE.lock:
+                    args = {"expected_rev": body.get("expected_rev")} if needs_revision else {}
+                    err = PROFILE.update(changes, **args)
+                    result = {"error": err} if err else PROFILE.payload()
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error), "conflict": True}, 409)
+            return self.send_json(result, 400 if err else 200)
         if path == "/api/explain":
             return self.explain(body)
         if path == "/api/open-folder":

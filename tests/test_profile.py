@@ -1,6 +1,7 @@
 import pytest
 
 from profile_store import Store
+from profile_store import ProfileConflict
 
 
 @pytest.mark.parametrize("body", [
@@ -89,3 +90,29 @@ def test_non_text_mark_keys_are_not_silently_converted_to_words(tmp_path, key):
     before = store.path.read_bytes()
     assert store.mark(key, "known")
     assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("expected", [None, True, "2", -1, 0, 1, 3])
+def test_stale_or_invalid_profile_revision_preserves_fields_and_marks(tmp_path, expected):
+    store = Store(tmp_path / "profile.json")
+    store.update({"identity": "undergrad", "exams": {"cet4": 600}})
+    store.mark("bank", "known")
+    before = store.path.read_bytes()
+    with pytest.raises(ProfileConflict):
+        store.update({"field": "医学", "exams": {"cet4": 560}, "reset_marks": True}, expected_rev=expected)
+    assert store.path.read_bytes() == before
+
+
+def test_profile_revision_check_and_write_are_atomic_for_concurrent_forms(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    store = Store(tmp_path / "profile.json")
+    store.update({"identity": "undergrad"})
+    def save(value):
+        try:
+            return store.update({"field": value}, expected_rev=1) or "saved"
+        except ProfileConflict:
+            return "conflict"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, ["医学", "计算机"]))
+    assert sorted(results) == ["conflict", "saved"]
+    assert store.load()["rev"] == 2

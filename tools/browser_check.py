@@ -738,7 +738,8 @@ def main():
                     page.evaluate(await_script, book_backup["entries"])
 
                     # Long transcripts keep unaffected DOM rows when mode/gloss state changes.
-                    response = page.request.post(base + "/api/profile", data={"reset_marks": True}, headers={"X-Adaptive-Subs": "1"})
+                    current = page.request.get(base + "/api/profile", headers={"X-Adaptive-Subs": "1"}).json()
+                    response = page.request.post(base + "/api/profile", data={"reset_marks": True, "expected_rev": current["rev"]}, headers={"X-Adaptive-Subs": "1"})
                     assert response.status == 200
                     long_cues = [{"s": i * 5, "e": i * 5 + 5, "text": f"The bank approved request number {i}.",
                                   "zh": "银行批准了申请。", "notes": [{"s": 4, "e": 8, "key": "bank", "zh": "银行",
@@ -777,8 +778,9 @@ def main():
                             assert page.locator("#stage").evaluate("element => { const a=element.getBoundingClientRect(); const b=element.querySelector('.btn').getBoundingClientRect(); return b.bottom <= a.bottom && b.top >= a.top; }")
                         page.screenshot(path=str(output / f"{path}-mobile.png"), full_page=True)
                     assert not errors, errors
-                    from profile_check import check_profile
+                    from profile_check import check_profile, check_profile_conflicts
                     check_profile(context, base, home, output)
+                    check_profile_conflicts(context, base, home, output)
                     from player_check import check_player
                     check_player(context, base, output)
                     browser.close()

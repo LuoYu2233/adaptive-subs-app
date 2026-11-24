@@ -15,6 +15,7 @@
   let identity = null;
   let recoveryFingerprint = null;
   let profileReady = false, profileLoading = false;
+  let formRevision = null, formConflict = false;
 
   function setProfileReady(ready) {
     profileReady = ready;
@@ -56,6 +57,11 @@
 
   // ------------------------------------------------------------ steps 1–2 ---
   function renderForm() {
+    formRevision = P?.rev ?? null;
+    formConflict = false;
+    $("#reloadProfileForm").hidden = true;
+    $("#msg1").className = "msg";
+    $("#msg1").textContent = "";
     const prof = (P && P.profile) || {};
     identity = prof.identity || null;
     $("#identity").innerHTML = IDENTITIES.map(([id, name]) =>
@@ -76,7 +82,7 @@
   });
 
   $("#saveProfile").addEventListener("click", async () => {
-    if (!profileReady) return;
+    if (!profileReady || formConflict) return;
     const msg = $("#msg1"), btn = $("#saveProfile");
     const exams = {};
     for (const [id] of EXAMS) { const v = $(`#ex-${id}`).value.trim(); if (v !== "") exams[id] = v; }
@@ -85,7 +91,8 @@
     }
     btn.disabled = true; msg.className = "msg"; msg.textContent = "正在保存…";
     try {
-      P = await api("/api/profile", { identity, field: $("#field").value, exams });
+      P = await api("/api/profile", { identity, field: $("#field").value, exams, expected_rev: formRevision });
+      formRevision = P.rev;
       msg.className = "msg ok";
       msg.textContent = P.lists.length
         ? `已保存。按你的成绩，${P.lists.join("、")}词表算作已认识（共约 ${fmt(P.stats.exams)} 词），词汇量先估计为 ≈ ${fmt(P.prior)}`
@@ -95,8 +102,13 @@
       $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e) {
       msg.className = "msg bad"; msg.textContent = e.message;
+      if (e.details?.conflict) {
+        formConflict = true;
+        msg.textContent = "画像已在其他页面更新，本次未保存；当前填写已保留，请核对后读取最新画像再修改。";
+        $("#reloadProfileForm").hidden = false;
+      }
     } finally {
-      btn.disabled = false;
+      btn.disabled = !profileReady || formConflict;
     }
   });
 
@@ -143,7 +155,7 @@
       if (b) { await api("/api/mark", { key: b.dataset.clear, state: "clear" }); }
       else if (e.target.id === "resetMarks") {
         if (!confirm("清空全部认识 / 不认识标记？身份、成绩和词汇测试仍会保留。")) return;
-        await api("/api/profile", { reset_marks: true });
+        await api("/api/profile", { reset_marks: true, expected_rev: P.rev });
       }
       else return;
       P = await api("/api/profile");
@@ -269,7 +281,7 @@
   function newTest() {
     bank.bands.forEach((b) => { b.pool = shuffle(b.words); });
     const prior = (P && P.prior) || 3000;
-    T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior };
+    T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior, revision: P.rev };
     const items = [];
     for (const b of bank.bands) items.push(...takeWords(b, b.hi <= prior * 0.5 ? 3 : 5));
     T.items = sprinkle(items, takeNon(4), 3);
@@ -451,7 +463,7 @@
       finish();
     }
     else if (act === "check-save") { checkSavedTest(); }
-    else if (act === "retry-save") { finish(); }
+    else if (act === "retry-save") { finish(true); }
     else if (act === "again") {
       if (T.saveState !== "saved" && !confirm("本次结果尚未确认保存，重新测试会丢弃当前页面的作答。继续？")) return;
       T = null; renderTest();
@@ -492,7 +504,7 @@
     if (test.saveState !== "saved") test.saveState = "unconfirmed";
     if (T === test) await renderTest();
   }
-  async function finish() {
+  async function finish(retry = false) {
     const test = T;
     if (!test || testBusy(test)) return;
     test.result ||= score();
@@ -500,7 +512,14 @@
     test.saveState = "saving"; test.saveError = "";
     await renderTest();
     try {
-      const current = await api("/api/profile", { test: testPayload(test.result) });
+      if (retry) {
+        if (await reconcileTest(test)) { if (T === test) await renderTest(); return; }
+        const latest = await api("/api/profile");
+        if (T !== test) return;
+        test.revision = latest.rev;
+        P = latest;
+      }
+      const current = await api("/api/profile", { test: testPayload(test.result), expected_rev: test.revision });
       if (T !== test) return;
       if (!sameTestSummary(current.test, test.result)) throw new Error("保存响应未确认本次测试结果");
       P = current;
@@ -540,5 +559,6 @@
     }
   }
   $("#reloadProfile").addEventListener("click", initializeProfile);
+  $("#reloadProfileForm").addEventListener("click", initializeProfile);
   initializeProfile();
 })();

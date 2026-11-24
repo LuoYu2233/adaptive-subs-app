@@ -43,13 +43,36 @@ def test_invalid_profile_input_returns_400_without_erasing_marks(http_server, mo
     S.PROFILE.mark("bank", "known")
     before = S.PROFILE.path.read_bytes()
     for payload in ({"reset_marks": "false"}, {"reset_marks": 1}, {"level": False}, {"exams": {"cet_4": 600}}):
-        status, raw = request(http_server, "POST", "/api/profile", json.dumps(payload), H)
+        status, raw = request(http_server, "POST", "/api/profile", json.dumps({**payload, "expected_rev": 2}), H)
         assert status == 400 and json.loads(raw)["error"]
         assert S.PROFILE.path.read_bytes() == before
-    assert request(http_server, "POST", "/api/profile", '{"reset_marks":false}', H)[0] == 200
+    assert request(http_server, "POST", "/api/profile", '{"reset_marks":false,"expected_rev":2}', H)[0] == 200
     assert S.PROFILE.load()["known"] == ["bank"]
-    assert request(http_server, "POST", "/api/profile", '{"reset_marks":true}', H)[0] == 200
+    assert request(http_server, "POST", "/api/profile", '{"reset_marks":true,"expected_rev":3}', H)[0] == 200
     assert S.PROFILE.load()["known"] == []
+
+
+def test_profile_forms_require_a_current_revision_but_word_marks_remain_independent(http_server, monkeypatch):
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
+    S.PROFILE.update({"identity": "undergrad", "exams": {"cet4": 560}})
+    stale = json.loads(request(http_server, "GET", "/api/profile", headers=H)[1])
+    current = {"field": "统计学", "exams": {"cet4": 600}, "expected_rev": stale["rev"]}
+    status, raw = request(http_server, "POST", "/api/profile", json.dumps(current), H)
+    assert status == 200 and json.loads(raw)["profile"]["exams"] == {"cet4": 600}
+    before = S.PROFILE.path.read_bytes()
+    for body in ({"field": "医学", "exams": stale["profile"]["exams"], "expected_rev": stale["rev"]},
+                 {"field": "missing revision"}, {"test": {"est": 4000}}, {"reset_marks": True}):
+        status, raw = request(http_server, "POST", "/api/profile", json.dumps(body), H)
+        assert status == 409 and json.loads(raw)["conflict"] is True
+        assert S.PROFILE.path.read_bytes() == before
+    assert request(http_server, "POST", "/api/mark", '{"key":"bank","state":"known"}', H)[0] == 200
+    assert S.PROFILE.load()["exams"] == {"cet4": 600}
+    # The old, explicit single-field level operation remains compatible.
+    assert request(http_server, "POST", "/api/profile", '{"level":5000}', H)[0] == 200
+    latest = S.PROFILE.load()["rev"]
+    status, raw = request(http_server, "POST", "/api/profile", json.dumps({"field": "医学", "expected_rev": latest}), H)
+    assert status == 200 and json.loads(raw)["rev"] == latest + 1
+    assert S.PROFILE.load()["known"] == ["bank"]
 
 
 @pytest.mark.parametrize("path", ["/api/open?url=abcdefghijk", "/api/focus?v=abcdefghijk&t=4", "/api/stream?v=abcdefghijk", "/api/status"])

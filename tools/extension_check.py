@@ -122,7 +122,7 @@ def check_extension(playwright, base, home, output):
         assert worker.evaluate("() => health('http://127.0.0.1:1')") is None
         for site, url in (("youtube", "https://www.youtube.com/watch?v=zzzzzzzzzzz"),
                           ("bilibili", "https://www.bilibili.com/video/BV1234567890")):
-            result = worker.evaluate("() => handle({type:'setprofile',payload:{reset_marks:true}})")
+            result = worker.evaluate("async () => { const p = await handle({type:'profile'}); return handle({type:'setprofile',payload:{reset_marks:true,expected_rev:p.rev}}); }")
             assert not result.get("error"), result
             page = context.new_page()
             errors = []
@@ -162,7 +162,7 @@ def check_extension(playwright, base, home, output):
             marked = json.loads((home / "profile.json").read_text())
             assert len(marked["known"]) == 1 and marked["known"][0].startswith("ctx:bank:"), marked["known"]
             assert next(iter(marked["mark_details"].values()))["zh"] == "银行"
-            worker.evaluate("() => handle({type:'setprofile',payload:{reset_marks:true}})")
+            worker.evaluate("async () => { const p = await handle({type:'profile'}); return handle({type:'setprofile',payload:{reset_marks:true,expected_rev:p.rev}}); }")
             page.reload()
             expect(gloss).to_have_text("银行", timeout=20000)
             page.locator(".asubs-t").filter(has_text="bank").click()
