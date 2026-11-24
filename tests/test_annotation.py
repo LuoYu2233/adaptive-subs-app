@@ -216,6 +216,33 @@ def test_explicit_skip_and_aligned_translation_are_valid():
     assert A.validate_response({"items": [{"id": 0, "src": "The bank", "zh": "银行。"}]}, A.TRANSLATE_PROMPT, payload)
 
 
+@pytest.mark.parametrize("prompt,items", [
+    (A.ANNOTATE_PROMPT, [{"id": 0, "notes": [{"span": "bank", "zh": "\ud800", "kind": "word", "level": 5000}]}]),
+    (A.GLOSS_PROMPT, [{"id": 0, "zh": "\udfff", "level": 5000}]),
+    (A.TRANSLATE_PROMPT, [{"id": 0, "src": "The bank", "zh": "\ud800"}]),
+    (A.TRANSLATE_PROMPT, [{"id": 0, "src": "The bank", "zh": "银行。", "extra": {"bad": "\ud800"}}]),
+])
+def test_non_utf8_model_output_is_rejected_before_caching(prompt, items):
+    bad = {"items": items}
+    with pytest.raises(A.ModelResponseError):
+        A.call_json(fake_client(bad, bad), "test", "low", prompt, [{"id": 0, "line": "The bank."}])
+    assert not list(A.CACHE_DIR.glob("*.json"))
+
+
+@pytest.mark.parametrize("raw", [b'[' * 2000 + b'0' + b']' * 2000,
+    b'{"items":[{"id":0,"src":"The bank","zh":"\\ud800"}]}'])
+def test_unencodable_or_deep_cache_is_not_reused(raw):
+    expected = {"items": [{"id": 0, "src": "The bank", "zh": "银行。"}]}
+    client = fake_client(expected, expected)
+    args = (client, "test", "low", A.TRANSLATE_PROMPT, [{"id": 0, "line": "The bank."}])
+    assert A.call_json(*args) == expected
+    cache = next(A.CACHE_DIR.glob("*.json"))
+    cache.write_bytes(raw)
+    assert A.call_json(*args) == expected
+    assert client.chat.completions.create.call_count == 2
+    assert json.loads(cache.read_text()) == expected
+
+
 def test_identical_model_names_on_different_services_do_not_share_cache():
     expected = {"items": [{"id": 0, "notes": []}]}
     a, b = fake_client(expected), fake_client(expected)

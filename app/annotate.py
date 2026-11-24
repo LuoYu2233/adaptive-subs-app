@@ -38,7 +38,7 @@ import time
 
 import srt
 from storage import atomic_write_bytes, write_json
-from result_validation import valid_result
+from result_validation import valid_result, utf8_json
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -344,6 +344,8 @@ def request_slot(lock, cancelled=None):
 def validate_response(data, system: str, payload) -> dict:
     if not isinstance(data, dict):
         raise ModelResponseError("模型返回格式错误：需要 JSON 对象")
+    if not utf8_json(data):
+        raise ModelResponseError("模型返回了无效的文本字符或数值")
     if system == EXPLAIN_PROMPT:
         result = {}
         for field, limit in (("zh", 40), ("pos", 16), ("base", 40), ("note", 80)):
@@ -427,7 +429,7 @@ def _call_json(client, model, effort, system, payload, usage, cache_file, cancel
     if cache_file.exists():
         try:
             return validate_response(json.loads(cache_file.read_text(encoding="utf-8")), system, payload)
-        except (OSError, ValueError, ModelResponseError):
+        except (OSError, ValueError, RecursionError, ModelResponseError):
             pass  # Interrupted/obsolete cache: regenerate, and replace it atomically on success.
     label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss", EXPLAIN_PROMPT: "explain"}.get(system, "other")
     import providers

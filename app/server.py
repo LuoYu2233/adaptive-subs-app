@@ -88,7 +88,7 @@ def saved_result(path: Path) -> dict | None:
         if (valid_result(data)
                 and not (data.get("source") == "asr" and any(ASR.is_refusal(c["text"]) for c in data["cues"]))):
             return data
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         pass
     return None
 

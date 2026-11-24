@@ -1,5 +1,15 @@
 """Structural checks for reusable subtitle results, including legacy generated files."""
+import json
 import math
+
+
+def utf8_json(value):
+    """Also check unknown metadata: callers return/cache the entire JSON object."""
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return True
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return False
 
 
 def number(value, low=0):
@@ -10,7 +20,7 @@ def number(value, low=0):
 
 
 def valid_result(data):
-    if not isinstance(data, dict) or data.get("status", "complete") != "complete":
+    if not isinstance(data, dict) or data.get("status", "complete") != "complete" or not utf8_json(data):
         return False
     video, cues = data.get("video"), data.get("cues")
     if not isinstance(video, dict) or not isinstance(video.get("id"), str) or not video["id"]:

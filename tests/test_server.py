@@ -219,6 +219,22 @@ def test_partial_saved_video_can_be_retried(http_server, monkeypatch):
     start.assert_called_once()
 
 
+@pytest.mark.parametrize("raw", [
+    b'[' * 2000 + b'0' + b']' * 2000,
+    json.dumps({"video": {"id": "abcdefghijk", "title": "Original", "duration": 1},
+        "cues": [{"s": 0, "e": 1, "text": "invalid \ud800", "notes": []}]}).encode(),
+])
+def test_unreadable_result_returns_retry_without_starting_work(http_server, monkeypatch, raw):
+    path = S.DATA / "abcdefghijk.json"
+    path.write_bytes(raw)
+    start = Mock(side_effect=AssertionError("Reading cannot generate"))
+    monkeypatch.setattr(S, "get_job", start)
+    status, body = request(http_server, "GET", "/data/abcdefghijk.json")
+    assert status == 409 and json.loads(body)["retry"] is True
+    assert path.read_bytes() == raw
+    start.assert_not_called()
+
+
 def test_nonfinite_subtitle_timestamps_are_dropped():
     assert S.clean_ext_cues([{"s": 0, "e": float("inf"), "text": "bad"}]) == []
 

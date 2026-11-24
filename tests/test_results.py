@@ -43,3 +43,33 @@ def test_overlapping_notes_and_partial_results_are_not_complete():
     value["cues"][0]["notes"] *= 2
     assert not valid_result(value)
     assert not valid_result(sample() | {"status": "partial"})
+
+
+@pytest.mark.parametrize("path", [
+    ("video", "id"), ("video", "title"), ("cues", 0, "text"), ("cues", 0, "zh"),
+    ("cues", 0, "notes", 0, "key"), ("cues", 0, "notes", 0, "zh"), ("metadata",),
+])
+def test_invalid_unicode_anywhere_in_saved_response_is_rejected_without_rewriting(tmp_path, path):
+    value = sample()
+    target = value
+    for key in path[:-1]: target = target[key]
+    target[path[-1]] = "invalid \ud800 text"
+    raw = json.dumps(value).encode()
+    saved = tmp_path / "result.json"
+    saved.write_bytes(raw)
+    assert not valid_result(value)
+    assert server.saved_result(saved) is None
+    assert saved.read_bytes() == raw
+
+
+def test_deeply_nested_json_is_rejected_without_crashing_or_modifying_file(tmp_path):
+    path = tmp_path / "result.json"
+    raw = b'[' * 2000 + b'0' + b']' * 2000
+    path.write_bytes(raw)
+    assert server.saved_result(path) is None
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("metadata", [{"extra": float("nan")}, {"\udfff": "invalid key"}])
+def test_invalid_extra_metadata_cannot_break_response_serialization(metadata):
+    assert not valid_result(sample() | {"metadata": metadata})
