@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -222,7 +223,7 @@ def missing_candidates(texts: list[str], ids, cands: list[list[dict]], placed: d
 
 
 def gloss_missing(client, model: str, effort: str, texts: list[str], missing: list[tuple[int, str]],
-                  usage: dict | None = None) -> dict[int, list[dict]]:
+                  usage: dict | None = None, cancelled=None) -> dict[int, list[dict]]:
     """Second chance for skipped rare words -> extra raw notes per line {line id: [note, ...]}."""
     extra: dict[int, list[dict]] = {}
     for k0 in range(0, len(missing), 40):
@@ -231,7 +232,7 @@ def gloss_missing(client, model: str, effort: str, texts: list[str], missing: li
         for k, (i, w) in enumerate(chunk):
             ctx = context_item(texts, i)
             payload.append({"id": k, "word": w, "prev": ctx["prev"], "line": ctx["line"], "next": ctx["next"]})
-        data = call_json(client, model, effort, GLOSS_PROMPT, payload, usage=usage)
+        data = call_json(client, model, effort, GLOSS_PROMPT, payload, usage=usage, cancelled=cancelled)
         for it in data.get("items", []):
             try:
                 k = int(it["id"])
@@ -287,6 +288,29 @@ class ModelResponseError(RuntimeError):
     """A generation failed; it must never be confused with an empty annotation."""
 
 
+class GenerationCancelled(ModelResponseError):
+    pass
+
+
+MODEL_SLOTS = threading.BoundedSemaphore(8)
+_cache_locks = [threading.Lock() for _ in range(64)]
+
+
+@contextmanager
+def request_slot(lock, cancelled=None):
+    while True:
+        if cancelled and cancelled():
+            raise GenerationCancelled("任务已取消")
+        if lock.acquire(timeout=0.1):
+            break
+    try:
+        if cancelled and cancelled():
+            raise GenerationCancelled("任务已取消")
+        yield
+    finally:
+        lock.release()
+
+
 def validate_response(data, system: str, payload) -> dict:
     if not isinstance(data, dict):
         raise ModelResponseError("模型返回格式错误：需要 JSON 对象")
@@ -314,9 +338,17 @@ def validate_response(data, system: str, payload) -> dict:
     return data
 
 
-def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None) -> dict:
+def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None,
+              cancelled=None) -> dict:
     blob = json.dumps([model, effort, system, payload], ensure_ascii=False)
-    cache_file = CACHE_DIR / f"{hashlib.sha256(blob.encode()).hexdigest()[:24]}.json"
+    digest = hashlib.sha256(blob.encode()).hexdigest()
+    cache_file = CACHE_DIR / f"{digest[:24]}.json"
+    # Coalesce simultaneous identical requests; the bounded lock table cannot grow with usage.
+    with request_slot(_cache_locks[int(digest[:2], 16) % len(_cache_locks)], cancelled):
+        return _call_json(client, model, effort, system, payload, usage, cache_file, cancelled)
+
+
+def _call_json(client, model, effort, system, payload, usage, cache_file, cancelled):
     if cache_file.exists():
         try:
             return validate_response(json.loads(cache_file.read_text(encoding="utf-8")), system, payload)
@@ -328,25 +360,36 @@ def call_json(client, model: str, effort: str, system: str, payload, usage: dict
     last_err = None
     for _ in range(2):
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                **extra,
-            )
-            record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
+            with request_slot(MODEL_SLOTS, cancelled):
+                resp = client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                    **extra,
+                )
+            try:
+                record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
+            except OSError:
+                print("用量日志写入失败；本次请求结果仍会保留")
             text = (resp.choices[0].message.content or "").strip()
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)  # some models wrap JSON in a code fence
             data = validate_response(json.loads(text), system, payload)
-            write_json(cache_file, data)
-            return data
+        except GenerationCancelled:
+            raise
         except Exception as e:  # malformed JSON or transient API error: retry once
             last_err = e
             if getattr(e, "status_code", None) in (400, 401, 403, 404):
                 break  # Retrying an invalid key/model/request only wastes time.
+            continue
+        # A disk failure must not cause another billable model request.
+        try:
+            write_json(cache_file, data)
+        except OSError:
+            print("模型缓存写入失败；本次结果可用，重启后可能需要重新生成")
+        return data
     raise ModelResponseError("模型请求失败，已生成的结果会保留，请检查连接或设置后重试") from last_err
 
 
@@ -494,7 +537,15 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+_index_lock = threading.Lock()
+
+
 def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
+    with _index_lock:
+        _update_index(data_dir, video_id, title, file)
+
+
+def _update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
     idx_path = data_dir / "index.json"
     try:
         idx = json.loads(idx_path.read_text(encoding="utf-8"))
@@ -503,7 +554,7 @@ def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
     except (OSError, json.JSONDecodeError):
         idx = []
     idx = [v for v in idx if v.get("id") != video_id] + [{"id": video_id, "title": title, "file": file}]
-    idx_path.write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_json(idx_path, idx)
 
 
 # -------------------------------------------------------------------- main ---

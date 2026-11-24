@@ -59,7 +59,8 @@ def client(provider: str | None = None):
         if c is None:
             from openai import OpenAI
             base = os.environ.get(f"{p.upper()}_BASE_URL") or PROVIDERS[p]["base_url"]
-            c = _clients[(p, key)] = OpenAI(api_key=key, base_url=base, max_retries=3, timeout=120)
+            # Retries are owned by annotate.call_json, so the two layers cannot multiply requests.
+            c = _clients[(p, key)] = OpenAI(api_key=key, base_url=base, max_retries=0, timeout=60)
         return c
 
 

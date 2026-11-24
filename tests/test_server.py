@@ -115,3 +115,23 @@ def test_partial_saved_video_can_be_retried(http_server, monkeypatch):
 
 def test_nonfinite_subtitle_timestamps_are_dropped():
     assert S.clean_ext_cues([{"s": 0, "e": float("inf"), "text": "bad"}]) == []
+
+
+def test_job_capacity_returns_actionable_http_error(http_server, monkeypatch):
+    monkeypatch.setattr(S.P, "has_key", lambda: True)
+    monkeypatch.setattr(S, "get_job", Mock(side_effect=S.JobBusy("请先完成或取消一个任务")))
+    status, body = request(http_server, "POST", "/api/open", '{"url":"abcdefghijk"}', H)
+    assert status == 409 and json.loads(body)["retry"]
+
+
+def test_cancellation_endpoint_preserves_job(http_server):
+    j = job(S.DATA)
+    S.JOBS[j.vid] = j
+    status, body = request(http_server, "POST", "/api/jobs/cancel", json.dumps({"id": j.vid}), H)
+    assert status == 200 and json.loads(body)["state"] == "cancelling"
+    assert j.aborted and S.TASK_STORE.load(j.vid)["state"] == "cancelling"
+
+
+@pytest.mark.parametrize("path", ["/api/jobs/cancel", "/api/jobs/resume"])
+def test_job_mutations_require_header(http_server, path):
+    assert request(http_server, "POST", path, '{"id":"abcdefghijk"}', {"Content-Type": "application/json"})[0] == 403

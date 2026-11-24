@@ -198,6 +198,8 @@
         ? `<span class="gen done"><span class="gen-bar"><span style="width:100%"></span></span>注释已全部生成${p.seconds ? `（用时 ${p.seconds} 秒）` : ""}</span>`
         : `<span class="gen"><span class="gen-bar"><span style="width:${pct}%"></span></span>注释生成中 ${pct}% · 优先处理你正在看的位置</span>`;
     }
+    if (S.retryId) html += '<button type="button" class="btn btn-primary" data-generation="retry">继续处理缺失字幕</button>';
+    else if (es) html += '<button type="button" class="btn btn-ghost" data-generation="cancel">取消生成</button>';
     $("#density").innerHTML = html;
     $("#levelValue").textContent = `≈ ${fmtNum(S.level)} 词`;
     $("#levelRange").value = LEVELS.indexOf(S.level);
@@ -877,6 +879,20 @@
   }
 
   function bindUI() {
+    $("#density").addEventListener("click", async (e) => {
+      const button = e.target.closest("[data-generation]");
+      if (!button) return;
+      if (button.dataset.generation === "retry") return openVideo(S.retryId);
+      button.disabled = true;
+      try {
+        const r = await fetch("api/jobs/cancel", { method: "POST",
+          headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" },
+          body: JSON.stringify({ id: S.video.id }) });
+        const data = await r.json();
+        toast(data.error || "正在停止，已经发出的请求会先完成");
+      } catch { toast("连不上本地程序"); }
+      finally { button.disabled = false; }
+    });
     $("#line").addEventListener("click", (e) => { const t = e.target.closest(".tok"); if (t) openCard(t); });
     $("#urlForm").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -1068,8 +1084,12 @@
       renderAll(false);
       toast(d.msg);
     });
-    src.onerror = () => {   // EventSource retries on its own; give up only if the server is gone
-      if (es === src && src.readyState === 2) { es = null; toast("和本地服务器的连接断开了，请确认 Adaptive Subs 程序还开着"); }
+    src.onerror = () => {
+      if (es === src && src.readyState === 2) {
+        es = null; S.progress = null; S.retryId = id;
+        renderDensity();
+        toast("连接断开。重新打开本地程序后，可以继续处理缺失字幕。");
+      }
     };
   }
 

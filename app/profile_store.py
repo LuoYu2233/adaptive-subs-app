@@ -26,6 +26,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import annotate as A
+from storage import write_json
 
 EXAM_FILE = Path(__file__).parent / "data" / "exam_words.json"     # built by tools/make_exam_words.py (ECDICT)
 TAGS = ["zk", "gk", "cet4", "cet6", "ky", "ielts", "toefl", "gre"]
@@ -157,9 +158,7 @@ class Store:
         p["rev"] = int(p.get("rev", 0)) + 1
         p["updated"] = int(time.time())
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        write_json(self.path, p)
         self._cache = None
 
     # -- what clients get --

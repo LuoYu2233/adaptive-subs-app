@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -42,6 +43,7 @@ import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
 from storage import atomic_write, write_json
+from task_store import TaskStore
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
@@ -55,6 +57,7 @@ HOME = Path(os.environ["ASUBS_HOME"]) if os.environ.get("ASUBS_HOME") else (
 DATA = HOME / "data"
 CONFIG = HOME / ("config.env" if FROZEN else ".env")                  # API keys + chosen model
 PROFILE = PS.Store(HOME / "profile.json")                              # learner profile + known words
+TASK_STORE = TaskStore(HOME / "tasks.sqlite3")
 SEG = 12               # lines per batch: small batches -> first annotations sooner
 WORKERS = 12           # parallel LLM requests per video (spare capacity for jumps)
 URGENT_WINDOW = 90     # seconds ahead of the playhead handled with low effort (speed first)
@@ -242,6 +245,44 @@ class Job:
         self.started = time.time()
         self.first_ann_at = None
         self.usage: dict = {}     # tokens per step (annotate / translate)
+        self.provider = P.current()
+        self.model = P.model(self.provider)
+        self._client = None
+        self._client_lock = threading.Lock()
+        self.checkpoint_lock = threading.Lock()
+        self.persistence_error = False
+        self.restored = None
+        self.thread = None
+        self.feeder = None
+
+    def client(self):
+        with self._client_lock:
+            if self._client is None:
+                self._client = P.client(self.provider)
+            return self._client
+
+    def checkpoint(self):
+        with self.checkpoint_lock:
+            with self.cond:
+                payload = {
+                    "version": 1, "title": getattr(self, "title", "") or (self.sub or {}).get("title", self.vid),
+                    "sub": self.sub, "asr_url": self.asr_url,
+                    "destination": "extension" if self.save_dir == EXT_DATA else "player",
+                    "provider": self.provider, "model": self.model, "started": self.started,
+                    "done": self.finished, "total": self.total,
+                    "cues": [dict(c) for c in getattr(self, "cues", [])],
+                    "duration": getattr(self, "duration", 0),
+                    "ann": {str(k): [dict(n) for n in v] for k, v in self.ann.items()},
+                    "zh": dict(self.zh), "usage": {k: dict(v) for k, v in self.usage.items()},
+                    "failed_tasks": list(self.failed_tasks),
+                }
+                state = self.state
+            try:
+                TASK_STORE.save(self.vid, state, payload)
+                self.persistence_error = False
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                self.persistence_error = True
+                print(f"[{self.vid}] 进度保存失败：{short_err(exc)}")
 
     def emit(self, typ: str, data: dict):
         with self.cond:
@@ -259,18 +300,61 @@ JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 YT_SUBS: dict[str, dict] = {}     # YouTube subtitles fetched for the extension, waiting for "生成注释"
 YT_SUBS_LOCK = threading.Lock()
+MAX_ACTIVE_JOBS = 3
+
+
+class JobBusy(RuntimeError):
+    pass
 
 
 def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | None = None,
             asr_url: str | None = None) -> Job | None:
     with JOBS_LOCK:
+        now = time.time()
+        for key, old in list(JOBS.items()):
+            if old.state in ("done", "partial", "error", "cancelled") and now - old.started > 1800:
+                if old.thread is None or not old.thread.is_alive():
+                    del JOBS[key]
         job = JOBS.get(vid)
+        if job and job.state == "cancelling" and start:
+            raise JobBusy("正在停止此前的请求，请稍后再试")
         if job and job.state in ("error", "partial", "cancelled") and start:
+            if job.thread is not None and job.thread.is_alive():
+                raise JobBusy("正在保存此前的进度，请稍后再试")
             job = None                         # retry a failed video
         if job is None and start:
-            job = JOBS[vid] = Job(vid, sub, save_dir, asr_url)
-            threading.Thread(target=run_job, args=(job,), daemon=True).start()
+            if sum(j.state in ("running", "cancelling") for j in JOBS.values()) >= MAX_ACTIVE_JOBS:
+                raise JobBusy("同时最多处理 3 个视频，请先完成或取消一个任务")
+            saved = TASK_STORE.load(vid)
+            old = saved["payload"] if saved and saved["state"] != "done" else None
+            if old:
+                sub = sub or old.get("sub")
+                asr_url = asr_url or old.get("asr_url")
+                if save_dir is None:
+                    save_dir = EXT_DATA if old.get("destination") == "extension" else DATA
+            job = Job(vid, sub, save_dir, asr_url)
+            job.restored = old
+            # Freeze the client while creating the job so settings changes cannot
+            # replace the key/provider for a job already in progress.
+            job.client()
+            if old is None:
+                job.checkpoint()
+            job.thread = threading.Thread(target=run_job, args=(job,), daemon=True)
+            JOBS[vid] = job
+            job.thread.start()
         return job
+
+
+def cancel_job(job: Job):
+    with job.cond:
+        if job.state != "running":
+            return
+        job.aborted = True
+        job.state = "cancelling"
+        job.tasks.clear()
+        job.cond.notify_all()
+    job.emit("status", {"msg": "正在停止；已发出的请求可能仍会完成，结果会保留。"})
+    job.checkpoint()
 
 
 def task_key(job: Job, t: dict):
@@ -285,12 +369,32 @@ def task_key(job: Job, t: dict):
 
 def run_job(job: Job):
     try:
+        _run_job(job)
+    finally:
+        if job.feeder is not None:
+            job.feeder.join()
+        with job.cond:
+            cancelled = job.state == "cancelling"
+            if cancelled:
+                job.state = "cancelled"
+        if cancelled:
+            job.emit("fail", {"msg": "任务已取消，已生成的内容已保留。", "cancelled": True, "retry": True})
+        job.checkpoint()
+
+
+def _run_job(job: Job):
+    try:
         sub = job.sub
+        old = job.restored
+        if not job.asr_url and old and old.get("cues") and sub is None:
+            sub = {"title": old["title"], "duration": old.get("duration", 0), "cues": old["cues"], "source": "restored"}
         if job.asr_url:
             sub = start_asr(job)        # returns once the first lines are cut; the rest keep coming
         elif sub is None:
             job.emit("status", {"msg": "正在获取英文字幕…"})
             sub = fetch_subtitles(job.vid, on_retry=lambda msg: job.emit("status", {"msg": msg}))
+        if job.aborted:
+            return
         job.title, job.duration, job.cues = sub["title"], sub["duration"], sub["cues"]
         if job.asr_url:
             # speech recognition: lines (and their tasks) are added by the audio thread as the audio is cut
@@ -299,15 +403,32 @@ def run_job(job: Job):
                 job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                                   "source": sub["source"], "cues": list(job.cues)})
         else:
+            job.sub = sub
             job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                               "source": sub["source"], "cues": job.cues})
             job.texts = [c["text"] for c in job.cues]
+            if old and old.get("provider") == job.provider and old.get("model") == job.model:
+                old_texts = [c["text"] for c in old.get("cues", [])]
+                same = {i for i in range(min(len(old_texts), len(job.texts)))
+                        if A.context_item(old_texts, i) == A.context_item(job.texts, i)}
+                job.ann = {int(k): v for k, v in old.get("ann", {}).items() if int(k) in same}
+                job.zh = {int(k): v for k, v in old.get("zh", {}).items() if int(k) in same}
+                job.usage = old.get("usage", {})
+                if job.ann:
+                    job.emit("ann", {str(k): v for k, v in job.ann.items()})
+                if job.zh:
+                    job.emit("zh", {str(k): v for k, v in job.zh.items()})
             with NLP_LOCK:
                 job.cands = A.find_candidates(job.texts)
             segs = [list(range(i, min(i + SEG, len(job.texts)))) for i in range(0, len(job.texts), SEG)]
             with job.cond:
-                job.tasks = [{"kind": "ann", "ids": s} for s in segs] + [{"kind": "tr", "ids": s, "retry": 0} for s in segs]
+                if job.aborted:
+                    return
+                job.tasks = ([{"kind": "ann", "ids": [i for i in s if i not in job.ann]} for s in segs] +
+                             [{"kind": "tr", "ids": [i for i in s if i not in job.zh and job.texts[i]], "retry": 0} for s in segs])
+                job.tasks = [t for t in job.tasks if t["ids"]]
                 job.total = len(job.tasks)
+        job.checkpoint()
         print(f"[{job.vid}] {len(job.cues)} lines ({sub['source']} subtitles) in {time.time() - job.started:.1f}s: {job.title}")
         job.emit("progress", {"done": 0, "total": job.progress_total()})
 
@@ -320,19 +441,27 @@ def run_job(job: Job):
             return
         finalize(job)
     except ASR.AudioError as e:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] {e}")
         job.emit("fail", {"msg": str(e)})
     except NoSubtitles:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] no English subtitles")
         job.emit("fail", {"msg": "这个视频没有英文字幕（人工字幕和自动字幕都没有），暂时没法处理。", "nosubs": True})
     except FetchFailed as e:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] 连不上 YouTube（{e}一直超时），网页上可以点「重试」")
         job.emit("fail", {"msg": f"连不上 YouTube：{e}超时，已自动重试 {NET_TRIES} 次。可能是网络或代理不稳定，请点「重试」。",
                           "retry": True})
     except Exception as e:
+        if job.state == "cancelling":
+            return
         if e.__class__.__name__ == "DownloadError":      # video private / removed / region-locked ...
             job.state = "error"
             print(f"[{job.vid}] YouTube refused: {short_err(e)}")
@@ -387,9 +516,10 @@ def worker(job: Job):
             else:
                 run_translation(job, t)
         except Exception as exc:
-            traceback.print_exc()
-            with job.cond:
-                job.failed_tasks.append({"kind": t["kind"], "ids": list(t["ids"]), "error": short_err(exc)})
+            if not job.aborted:
+                traceback.print_exc()
+                with job.cond:
+                    job.failed_tasks.append({"kind": t["kind"], "ids": list(t["ids"]), "error": short_err(exc)})
         with job.cond:
             if t["kind"] == "asr":
                 job.asr_inflight -= 1
@@ -397,6 +527,7 @@ def worker(job: Job):
             job.finished += 1
             done, total = job.finished, job.progress_total()
         job.emit("progress", {"done": done, "total": total, "failed": len(job.failed_tasks)})
+        job.checkpoint()
 
 
 # ---------------------------------------------------- speech recognition ---
@@ -412,7 +543,8 @@ def start_asr(job: Job) -> dict:
     job.feeding = True
     job.audio_error = None
     job.emit("status", {"msg": "正在获取音频地址…"})
-    threading.Thread(target=feed_audio, args=(job,), daemon=True).start()
+    job.feeder = threading.Thread(target=feed_audio, args=(job,), daemon=True)
+    job.feeder.start()
     with job.cond:
         while job.feeding and not job.cues and not job.audio_error and not job.aborted:
             job.cond.wait(timeout=1.0)
@@ -475,6 +607,8 @@ def feed_audio(job: Job):
 def add_asr_lines(job: Job, pieces: list, final: bool = False):
     """Append newly cut lines: their recognition tasks, full annotation batches, and a "more" event."""
     with job.cond:
+        if job.aborted:
+            return
         start = len(job.cues)
         for s, e in pieces:
             if job.cues and job.cues[-1]["e"] > s:            # a line ends where the next begins
@@ -632,7 +766,7 @@ def repair_saved(vid: str, path: Path):
             run_translation(job, {"ids": ids, "retry": 1})
         for i in bad:
             cues[i].update(text=job.texts[i], notes=job.ann.get(i, []), zh=job.zh.get(i, ""))
-        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        write_json(path, data)
         print(f"[{vid}] repaired: {sum(1 for i in bad if job.texts[i])} of {len(bad)} lines recognised again")
     except Exception as e:
         print(f"[{vid}] repair failed: {short_err(e)}")
@@ -663,7 +797,8 @@ def fix_asr_punctuation(job: Job, ids: list[int]):
                "lines": [{"id": i, "text": job.texts[i]} for i in ids],
                "next": job.texts[ids[-1] + 1] if ids[-1] + 1 < len(job.texts) else ""}
     try:
-        data = A.call_json(client(), P.model(), "none", PUNCT_PROMPT, payload, usage=job.usage)
+        data = A.call_json(job.client(), job.model, "none", PUNCT_PROMPT, payload, usage=job.usage,
+                           cancelled=lambda: job.aborted)
     except Exception as e:
         print(f"[{job.vid}] punctuation pass failed: {short_err(e)}")
         return
@@ -704,7 +839,8 @@ def run_annotation(job: Job, ids: list[int], effort: str):
         it = A.context_item(job.texts, i)
         it["candidates"] = [{"word": c["word"], "rank": c["rank"]} for c in job.cands[i]]
         payload.append(it)
-    data = A.call_json(client(), P.model(), effort, A.ANNOTATE_PROMPT, payload, usage=job.usage)
+    data = A.call_json(job.client(), job.model, effort, A.ANNOTATE_PROMPT, payload, usage=job.usage,
+                       cancelled=lambda: job.aborted)
     by_id = {}
     for it in data.get("items", []):
         try:
@@ -715,7 +851,8 @@ def run_annotation(job: Job, ids: list[int], effort: str):
     placed = {i: A.place_notes(job.texts[i], by_id.get(i, [])) for i in ids}
     missing = A.missing_candidates(job.texts, ids, job.cands, placed)
     if missing:
-        extra = A.gloss_missing(client(), P.model(), "low", job.texts, missing, usage=job.usage)
+        extra = A.gloss_missing(job.client(), job.model, "low", job.texts, missing, usage=job.usage,
+                                cancelled=lambda: job.aborted)
         for i, ns in extra.items():
             placed[i] = A.place_notes(job.texts[i], by_id.get(i, []) + ns)
     chunk = [{"i": i, "text": job.texts[i], "notes": placed[i]} for i in ids]
@@ -738,8 +875,8 @@ def run_translation(job: Job, t: dict):
     t = {**t, "ids": [i for i in t["ids"] if job.texts[i]]}
     if not t["ids"]:
         return
-    data = A.call_json(client(), P.model(), "low", A.TRANSLATE_PROMPT, [A.context_item(job.texts, i) for i in t["ids"]],
-                         usage=job.usage)
+    data = A.call_json(job.client(), job.model, "low", A.TRANSLATE_PROMPT, [A.context_item(job.texts, i) for i in t["ids"]],
+                         usage=job.usage, cancelled=lambda: job.aborted)
     got = {}
     for it in data.get("items", []):
         try:
@@ -751,7 +888,7 @@ def run_translation(job: Job, t: dict):
     with job.cond:
         job.zh.update(got)
         failed = [i for i in t["ids"] if i not in got]
-        if failed and t["retry"] == 0:          # misaligned lines: retry once in tiny batches
+        if failed and t["retry"] == 0 and not job.aborted:          # misaligned lines: retry once in tiny batches
             for k in range(0, len(failed), 4):
                 job.tasks.append({"kind": "tr", "ids": failed[k:k + 4], "retry": 1})
                 job.total += 1
@@ -772,19 +909,22 @@ def finalize(job: Job):
     data = {"schema_version": 2, "status": "partial" if incomplete else "complete",
             "missing": {"annotations": missing_ann, "translations": missing_zh},
             "video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
-            "generated": time.strftime("%Y-%m-%d"), "model": P.model(),
+            "generated": time.strftime("%Y-%m-%d"), "model": job.model, "provider": job.provider,
             "usage": {**job.usage, "total": A.usage_total(job.usage), **({"asr": job.asr_usage} if job.asr_usage else {})},
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
     write_json(job.save_dir / f"{job.vid}.json", data)
     if job.save_dir == DATA and not incomplete:
         A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
-    job.state = "partial" if incomplete else "done"
+    with job.cond:
+        if job.aborted:
+            return
+        job.state = "partial" if incomplete else "done"
     secs = time.time() - job.started
     tot = A.usage_total(job.usage)
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
           f"tokens: input {tot['input']:,} (cached {tot['cached_input']:,}), output {tot['output']:,} "
-          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {P.model()} ≈ ${P.cost_usd(P.current(), tot):.3f}")
+          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} ≈ ${P.cost_usd(job.provider, tot):.3f}")
     if job.asr_usage:
         sec = job.asr_usage.get("asr_seconds", 0)
         print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
@@ -928,7 +1068,17 @@ def app_status(port: int) -> dict:
             continue
         running.append({"id": j.vid, "title": getattr(j, "title", "") or j.vid, "state": j.state,
                         "done": j.finished, "total": j.progress_total() if j.state == "running" else j.total,
-                        "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started})
+                        "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started,
+                        "persistence_error": j.persistence_error})
+    live_ids = {j.vid for j in jobs}
+    for saved in TASK_STORE.recent():
+        if saved["id"] in live_ids or saved["state"] == "done":
+            continue
+        p = saved["payload"]
+        running.append({"id": saved["id"], "title": p.get("title") or saved["id"],
+                        "state": "interrupted" if saved["state"] in ("running", "cancelling") else saved["state"],
+                        "done": p.get("done", 0), "total": p.get("total", 0), "asr": bool(p.get("asr_url")),
+                        "feeding": False, "started": p.get("started", saved["updated"]), "persistence_error": False})
     running.sort(key=lambda x: -x["started"])
     prof = PROFILE.payload()
     return {
@@ -1056,7 +1206,7 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 since = 0
             with job.cond:
-                if since >= len(job.events) and job.state == "running":
+                if since >= len(job.events) and job.state in ("running", "cancelling"):
                     job.cond.wait(timeout=8)
                 events, nxt = job.events[since:], len(job.events)
             return self.send_json({"events": events, "next": nxt})
@@ -1091,17 +1241,44 @@ class Handler(SimpleHTTPRequestHandler):
             return None
 
     def do_POST(self):
+        try:
+            return self.post_request()
+        except JobBusy as exc:
+            return self.send_json({"error": str(exc), "retry": True}, 409)
+        except (OSError, sqlite3.Error):
+            return self.send_json({"error": "本地文件保存失败，请检查磁盘空间和文件夹权限后重试"}, 507)
+
+    def post_request(self):
         if not self.local_only():
             return
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
-                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus"):
+                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path in ("/api/jobs/cancel", "/api/jobs/resume"):
+            vid = str(body.get("id", ""))
+            if not (YT_ID_RE.fullmatch(vid) or EXT_ID_RE.fullmatch(vid)):
+                return self.send_json({"error": "bad id"}, 400)
+            if path.endswith("/cancel"):
+                job = get_job(vid, start=False)
+                if not job:
+                    return self.send_json({"error": "任务不存在或已经停止"}, 404)
+                cancel_job(job)
+                return self.send_json({"id": vid, "state": job.state})
+            saved = TASK_STORE.load(vid)
+            if not saved:
+                return self.send_json({"error": "没有找到已保存的进度，请重新打开视频"}, 404)
+            if not P.has_key():
+                return self.send_json({"error": key_missing_msg()}, 400)
+            if saved["state"] == "done":
+                return self.send_json({"id": vid, "state": "done"})
+            job = get_job(vid, start=True)
+            return self.send_json({"id": vid, "state": job.state})
         if path == "/api/open":
             vid = parse_video_id(body.get("url", "") if isinstance(body.get("url"), str) else "")
             if not vid:
@@ -1170,7 +1347,7 @@ class Handler(SimpleHTTPRequestHandler):
             if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there
                 for i in tags:
                     data["cues"][i].update(text="", notes=[], zh="")
-                saved.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                write_json(saved, data)
                 print(f"[{vid}] removed {len(tags)} non-speech labels (<chinese> ...) from the saved subtitles")
             if refusal_lines(data):  # made before refusals were detected: blank them now, fix in the background
                 for i in refusal_lines(data):
@@ -1188,8 +1365,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
             duration = float(body.get("duration") or 0)
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError
         except (TypeError, ValueError):
-            duration = 0
+            return self.send_json({"error": "视频时长必须是有限的非负数"}, 400)
         title = str(body.get("title") or vid)[:200]
         if body.get("probe"):       # the extension asks: done before / still running? (starts nothing)
             job = get_job(vid, start=False)
@@ -1381,6 +1560,8 @@ def main():
             print(f"  port {candidate} is in use by another program, trying {candidate + 1}…")
     if httpd is None:
         sys.exit(f"No free port between {args.port} and {args.port + 19}.")
+
+    TASK_STORE.mark_interrupted()
 
     # warm up spaCy + the frequency list in the background, so the first video starts faster
     def warm():
