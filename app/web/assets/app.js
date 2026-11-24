@@ -67,7 +67,8 @@
         known: [...S.known], unknown: [...S.unknown], book: S.book,
         introSeen: S.introSeen, test: S.test, tab: S.tab,
       }));
-    } catch { /* storage unavailable: settings just won't persist */ }
+      return true;
+    } catch { toast("浏览器存储不可用，本次更改无法在关闭页面后保留"); return false; }
   }
 
   // ----------------------------------------------------------- helpers ---
@@ -323,55 +324,81 @@
     const note = key.startsWith("ctx:") && S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
     return AdaptiveLearning.label(key) + (note ? `（${note.zh}）` : "");
   };
-  function markKnown(key, silent) {
-    S.known.add(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "known");
-    if (!silent) toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => { S.known.delete(key); save(); renderAll(); pushMark(key, "clear"); });
+  let markNotice = 0;
+  async function markKnown(key, silent) {
+    const notice = ++markNotice;
+    if (await pushMark(key, "known") && !silent && notice === markNotice)
+      toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => restore(key));
   }
-  function markUnknown(key) {
-    S.unknown.add(key); S.known.delete(key); save(); renderAll(); pushMark(key, "unknown");
-    toast(`以后总是提示：${shownKey(key)}`, () => { S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); });
+  async function markUnknown(key) {
+    const notice = ++markNotice;
+    if (await pushMark(key, "unknown") && notice === markNotice)
+      toast(`以后总是提示：${shownKey(key)}`, () => restore(key));
   }
-  function restore(key) { S.known.delete(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); toast(`已恢复：${shownKey(key)}`); }
+  async function restore(key) {
+    const notice = ++markNotice;
+    if (await pushMark(key, "clear") && notice === markNotice) toast(`已恢复：${shownKey(key)}`);
+  }
 
   // ------------------------------------------------- shared profile (local program) ---
   const API_H = { "X-Adaptive-Subs": "1", "Content-Type": "application/json" };
-  async function loadShared() {
-    try {
-      const r = await fetch("api/profile", { headers: API_H, cache: "no-store" });
-      const p = await r.json();
-      if (!r.ok || !Array.isArray(p.known)) return;
+  async function profileRequest(path, body) {
+    const r = await fetch(path, { headers: API_H, cache: "no-store", ...(body ? { method: "POST", body: JSON.stringify(body) } : {}) });
+    const p = await r.json();
+    if (!r.ok || p.error) throw new Error(p.error || `HTTP ${r.status}`);
+    return p;
+  }
+  const profileSync = AdaptiveProfileSync.create({
+    read: () => profileRequest("api/profile"),
+    write: op => op.type === "level" ? profileRequest("api/profile", { level: op.level })
+      : profileRequest("api/mark", { key: op.key, state: op.state, detail: op.detail }),
+    apply: p => {
       shared = p;
       S.level = Number.isFinite(p.level) && p.level > 0 ? p.level : 3000;
-      S.known = new Set(p.known);
-      S.unknown = new Set(p.unknown);
+      S.known = new Set(p.known); S.unknown = new Set(p.unknown);
       renderAll(false);
-    } catch { /* old program version: keep this browser's own marks */ }
+    },
+  });
+  async function loadShared() {
+    try { await profileSync.refresh(); }
+    catch { if (!shared) toast("画像暂时无法读取，标记前请检查本地程序"); }
   }
   async function pushMark(key, state) {
-    if (!shared) return;
+    if (!live) {
+      S.known.delete(key); S.unknown.delete(key);
+      if (state === "known") S.known.add(key);
+      if (state === "unknown") S.unknown.add(key);
+      const saved = save(); renderAll(); return saved;
+    }
     try {
       const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
-      const r = await fetch("api/mark", { method: "POST", headers: API_H,
-        body: JSON.stringify({ key, state, detail: note ? { term: note.key, zh: note.zh } : undefined }) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      loadShared();
-    } catch { toast("标记没能保存到 Adaptive Subs 程序（只保存在这个浏览器里）"); }
+      await profileSync.mutate({ type: "mark", key, state, detail: note ? { term: note.key, zh: note.zh } : undefined });
+      return true;
+    } catch (e) {
+      toast(`标记保存未确认：${e.message || "连接失败"}。已恢复到最近确认的记录，请重试。`);
+      return false;
+    }
   }
   let levelTimer = 0;
   function pushLevel() {
-    if (!shared) return;
+    if (!live) return;
     clearTimeout(levelTimer);
-    levelTimer = setTimeout(() => fetch("api/profile", { method: "POST", headers: API_H, body: JSON.stringify({ level: S.level }) })
-      .then(() => loadShared()).catch(() => {}), 400);
+    const level = S.level;
+    levelTimer = setTimeout(async () => {
+      try { await profileSync.mutate({ type: "level", level }); }
+      catch (e) { toast(`词汇量保存未确认：${e.message || "连接失败"}，请重试`); }
+    }, 400);
   }
 
   function addToBook(entry) {
     if (bookKeys.has(entry.key)) return;
     S.book.push({ ...entry, vid: S.video.id, added: Date.now() });
     bookKeys = new Set(S.book.map((b) => b.key));
-    if (entry.hasNote) { const mk = entry.mk || entry.key; S.unknown.add(mk); S.known.delete(mk); pushMark(mk, "unknown"); }
-    save(); renderAll();
-    toast(`已加入生词本：${entry.term}`);
+    if (!save()) {
+      S.book.pop(); bookKeys.delete(entry.key); renderAll(); return;
+    }
+    if (entry.hasNote) pushMark(entry.mk || entry.key, "unknown");
+    renderAll(); toast(`已加入生词本：${entry.term}`);
   }
   function bookEntryFromCue(ci, noteIdx, word) {
     const c = S.cues[ci];

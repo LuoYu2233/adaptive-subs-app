@@ -152,6 +152,11 @@ def main():
                         assert response.value.status == 200
                     expect(page.locator("#bookCount")).to_have_text("2")
                     row = page.locator("#tab-preview .wrow").filter(has=page.get_by_text("银行", exact=True))
+                    page.route("**/api/mark", lambda route: route.fulfill(status=507, content_type="application/json", body=json.dumps({"error": "测试保存失败"})))
+                    row.locator("[data-act='know']").click()
+                    expect(page.locator("#toast")).to_contain_text("标记保存未确认")
+                    expect(page.locator("#tab-preview .wrow")).to_have_count(2)
+                    page.unroute("**/api/mark")
                     with page.expect_response(lambda r: r.url.endswith("/api/mark") and r.request.method == "POST") as response:
                         row.locator("[data-act='know']").click()
                     assert response.value.status == 200

@@ -1383,7 +1383,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/mark":
             err = PROFILE.mark(body.get("key"), body.get("state"), body.get("detail"))
-            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
+            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, **PROFILE.payload()})
         if path == "/api/settings":
             return self.save_settings(body)
         if path == "/api/settings/test":

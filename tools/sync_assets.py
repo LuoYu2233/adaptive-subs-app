@@ -6,9 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    source = ROOT / "shared" / "learning.js"
-    for destination in (ROOT / "app/web/assets/learning.js", ROOT / "extension/learning.js"):
-        shutil.copyfile(source, destination)
+    for name in ("learning.js", "profile-sync.js"):
+        source = ROOT / "shared" / name
+        for folder in (ROOT / "app/web/assets", ROOT / "extension"):
+            shutil.copyfile(source, folder / name)
 
 
 if __name__ == "__main__":

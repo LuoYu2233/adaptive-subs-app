@@ -409,13 +409,27 @@
   }
 
   // ------------------------------------------------------------- profile ---
+  const profileSync = AdaptiveProfileSync.create({
+    read: async () => {
+      const r = await bg({ type: "profile" });
+      if (r.error) throw new Error(serverMsg(r));
+      return r;
+    },
+    write: async op => {
+      const r = await bg({ type: "mark", payload: { key: op.key, state: op.state, detail: op.detail } });
+      if (r.error) throw new Error(serverMsg(r));
+      return r;
+    },
+    apply: r => {
+      Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
+        marks: new Map([...r.marks.known.map(k => [k, "known"]), ...r.marks.unknown.map(k => [k, "unknown"])]) });
+      computeVisible();
+    },
+  });
   async function loadProfile() {
-    const r = await bg({ type: "profile" });
     PF.lastCheck = Date.now();
-    if (r.error || !Array.isArray(r.known)) { PF.ok = false; computeVisible(); return; }
-    Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
-      marks: new Map([...r.marks.known.map((k) => [k, "known"]), ...r.marks.unknown.map((k) => [k, "unknown"])]) });
-    computeVisible();
+    try { await profileSync.refresh(); }
+    catch { PF.ok = false; computeVisible(); }
   }
 
   async function checkProfile() {          // the profile page or the popup may have changed it
@@ -426,22 +440,22 @@
     if (r.rev !== PF.rev || !PF.ok) loadProfile();
   }
 
+  let markNotice = 0;
   async function mark(key, state, word, zhShort) {
+    const notice = ++markNotice;
+    try {
+      await profileSync.mutate({ type: "mark", key, state, detail: { term: word, zh: zhShort || "" } });
+    } catch (e) {
+      return pill(`标记保存未确认：${e.message}；已恢复到最近确认的记录，请重试`, { hideAfter: 6000 });
+    }
     if (state === "unknown" && zhShort && !defs[key]) {
       defs[key] = zhShort;
       chrome.storage.local.set({ asubsDefs: defs });
     }
-    // update right away, then let the server recompute the library
-    PF.known.delete(key); PF.unknown.delete(key); PF.marks.delete(key);
-    if (state === "known") { PF.known.add(key); PF.marks.set(key, "known"); }
-    if (state === "unknown") { PF.unknown.add(key); PF.marks.set(key, "unknown"); }
-    computeVisible();
-    const r = await bg({ type: "mark", payload: { key, state, detail: { term: word, zh: zhShort || "" } } });
-    if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
+    if (notice !== markNotice) return;
     const shown = AdaptiveLearning.label(key) + (key.startsWith("ctx:") && zhShort ? `（${zhShort}）` : "");
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
-    loadProfile();
   }
 
   // ------------------------------------------------------------ overlay ---
