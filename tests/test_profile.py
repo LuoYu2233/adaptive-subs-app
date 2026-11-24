@@ -9,6 +9,7 @@ from profile_store import Store
     {"test": {"est": 3000, "bands": ["bad"]}}, {"test": {"est": 3000, "bands": [2]}},
     {"test": {"est": 3000, "bands": [float("nan")]}},
     {"test": {"est": 3000, "known": "bank"}}, {"test": {"est": 3000, "unknown": [42]}},
+    {"test": {"est": 3000, "known": ["Bank"], "unknown": ["bank"]}},
 ])
 def test_invalid_updates_do_not_damage_existing_profile(tmp_path, body):
     store = Store(tmp_path / "profile.json")

@@ -1021,7 +1021,7 @@ If the word is a name or not English, give its usual Chinese rendering (or a tra
 
 STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html",
                 "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html",
-                "/demo": "demo.html", "/demo.html": "demo.html"}
+                "/demo": "demo.html", "/demo.html": "demo.html", "/privacy": "privacy.html", "/privacy.html": "privacy.html"}
 LAST_EXT = 0.0            # when the browser extension last talked to us (shown in the control panel)
 STARTED = time.time()
 LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?")
@@ -1200,6 +1200,8 @@ class Handler(SimpleHTTPRequestHandler):
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path.startswith("/api/") and not self.ext_ok():
             return
+        if u.path == "/api/profile/export":
+            return self.send_json(PROFILE.export_backup())
         if u.path == "/api/profile":
             if not self.ext_ok():
                 return
@@ -1294,13 +1296,29 @@ class Handler(SimpleHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
-                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume"):
+                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume",
+                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path in ("/api/profile/import/preview", "/api/profile/import", "/api/profile/clear"):
+            try:
+                if path.endswith("/preview"):
+                    p = PS.validate_backup(body.get("backup"))
+                    return self.send_json({"known": len(p.get("known", [])), "unknown": len(p.get("unknown", [])),
+                                           "test_date": (p.get("test") or {}).get("date"), "identity": PS.IDENTITIES.get(p.get("identity"), "未填写")})
+                if path.endswith("/clear"):
+                    PROFILE.clear_profile(body.get("expected_rev"))
+                else:
+                    PROFILE.import_backup(body.get("backup"), body.get("expected_rev"))
+            except PS.ProfileConflict as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            return self.send_json(PROFILE.payload())
         if path in ("/api/jobs/cancel", "/api/jobs/resume"):
             vid = str(body.get("id", ""))
             if not (YT_ID_RE.fullmatch(vid) or EXT_ID_RE.fullmatch(vid)):

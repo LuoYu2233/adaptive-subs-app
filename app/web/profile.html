@@ -149,6 +149,28 @@
     <p class="sub">这些标记优先于画像和测试。点 × 恢复成按画像判断。</p>
     <div id="marks"></div>
   </section>
+  <section id="dataTools">
+    <h2>备份与管理画像</h2>
+    <p class="sub">备份包含身份、成绩、词汇测试和「认识 / 不认识」标记。换电脑时可恢复。文件含个人学习记录，请妥善保存。</p>
+    <p class="sub">此处不包含 API key、视频字幕、任务历史或浏览器内的生词本与显示设置。</p>
+    <div class="actions">
+      <button class="btn" id="exportProfile" type="button">下载画像备份</button>
+      <button class="btn" id="chooseBackup" type="button">选择备份恢复</button>
+      <input id="backupFile" type="file" accept=".json,application/json" hidden>
+    </div>
+    <div id="restorePreview" hidden>
+      <p id="restoreSummary"></p>
+      <p class="sub">恢复将替换当前画像和全部标记。建议先下载当前备份。</p>
+      <div class="actions"><button class="btn primary" id="restoreProfile" type="button">确认替换画像</button>
+        <button class="btn" id="cancelRestore" type="button">取消</button></div>
+    </div>
+    <p class="msg" id="dataMessage" role="status"></p>
+    <details><summary>清除本机画像</summary>
+      <p class="sub">删除身份、成绩、词汇测试和全部标记。字幕、任务历史、API key 和浏览器生词本仍会保留；仅能用你保存的备份恢复画像。</p>
+      <button class="btn" id="clearProfile" type="button">清除画像与标记</button>
+    </details>
+    <p class="sub"><a href="/privacy">了解数据保存位置与对外请求</a></p>
+  </section>
 </main>
 <script src="/assets/learning.js"></script>
 <script src="/assets/profile.js"></script>

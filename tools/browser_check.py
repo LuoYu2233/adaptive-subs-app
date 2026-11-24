@@ -162,8 +162,38 @@ def main():
                     expect(page.locator("#marks")).to_contain_text("bank · 银行")
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
+                    with page.expect_download() as download:
+                        page.locator("#exportProfile").click()
+                    backup_path = home / "browser-backup.json"
+                    download.value.save_as(backup_path)
+                    exported = json.loads(backup_path.read_text())
+                    assert exported["format"] == "adaptive-subs-profile"
+                    assert exported["profile"]["field"] == "计算机"
+                    page.locator("#field").fill("设计")
+                    page.locator("#saveProfile").click()
+                    expect(page.locator("#msg1")).to_contain_text("已保存")
+                    page.locator("#backupFile").set_input_files(str(backup_path))
+                    expect(page.locator("#restorePreview")).to_be_visible()
+                    expect(page.locator("#field")).to_have_value("设计")
+                    page.locator("#restoreProfile").click()
+                    expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
+                    expect(page.locator("#field")).to_have_value("计算机")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
+                    page.locator("#dataTools details summary").click()
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.locator("#clearProfile").click()
+                    expect(page.locator("#dataMessage")).to_contain_text("画像和标记已清除")
+                    expect(page.locator("#field")).to_have_value("")
+                    expect(page.locator("#identity [aria-pressed='true']")).to_have_count(0)
+                    expect(page.locator("#s4")).to_be_hidden()
+                    page.locator("#backupFile").set_input_files(str(backup_path))
+                    expect(page.locator("#restorePreview")).to_be_visible()
+                    page.locator("#restoreProfile").click()
+                    expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
+
                     page.set_viewport_size({"width": 390, "height": 844})
-                    for path in ("app", "setup", "profile", "demo"):
+                    for path in ("app", "setup", "profile", "demo", "privacy"):
                         page.goto(base + "/" + path)
                         page.wait_for_load_state("networkidle")
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Overflow on {path}"

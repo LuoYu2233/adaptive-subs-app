@@ -58,6 +58,25 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+def test_backup_preview_and_restore_are_protected_and_revision_checked(http_server, monkeypatch):
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
+    S.PROFILE.mark("bank", "known")
+    assert request(http_server, "GET", "/api/profile/export")[0] == 403
+    status, raw = request(http_server, "GET", "/api/profile/export", headers=H)
+    assert status == 200
+    backup = json.loads(raw)
+    before = S.PROFILE.path.read_bytes()
+    body = json.dumps({"backup": backup, "expected_rev": 1})
+    assert request(http_server, "POST", "/api/profile/import/preview", body, H)[0] == 200
+    assert S.PROFILE.path.read_bytes() == before
+    assert request(http_server, "POST", "/api/profile/import", body)[0] == 403
+    assert request(http_server, "POST", "/api/profile/clear", '{"expected_rev":0}', H)[0] == 409
+    assert request(http_server, "POST", "/api/profile/clear", '{"expected_rev":1}', H)[0] == 200
+    assert S.PROFILE.export_backup()["profile"] == {}
+    assert request(http_server, "POST", "/api/profile/import", json.dumps({"backup": backup, "expected_rev": 2}), H)[0] == 200
+    assert S.PROFILE.load()["known"] == ["bank"]
+
+
 def test_post_starts_job(http_server, monkeypatch):
     start = Mock()
     monkeypatch.setattr(S, "get_job", start)

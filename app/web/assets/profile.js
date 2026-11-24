@@ -24,7 +24,7 @@
   // ------------------------------------------------------------ steps 1–2 ---
   function renderForm() {
     const prof = (P && P.profile) || {};
-    identity = prof.identity || identity;
+    identity = prof.identity || null;
     $("#identity").innerHTML = IDENTITIES.map(([id, name]) =>
       `<button type="button" class="chip" data-id="${id}" aria-pressed="${identity === id}">${name}</button>`).join("");
     $("#field").value = prof.field || "";
@@ -69,6 +69,7 @@
   // -------------------------------------------------------------- summary ---
   function renderSummary() {
     const box = $("#summary");
+    if (P) renderMarks();
     if (!P || !P.setup) { box.hidden = true; return; }
     box.hidden = false;
     const ident = (IDENTITIES.find(([id]) => id === P.profile.identity) || [0, ""])[1];
@@ -84,7 +85,6 @@
           <div>看视频时标记：认识 <b>${P.stats.marked_known}</b> 个，不认识 <b>${P.stats.marked_unknown}</b> 个</div>
         </div>
       </div>`;
-    renderMarks();
   }
 
   function renderMarks() {
@@ -107,11 +107,77 @@
     const b = e.target.closest("[data-clear]");
     try {
       if (b) { await api("/api/mark", { key: b.dataset.clear, state: "clear" }); }
-      else if (e.target.id === "resetMarks") { await api("/api/profile", { reset_marks: true }); }
+      else if (e.target.id === "resetMarks") {
+        if (!confirm("清空全部认识 / 不认识标记？身份、成绩和词汇测试仍会保留。")) return;
+        await api("/api/profile", { reset_marks: true });
+      }
       else return;
       P = await api("/api/profile");
       renderSummary();
     } catch (err) { alert(err.message); }
+  });
+
+  // Portable backups contain the saved learner profile, never service credentials.
+  let pendingBackup = null, pendingRev = null;
+  const dataMessage = (text, bad = false) => {
+    $("#dataMessage").textContent = text;
+    $("#dataMessage").className = "msg " + (bad ? "bad" : "ok");
+  };
+  function cancelRestore() {
+    pendingBackup = null; pendingRev = null;
+    $("#restorePreview").hidden = true;
+    $("#backupFile").value = "";
+  }
+  async function refreshProfile(value) {
+    P = value; T = null;
+    renderForm(); renderSummary(); await renderTest();
+  }
+  $("#exportProfile").addEventListener("click", async () => {
+    try {
+      const backup = await api("/api/profile/export");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = `adaptive-subs-profile-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      dataMessage("备份已交给浏览器下载，请检查下载列表。");
+    } catch (e) { dataMessage(e.message, true); }
+  });
+  $("#chooseBackup").addEventListener("click", () => $("#backupFile").click());
+  $("#cancelRestore").addEventListener("click", cancelRestore);
+  $("#backupFile").addEventListener("change", async () => {
+    const file = $("#backupFile").files[0];
+    cancelRestore();
+    if (!file) return;
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error("备份超过 5 MB，请检查是否选对了文件");
+      const backup = JSON.parse(await file.text());
+      const summary = await api("/api/profile/import/preview", { backup });
+      P = await api("/api/profile");
+      pendingBackup = backup; pendingRev = P.rev;
+      $("#restoreSummary").textContent = `${summary.identity}；认识 ${summary.known} 条，不认识 ${summary.unknown} 条；${summary.test_date ? "测试日期 " + summary.test_date : "没有词汇测试"}。`;
+      $("#restorePreview").hidden = false;
+      dataMessage("文件校验通过，尚未修改当前画像。");
+    } catch (e) { dataMessage(e instanceof SyntaxError ? "文件不是有效的 JSON 备份" : e.message, true); }
+  });
+  $("#restoreProfile").addEventListener("click", async () => {
+    if (!pendingBackup) return;
+    const btn = $("#restoreProfile"); btn.disabled = true;
+    try {
+      const value = await api("/api/profile/import", { backup: pendingBackup, expected_rev: pendingRev });
+      cancelRestore(); await refreshProfile(value);
+      dataMessage("画像已恢复。播放器和插件会在下次读取画像时更新。");
+    } catch (e) { dataMessage(e.message, true); }
+    finally { btn.disabled = false; }
+  });
+  $("#clearProfile").addEventListener("click", async () => {
+    if (!P || !confirm("清除本机的身份、成绩、词汇测试和全部认识 / 不认识标记？仅能用你保存的备份恢复。")) return;
+    const btn = $("#clearProfile"); btn.disabled = true;
+    try {
+      const value = await api("/api/profile/clear", { expected_rev: P.rev });
+      cancelRestore(); await refreshProfile(value);
+      dataMessage("本机画像和标记已清除。");
+    } catch (e) { dataMessage(e.message, true); }
+    finally { btn.disabled = false; }
   });
 
   // ---------------------------------------------------- adaptive test -----
