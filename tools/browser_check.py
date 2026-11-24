@@ -778,7 +778,8 @@ def main():
                             assert page.locator("#stage").evaluate("element => { const a=element.getBoundingClientRect(); const b=element.querySelector('.btn').getBoundingClientRect(); return b.bottom <= a.bottom && b.top >= a.top; }")
                         page.screenshot(path=str(output / f"{path}-mobile.png"), full_page=True)
                     assert not errors, errors
-                    from profile_check import check_profile, check_profile_conflicts
+                    from profile_check import check_profile, check_profile_conflicts, check_vocab_bank
+                    check_vocab_bank(context, base, home, output)
                     check_profile(context, base, home, output)
                     check_profile_conflicts(context, base, home, output)
                     from player_check import check_player

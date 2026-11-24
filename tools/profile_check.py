@@ -1,5 +1,6 @@
 """Exercise real vocabulary-test completion and uncertain save recovery without model calls."""
 import json
+from pathlib import Path
 
 
 def check_profile(context, base, home, output):
@@ -269,3 +270,60 @@ def check_profile_conflicts(context, base, home, output):
             data={"backup": original, "expected_rev": current["rev"]})
         assert restored.status == 200
         first.close(); second.close()
+
+
+def check_vocab_bank(context, base, home, output):
+    from playwright.sync_api import expect
+
+    page = context.new_page()
+    errors, writes, pending = [], [], []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
+    before = (home / "profile.json").read_bytes()
+    valid = json.loads((Path(__file__).parents[1] / "app/data/vocab_test.json").read_text())
+    duplicate = json.loads(json.dumps(valid))
+    duplicate["bands"][1]["words"][0]["word"] = duplicate["bands"][0]["words"][0]["word"]
+    mode = "empty"
+    def respond(route):
+        if mode == "empty": return route.fulfill(json={"bands": [], "nonwords": valid["nonwords"]})
+        if mode == "duplicate": return route.fulfill(json=duplicate)
+        if mode == "json": return route.fulfill(body="{broken", content_type="application/json")
+        if mode == "http": return route.fulfill(status=503, json={})
+        if mode == "large": return route.fulfill(body="x" * (2 * 1024 * 1024 + 1), content_type="application/json")
+        if mode == "pending":
+            pending.append(route)
+            return
+        return route.continue_()
+    page.route(base + "/data/vocab_test.json", respond)
+    try:
+        for mode, message in (("empty", "题库格式无效"), ("duplicate", "题库格式无效"),
+                              ("json", "不是有效的 JSON"), ("http", "HTTP 503"), ("large", "题库文件过大")):
+            page.goto(base + "/profile")
+            expect(page.locator("#test")).to_contain_text(message)
+            expect(page.locator('[data-act="start"]')).to_have_count(0)
+            expect(page.locator('[data-act="reload-bank"]')).to_be_visible()
+            assert not writes and (home / "profile.json").read_bytes() == before
+        page.screenshot(path=str(output / "vocab-bank-error.png"), full_page=True)
+        page.evaluate("""() => {
+            window.originalBankTimeout = AbortSignal.timeout;
+            AbortSignal.timeout = ms => originalBankTimeout(ms === 10000 ? 500 : ms);
+        }""")
+        mode = "pending"
+        page.locator('[data-act="reload-bank"]').click()
+        expect(page.locator("#test")).to_contain_text("正在加载")
+        expect(page.locator('[data-act="reload-bank"]')).to_have_count(0)
+        expect(page.locator("#test")).to_contain_text("题库读取超时")
+        assert len(pending) == 1
+        page.evaluate("AbortSignal.timeout = window.originalBankTimeout; delete window.originalBankTimeout")
+        for route in pending: route.abort("failed")
+        pending.clear()
+        mode = "valid"
+        page.locator('[data-act="reload-bank"]').click()
+        expect(page.locator('[data-act="start"]')).to_be_visible()
+        page.locator('[data-act="start"]').click()
+        expect(page.locator(".titems .tw")).to_have_count(12)
+        assert not errors and not writes and (home / "profile.json").read_bytes() == before
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        print("Vocabulary bank checks passed: invalid data, HTTP failure, size limit, timeout and successful reload without profile writes.")
+    finally:
+        page.close()

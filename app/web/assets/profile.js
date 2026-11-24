@@ -259,15 +259,24 @@
   // so a harder band never scores above an easier one.
   const W = { 2: 1, 1: 0.3, 0: 0 };
   const PAGE = 12;
-  let bank = null, T = null;
+  let bank = null, bankLoading = null, T = null;
 
   async function loadBank() {
     if (bank) return bank;
-    const r = await fetch("/data/vocab_test.json", { signal: AbortSignal.timeout(10000) });
-    if (!r.ok) throw new Error(`题库读取失败（HTTP ${r.status}）`);
-    bank = await r.json();
-    bank.bands.forEach((b, i) => { b.i = i; b.pool = shuffle(b.words); });
-    return bank;
+    if (bankLoading) return bankLoading;
+    bankLoading = (async () => {
+      const r = await fetch("/data/vocab_test.json", { signal: AbortSignal.timeout(10000), cache: "no-store" });
+      if (!r.ok) throw new Error(`题库读取失败（HTTP ${r.status}）`);
+      if (Number(r.headers.get("Content-Length")) > AdaptiveVocabBank.MAX_BYTES) throw new Error("题库文件过大，请检查程序文件");
+      const raw = await r.text();
+      if (new TextEncoder().encode(raw).length > AdaptiveVocabBank.MAX_BYTES) throw new Error("题库文件过大，请检查程序文件");
+      const checked = AdaptiveVocabBank.validate(JSON.parse(raw));
+      checked.bands.forEach((b, i) => { b.i = i; });
+      bank = checked;
+      return bank;
+    })();
+    try { return await bankLoading; }
+    finally { bankLoading = null; }
   }
   const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
 
@@ -366,8 +375,14 @@
   async function renderTest() {
     const box = $("#test");
     if (!T) {
-      try { await loadBank(); } catch (e) { box.innerHTML = `<p class="msg bad">${esc(e.message)}</p>`; return; }
-      newTest();
+      box.innerHTML = '<p class="msg" role="status">正在加载词汇测试题库…</p>';
+      try { await loadBank(); } catch (e) {
+        const message = e.name === "TimeoutError" || e.name === "AbortError" ? "题库读取超时，请重试"
+          : e instanceof SyntaxError ? "题库不是有效的 JSON，请重新加载或修复程序文件" : e.message;
+        box.innerHTML = `<p class="msg bad" role="status">${esc(message)}</p><button class="btn" type="button" data-act="reload-bank">重新加载题库</button>`;
+        return;
+      }
+      if (!T) newTest();
     }
     if (T.stage === "intro") {
       box.innerHTML = `
@@ -442,6 +457,7 @@
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
+    if (act === "reload-bank") { await renderTest(); return; }
     const pageItems = () => T.items.slice(T.page * PAGE, (T.page + 1) * PAGE);
     const top = () => $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
     if (act === "start") { T.stage = "words"; renderTest(); }
