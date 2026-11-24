@@ -38,7 +38,7 @@
     book: Array.isArray(saved.book) ? saved.book : [],
     introSeen: !!saved.introSeen,
     test: saved.test || null,
-    tab: saved.tab || "transcript",
+    tab: ["transcript", "preview", "book"].includes(saved.tab) ? saved.tab : "transcript",
     visible: [],                             // per cue: Set of note indices shown
     cur: -1,                                 // current cue index
     gap: false,                              // true during a silence after the current line
@@ -219,13 +219,22 @@
     return html + plain(c.text.slice(pos));
   }
 
+  let transcriptRows = [], transcriptVideo = null;
   function renderTranscript(scrollToActive = true) {
     const panel = $("#tab-transcript");
-    panel.innerHTML = S.cues.map((c, ci) => `
+    const rows = S.cues.map((c, ci) => `
       <div class="tr-row${isDone(ci) ? "" : " pending"}" data-c="${ci}">
         <span class="tr-time">${fmtTime(c.s)}</span>
         <div><div class="tr-text">${trText(ci)}</div>${S.mode === "bilingual" && c.zh ? `<div class="tr-zh">${esc(c.zh)}</div>` : ""}</div>
-      </div>`).join("");
+      </div>`);
+    const changed = rows.flatMap((html, i) => html === transcriptRows[i] ? [] : [i]);
+    const videoId = S.video && S.video.id;
+    if (videoId !== transcriptVideo || rows.length !== transcriptRows.length || changed.length > rows.length / 3) {
+      panel.innerHTML = rows.join("");
+    } else {
+      for (const i of changed) panel.children[i].outerHTML = rows[i];
+    }
+    transcriptRows = rows; transcriptVideo = videoId;
     markActiveRow(scrollToActive);
   }
 
@@ -314,9 +323,13 @@
     renderControls();
     renderDensity();
     renderStage();
-    renderTranscript(scrollTranscript);
-    renderPreview();
-    renderBook();
+    renderActivePanel(scrollTranscript);
+  }
+
+  function renderActivePanel(scrollTranscript = false) {
+    if (S.tab === "transcript") renderTranscript(scrollTranscript);
+    else if (S.tab === "preview") renderPreview();
+    else if (S.tab === "book") renderBook();
   }
 
   // ------------------------------------------------------ personal marks ---
@@ -938,7 +951,7 @@
     $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save(); renderAll(); } });
     $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save(); renderAll(); } });
     $("#autoPause").addEventListener("change", (e) => { S.autoPause = e.target.checked; pausedFor = -1; save(); toast(S.autoPause ? "每句结束时会自动暂停，按空格继续" : "已关闭每句暂停"); });
-    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save(); renderControls(); if (S.tab === "transcript") markActiveRow(true); }));
+    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save(); renderControls(); renderActivePanel(true); }));
 
     $("#prevLine").addEventListener("click", () => step(-1));
     $("#nextLine").addEventListener("click", () => step(1));

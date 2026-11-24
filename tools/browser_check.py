@@ -162,6 +162,10 @@ def main():
                     assert response.value.status == 200
                     expect(page.locator("#tab-preview .wrow")).to_have_count(1)
                     expect(page.locator("#tab-preview .w-zh")).to_have_text("河岸")
+                    page.locator(".tabs [data-tab='transcript']").click()
+                    expect(page.locator(".tr-row").first).not_to_contain_text("银行")
+                    expect(page.locator(".tr-row").nth(1)).to_contain_text("河岸")
+                    page.locator(".tabs [data-tab='preview']").click()
                     page.screenshot(path=str(output / "meaning-feedback.png"), full_page=True)
                     page.goto(base + "/profile")
                     expect(page.locator("#marks")).to_contain_text("bank · 银行")
@@ -209,6 +213,28 @@ def main():
                     page.locator("#restoreProfile").click()
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
+
+                    # Long transcripts keep unaffected DOM rows when mode/gloss state changes.
+                    response = page.request.post(base + "/api/profile", data={"reset_marks": True}, headers={"X-Adaptive-Subs": "1"})
+                    assert response.status == 200
+                    long_cues = [{"s": i * 5, "e": i * 5 + 5, "text": f"The bank approved request number {i}.",
+                                  "zh": "银行批准了申请。", "notes": [{"s": 4, "e": 8, "key": "bank", "zh": "银行",
+                                  "kind": "word", "lv": 15000}]} for i in range(6000)]
+                    (data / "yyyyyyyyyyy.json").write_text(json.dumps({"video": {"id": "yyyyyyyyyyy", "title": "长字幕回归", "duration": 30000}, "cues": long_cues}))
+                    entries = json.loads((data / "index.json").read_text())
+                    (data / "index.json").write_text(json.dumps(entries + [{"id": "yyyyyyyyyyy", "title": "长字幕回归", "file": "yyyyyyyyyyy.json"}]))
+                    page.goto(base + "/player.html?v=yyyyyyyyyyy")
+                    page.locator(".tabs [data-tab='transcript']").click()
+                    expect(page.locator(".tr-row")).to_have_count(6000)
+                    retained = page.locator(".tr-row").nth(3000).element_handle()
+                    timings = []
+                    for mode in ("plain", "adaptive", "plain", "adaptive"):
+                        begin = time.monotonic()
+                        page.locator(f'#modeSeg [data-mode="{mode}"]').click()
+                        timings.append(round((time.monotonic() - begin) * 1000))
+                        assert retained.evaluate("element => element.isConnected")
+                    expect(page.locator(".tr-row").last).to_contain_text("5999")
+                    (output / "transcript-performance.json").write_text(json.dumps({"cues": 6000, "mode_switch_ms": timings}))
 
                     page.set_viewport_size({"width": 390, "height": 844})
                     for path in ("app", "setup", "profile", "demo", "privacy"):
