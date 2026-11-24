@@ -66,3 +66,13 @@ test('health reports mismatched versions without pretending they match', async (
   assert.equal(result.versionMismatch,true);
   assert.equal(result.version,'0.3.0');
 });
+
+test('profile reads preserve server errors and never accept a failed HTTP response as success', async () => {
+  for (const [value, status, expected] of [[{},500,'HTTP 500'], [null,503,'HTTP 503'],
+      [{level:5000},507,'HTTP 507'], [{error:'词汇组件不可用',component:true},503,'词汇组件不可用']]) {
+    const w = worker(url => url.endsWith('/api/health') ? response(product) : response(value,status));
+    const result = await w.run("handle({type:'profile',summary:true})");
+    assert.ok(result.error.includes(expected));
+    assert.ok(w.calls.at(-1).options.signal instanceof AbortSignal);
+  }
+});

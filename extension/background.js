@@ -52,7 +52,11 @@ async function findServer(force) {
 }
 
 async function json(r) {
-  try { return await r.json(); } catch { return { error: `本地服务器返回了 HTTP ${r.status}` }; }
+  try {
+    const value = await r.json();
+    if (!r.ok && !value?.error) return { error: `本地服务器返回了 HTTP ${r.status}` };
+    return value;
+  } catch { return { error: `本地服务器返回了 HTTP ${r.status}` }; }
 }
 
 async function perform(msg) {
@@ -83,7 +87,8 @@ async function perform(msg) {
     // learner profile + known-word library (shared with the player and the profile page)
     if (msg.type === "profile") {
       if (!s.h.profile) return { error: "oldserver" };
-      const r = await fetch(`${s.base}/api/profile${msg.summary ? "?summary=1" : ""}`, { headers: HEADERS, cache: "no-store" });
+      const r = await fetch(`${s.base}/api/profile${msg.summary ? "?summary=1" : ""}`,
+        { headers: HEADERS, cache: "no-store", signal: AbortSignal.timeout(10000) });
       return await json(r);
     }
     if (msg.type === "mark" || msg.type === "setprofile" || msg.type === "explain") {

@@ -2,7 +2,17 @@
 const { LEVELS, DEFAULTS } = AdaptiveSettings;
 const $ = (s) => document.querySelector(s);
 let cfg = { ...DEFAULTS };
-let prof = null;          // profile summary from the local program (null: program not running / old version)
+let prof = null;
+let profileState = "connecting", profileError = "", profileRead = 0;
+
+function validProfile(p) {
+  const count = n => Number.isSafeInteger(n) && n >= 0;
+  return p && !p.error && count(p.rev) && Number.isInteger(p.level) && p.level >= 1 && p.level <= 100000
+    && typeof p.setup === "boolean" && p.stats && ["known", "marked_known", "marked_unknown"].every(k => count(p.stats[k]))
+    && Array.isArray(p.lists) && p.lists.length <= 20 && p.lists.every(s => typeof s === "string" && s.length <= 80)
+    && (p.test == null || (typeof p.test === "object" && !Array.isArray(p.test)
+      && (p.test.date == null || (typeof p.test.date === "string" && p.test.date.length <= 80))));
+}
 
 const nearest = (x) => LEVELS.reduce((a, b) => (Math.abs(b - x) < Math.abs(a - x) ? b : a));
 let draftLevel = null, levelRequest = 0;
@@ -13,9 +23,15 @@ function render() {
   $("#hideNative").checked = cfg.hideNative;
   const i = Math.max(0, LEVELS.indexOf(nearest(level())));
   $("#level").value = i;
-  $("#levelValue").textContent = `≈ ${level().toLocaleString("en-US")} 词`;
-  $("#levelNote").textContent = !prof ? "程序没开时只保存在这个浏览器里" : prof.test
-    ? `来自词汇测试（${prof.test.date}）· 拖动可以手动调整`
+  const editable = profileState === "ready" || profileState === "offline";
+  $("#level").disabled = !editable;
+  $("#levelValue").textContent = editable ? `≈ ${level().toLocaleString("en-US")} 词`
+    : profileState === "unavailable" ? "暂不可用" : "读取中…";
+  $("#levelNote").textContent = profileState === "connecting" ? "正在确认本机画像连接…"
+    : profileState === "loading" ? "正在读取本机画像，请稍候…"
+    : profileState === "unavailable" ? "已连接程序，但画像尚未读取；恢复后才能修改词汇量。"
+    : profileState === "offline" ? "未连接本机画像，词汇量只保存在这个浏览器里" : prof.test
+    ? `来自词汇测试${prof.test.date ? `（${prof.test.date}）` : ""} · 拖动可以手动调整`
     : prof.setup ? "按考试成绩 / 身份估计 · 做一次词汇测试会更准" : "拖动调整，或建立英语画像自动设置";
   document.querySelectorAll(".seg[data-key]").forEach((seg) => {
     seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(cfg[seg.dataset.key] === b.dataset.v)));
@@ -26,15 +42,48 @@ function render() {
 
 function renderProfile() {
   const box = $("#profileBox");
+  box.classList.toggle("unavailable", profileState === "unavailable");
+  $("#retryProfile").hidden = profileState !== "unavailable";
+  if (profileState === "unavailable") {
+    box.hidden = false;
+    box.classList.remove("todo");
+    $("#profileText").textContent = profileError;
+    $("#openProfile").textContent = "打开画像页面 ›";
+    return;
+  }
   if (!prof) { box.hidden = true; return; }
   box.hidden = false;
   box.classList.toggle("todo", !prof.setup);
-  $("#profileText").innerHTML = !prof.setup
-    ? "<b>还没有建立英语画像。</b>填一下考试成绩、做个 3 分钟的词汇测试，注释会准很多。"
-    : `熟词库 <b>${prof.stats.known.toLocaleString("en-US")}</b> 词${prof.lists.length ? ` · 含${prof.lists.join("、")}词表` : ""}` +
-      ` · 标记过 <b>${prof.stats.marked_known + prof.stats.marked_unknown}</b> 个词`;
+  $("#profileText").textContent = !prof.setup
+    ? "还没有建立英语画像。填一下考试成绩、做个 3 分钟的词汇测试，注释会准很多。"
+    : `熟词库 ${prof.stats.known.toLocaleString("en-US")} 词${prof.lists.length ? ` · 含${prof.lists.join("、")}词表` : ""}` +
+      ` · 标记过 ${prof.stats.marked_known + prof.stats.marked_unknown} 个词`;
   $("#openProfile").textContent = prof.setup ? "英语画像 ›" : "建立英语画像（约 3 分钟）";
 }
+
+function loadProfile() {
+  const request = ++profileRead;
+  profileState = "loading";
+  prof = null;
+  draftLevel = null;
+  $("#saveStatus").textContent = "";
+  renderProfile(); render();
+  chrome.runtime.sendMessage({ type: "profile", summary: true }, p => {
+    const failed = chrome.runtime.lastError;
+    if (request !== profileRead) return;
+    if (failed || !validProfile(p)) {
+      profileState = "unavailable";
+      const detail = typeof p?.error === "string" && p.error !== "noserver" ? p.error : "请求失败或响应不完整";
+      profileError = `画像暂时无法读取：${detail}。可以重试，或打开画像页面查看原因。`;
+    } else {
+      prof = p;
+      profileState = "ready";
+    }
+    renderProfile(); render();
+  });
+}
+
+$("#retryProfile").addEventListener("click", loadProfile);
 
 let settingsWrite = 0;
 function save(onStored) {
@@ -64,10 +113,12 @@ chrome.storage.local.get(["settings"], (r) => {
 $("#enabled").addEventListener("change", (e) => { cfg.enabled = e.target.checked; save(); });
 $("#hideNative").addEventListener("change", (e) => { cfg.hideNative = e.target.checked; save(); });
 $("#level").addEventListener("input", (e) => {
+  if (profileState !== "ready" && profileState !== "offline") return;
   draftLevel = LEVELS[+e.target.value];
   render();
 });
 $("#level").addEventListener("change", () => {
+  if (profileState !== "ready" && profileState !== "offline") return;
   cfg.level = draftLevel ?? LEVELS[+$("#level").value];
   if (!prof) {
     $("#saveStatus").textContent = "正在保存浏览器设置…";
@@ -83,7 +134,7 @@ $("#level").addEventListener("change", () => {
     const error = chrome.runtime.lastError;
     if (request !== levelRequest) return;
     draftLevel = null;
-    if (error || !result || result.error || !Number.isFinite(result.level)) {
+    if (error || !validProfile(result)) {
       $("#saveStatus").textContent = `画像未保存：${result?.error || "连接失败，请重试"}`;
       render();
       return;
@@ -131,6 +182,7 @@ function status(kind, text) {
 }
 
 chrome.runtime.sendMessage({ type: "health" }, (r) => {
+  const failed = chrome.runtime.lastError;
   const btn = $("#openSetup");
   if (r && r.setup) {
     btn.hidden = false;
@@ -138,14 +190,12 @@ chrome.runtime.sendMessage({ type: "health" }, (r) => {
   }
   if (r && r.profile) {
     $("#openProfile").onclick = () => chrome.tabs.create({ url: r.profile });
-    chrome.runtime.sendMessage({ type: "profile", summary: true }, (p) => {
-      if (chrome.runtime.lastError || !p || p.error) return;
-      prof = p;
-      renderProfile();
-      render();
-    });
+    loadProfile();
+  } else {
+    profileState = "offline";
+    render();
   }
-  if (chrome.runtime.lastError || !r || r.error === "noserver") {
+  if (failed || !r || r.error === "noserver") {
     status("bad", "Adaptive Subs 程序没开：打开 AdaptiveSubs.exe 后刷新视频页。现在只能看纯英文字幕");
   } else if (!r.ext) {
     status("bad", "程序是旧版本：关掉它的窗口重新打开");

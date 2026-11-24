@@ -34,6 +34,9 @@ def check_extension(playwright, base, home, output):
         mismatched_version = False
         missing_runtime = False
         offline = False
+        profile_read_mode = None
+        pending_profile_reads = []
+        profile_posts = []
         pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
@@ -47,6 +50,16 @@ def check_extension(playwright, base, home, output):
             if url == "http://127.0.0.1:1/api/health":
                 return route.fulfill(json={"ok": True})
             if url.startswith(base + "/"):
+                if url.endswith("/api/profile") and route.request.method == "POST":
+                    profile_posts.append(route.request.post_data_json)
+                if url.endswith("/api/profile?summary=1") and profile_read_mode:
+                    if profile_read_mode == "component":
+                        return route.fulfill(status=503, json={"error": "测试英语词汇组件不可用", "component": True})
+                    if profile_read_mode == "http": return route.fulfill(status=500, json={})
+                    if profile_read_mode == "malformed": return route.fulfill(json={"level": 5000})
+                    if profile_read_mode == "null": return route.fulfill(json=None, body="null", content_type="application/json")
+                    pending_profile_reads.append(route)
+                    return
                 if offline and url.endswith("/api/health"):
                     return route.fulfill(status=503, json={})
                 if (mismatched_version or missing_runtime) and url.endswith("/api/health"):
@@ -186,6 +199,57 @@ def check_extension(playwright, base, home, output):
         assert json.loads((home / "profile.json").read_text())["level"] == 5000
         popup.reload()
         expect(popup.locator("#levelValue")).to_contain_text("5,000")
+        # Connected service with an unavailable profile must not become an offline write.
+        before_read_failure = (home / "profile.json").read_bytes()
+        before_browser_settings = worker.evaluate("() => chrome.storage.local.get('settings')")
+        before_profile_posts = len(profile_posts)
+        for profile_read_mode in ("component", "http", "malformed", "null"):
+            popup.reload()
+            expect(popup.locator("#profileText")).to_contain_text("画像暂时无法读取")
+            expect(popup.locator("#levelValue")).to_have_text("暂不可用")
+            expect(popup.locator("#levelNote")).to_contain_text("已连接程序")
+            expect(popup.locator("#level")).to_be_disabled()
+            expect(popup.locator("#retryProfile")).to_be_visible()
+            popup.locator("#level").evaluate("e => { e.value = 11; e.dispatchEvent(new Event('input')); e.dispatchEvent(new Event('change')); }")
+            assert worker.evaluate("() => chrome.storage.local.get('settings')") == before_browser_settings
+            assert (home / "profile.json").read_bytes() == before_read_failure
+            assert len(profile_posts) == before_profile_posts
+        with context.expect_page() as opened:
+            popup.locator("#openProfile").click()
+        profile_page = opened.value
+        profile_page.wait_for_url(base + "/profile")
+        profile_page.close()
+        popup.screenshot(path=str(output / "extension-profile-read-error.png"), full_page=True)
+        profile_read_mode = "pending"
+        popup.locator("#retryProfile").click()
+        expect(popup.locator("#levelValue")).to_have_text("读取中…")
+        expect(popup.locator("#level")).to_be_disabled()
+        expect(popup.locator("#profileBox")).to_be_hidden()
+        for _ in range(100):
+            if pending_profile_reads: break
+            popup.wait_for_timeout(10)
+        assert len(pending_profile_reads) == 1
+        good_profile = worker.evaluate("() => handle({type:'profile'})")
+        pending_profile_reads.pop().fulfill(json=good_profile)
+        expect(popup.locator("#levelValue")).to_contain_text("5,000")
+        expect(popup.locator("#level")).to_be_enabled()
+        expect(popup.locator("#retryProfile")).to_be_hidden()
+        # Exercise a real AbortSignal in the worker, compressing only this read deadline.
+        worker.evaluate("""() => {
+            globalThis.originalProfileTimeout = AbortSignal.timeout;
+            AbortSignal.timeout = ms => originalProfileTimeout(ms === 10000 ? 250 : ms);
+        }""")
+        popup.reload()
+        expect(popup.locator("#profileText")).to_contain_text("画像暂时无法读取")
+        expect(popup.locator("#level")).to_be_disabled()
+        worker.evaluate("AbortSignal.timeout = globalThis.originalProfileTimeout; delete globalThis.originalProfileTimeout")
+        for route in pending_profile_reads: route.abort("failed")
+        pending_profile_reads.clear()
+        profile_read_mode = None
+        popup.locator("#retryProfile").click()
+        expect(popup.locator("#levelValue")).to_contain_text("5,000")
+        assert len(profile_posts) == before_profile_posts
+        assert (home / "profile.json").read_bytes() == before_read_failure
         mismatched_version = True
         popup.reload()
         expect(popup.locator("#status")).to_contain_text("与插件版本不同")
@@ -210,6 +274,9 @@ def check_extension(playwright, base, home, output):
         popup.reload()
         expect(popup.locator("#status")).to_contain_text("程序没开", timeout=20000)
         expect(popup.locator("#levelValue")).to_contain_text("3,000")
+        expect(popup.locator("#level")).to_be_enabled()
+        expect(popup.locator("#profileBox")).to_be_hidden()
+        expect(popup.locator("#coverHere")).to_be_hidden()
         expect(popup.locator("#settingsIssue")).to_contain_text("原始存储尚未修改")
         expect(popup.locator('[data-key="pref"] [data-v="less"]')).to_have_attribute("aria-checked", "true")
         expect(popup.locator('[data-key="mode"] [data-v="adaptive"]')).to_have_attribute("aria-checked", "true")
