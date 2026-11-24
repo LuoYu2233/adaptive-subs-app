@@ -1,3 +1,3 @@
 """Release identifiers shared by the local server and packaging checks."""
-VERSION = "0.4.0-alpha.6"
-EXTENSION_VERSION = "0.4.0.6"
+VERSION = "0.4.0-alpha.7"
+EXTENSION_VERSION = "0.4.0.7"

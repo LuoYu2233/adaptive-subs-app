@@ -23,11 +23,13 @@
   const params = new URLSearchParams(location.search);
 
   // ------------------------------------------------------------- state ---
+  const playerStore = AdaptivePlayerStore.create();
+  let storageIssue = null;
   const saved = loadStore();
   const S = {
     video: null,
     cues: [],
-    level: LEVELS.includes(saved.level) ? saved.level : 5000,
+    level: saved.level || 5000,
     mode: saved.mode || "adaptive",          // adaptive | plain | bilingual
     gloss: saved.gloss || "over",            // over | paren
     pref: PREFS[saved.pref] ? saved.pref : "more",   // more | normal | less (how many glosses)
@@ -58,17 +60,56 @@
   let bookKeys = new Set(S.book.map((b) => b.key));
 
   function loadStore() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
+    try { return playerStore.read(); }
+    catch (e) { storageIssue = e; return {}; }
   }
-  function save() {
+  function applyLocalStore(value) {
+    S.book = value.book || []; bookKeys = new Set(S.book.map(b => b.key));
+    if (!live) { S.known = new Set(value.known || []); S.unknown = new Set(value.unknown || []); }
+    storageIssue = null;
+    renderStorageNotice(); renderAll(false);
+  }
+  function refreshLocalStore() {
+    try { applyLocalStore(playerStore.read()); }
+    catch (e) { storageIssue = e; renderStorageNotice(); }
+  }
+  async function persist(edit) {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({
-        level: S.level, pref: S.pref, mode: S.mode, gloss: S.gloss, subPos: S.subPos, autoPause: S.autoPause,
-        known: [...S.known], unknown: [...S.unknown], book: S.book,
-        introSeen: S.introSeen, test: S.test, tab: S.tab,
-      }));
-      return true;
-    } catch { toast("浏览器存储不可用，本次更改无法在关闭页面后保留"); return false; }
+      const committed = await playerStore.update(edit);
+      applyLocalStore(playerStore.read());
+      return committed;
+    } catch (e) {
+      const problem = e instanceof AdaptivePlayerStore.StorageProblem;
+      if (problem) { storageIssue = e; renderStorageNotice(); }
+      toast(problem ? e.message : `浏览器存储不可用，未保存本次更改：${e.message || "请检查存储空间"}`);
+      return null;
+    }
+  }
+  async function save(fields) { return !!(await persist(current => ({ ...current, ...fields }))); }
+  function renderStorageNotice() {
+    const damaged = storageIssue?.code === "damaged";
+    $("#storageNotice").hidden = !storageIssue;
+    $("#storageMessage").textContent = storageIssue ? `${storageIssue.message}。原始记录不会被普通保存覆盖。` : "";
+    $("#downloadStorage").hidden = !damaged;
+    $("#recoverStorage").hidden = !damaged;
+    try { $("#storageRecovery").hidden = !playerStore.recoveryCopies().length; }
+    catch { $("#storageRecovery").hidden = true; }
+  }
+  async function recoverLocalStore() {
+    if (storageIssue?.code !== "damaged") return;
+    const original = storageIssue.raw;
+    if (!confirm("将先在浏览器中保留原始数据副本，再重建播放器的生词本和显示设置。之后可导入有效生词本备份。程序中的画像不受影响。继续？")) return;
+    $("#recoverStorage").disabled = true;
+    try { await playerStore.recover(original); location.reload(); }
+    catch (e) { toast(`重建失败，原始记录已保留：${e.message}`); }
+    finally { $("#recoverStorage").disabled = false; }
+  }
+  function downloadStorageCopies(originalOnly = false) {
+    try {
+      const copies = originalOnly ? [{ key: STORE_KEY, raw: storageIssue.raw }] : playerStore.recoveryCopies();
+      downloadBook(JSON.stringify({ format: "adaptive-subs-player-recovery", version: 1, copies }, null, 2),
+        "application/json;charset=utf-8", "adaptive-subs-player-original.json");
+    } catch (e) { toast(`下载失败：${e.message}`); }
   }
 
   // ----------------------------------------------------------- helpers ---
@@ -297,13 +338,13 @@
       panel.innerHTML = `<div class="empty"><div class="empty-title">生词本还是空的</div>点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存，之后可以一键回到原片段重听。</div>` + tools;
       return;
     }
-    const items = S.book.map((b, i) => ({ b, i })).reverse();
-    panel.innerHTML = items.map(({ b, i }) => {
+    const items = S.book.slice().reverse();
+    panel.innerHTML = items.map(b => {
       const sameVideo = S.video && b.vid === S.video.id;
       return `
       <div class="wrow">
         <div><div class="w-term">${esc(b.term)}</div>${b.zh ? `<div class="w-zh">${esc(b.zh)}</div>` : ""}</div>
-        <div class="w-actions"><button class="x-btn" data-act="unbook" data-i="${i}" aria-label="从生词本删除" title="删除">×</button></div>
+        <div class="w-actions"><button class="x-btn" data-act="unbook" data-key="${esc(b.key)}" aria-label="从生词本删除" title="删除">×</button></div>
         <div class="w-sent">${markTerm(b.sentence, b.term)}</div>
         <div class="w-meta">
           ${b.kind && b.kind !== "word" ? `<span class="tag tag-${b.kind}">${KIND_LABEL[b.kind]}</span>` : ""}
@@ -379,10 +420,13 @@
   }
   async function pushMark(key, state) {
     if (!live) {
-      S.known.delete(key); S.unknown.delete(key);
-      if (state === "known") S.known.add(key);
-      if (state === "unknown") S.unknown.add(key);
-      const saved = save(); renderAll(); return saved;
+      return !!(await persist(current => {
+        const known = new Set(current.known || []), unknown = new Set(current.unknown || []);
+        known.delete(key); unknown.delete(key);
+        if (state === "known") known.add(key);
+        if (state === "unknown") unknown.add(key);
+        return { ...current, known: [...known], unknown: [...unknown] };
+      }));
     }
     try {
       const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
@@ -404,14 +448,14 @@
     }, 400);
   }
 
-  function addToBook(entry) {
-    if (bookKeys.has(entry.key)) return;
-    if (S.book.length >= AdaptiveWordbook.MAX_ENTRIES) { toast("生词本已满，请先备份并整理记录"); return; }
-    S.book.push({ ...entry, vid: S.video.id, added: Date.now() });
-    bookKeys = new Set(S.book.map((b) => b.key));
-    if (!save()) {
-      S.book.pop(); bookKeys.delete(entry.key); renderAll(); return;
-    }
+  async function addToBook(entry) {
+    const record = { ...entry, vid: S.video.id, added: Date.now() };
+    let added = false;
+    if (!await saveBook(book => {
+      if (book.some(b => b.key === record.key)) return book;
+      if (book.length >= AdaptiveWordbook.MAX_ENTRIES) throw new Error("生词本已满，请先备份并整理记录");
+      added = true; return [...book, record];
+    }) || !added) return;
     if (entry.hasNote) pushMark(entry.mk || entry.key, "unknown");
     renderAll(); toast(`已加入生词本：${entry.term}`);
   }
@@ -426,13 +470,8 @@
     return { key, term: word, zh: "", kind: "word", lv: 0, sentence: c.text, t: c.s, hasNote: false };
   }
 
-  function saveBook(next) {
-    const previous = S.book;
-    S.book = next; bookKeys = new Set(next.map(b => b.key));
-    const ok = save();
-    if (!ok) { S.book = previous; bookKeys = new Set(previous.map(b => b.key)); }
-    renderAll(false);
-    return ok;
+  async function saveBook(edit) {
+    return !!(await persist(current => ({ ...current, book: edit(current.book || []) })));
   }
   function downloadBook(contents, type, filename) {
     const blob = new Blob([contents], { type });
@@ -442,14 +481,17 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
   function exportCSV() {
-    const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
-      S.book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
-    downloadBook("\uFEFF" + rows.map(r => r.map(AdaptiveWordbook.csvCell).join(",")).join("\r\n"),
-      "text/csv;charset=utf-8", "adaptive-subs-wordbook.csv");
+    try {
+      const book = playerStore.read().book || [];
+      const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
+        book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
+      downloadBook("\uFEFF" + rows.map(r => r.map(AdaptiveWordbook.csvCell).join(",")).join("\r\n"),
+        "text/csv;charset=utf-8", "adaptive-subs-wordbook.csv");
+    } catch (e) { toast(`导出失败：${e.message}`); }
   }
   function exportBook() {
     try {
-      const data = JSON.stringify(AdaptiveWordbook.backup(S.book), null, 2);
+      const data = JSON.stringify(AdaptiveWordbook.backup(playerStore.read().book || []), null, 2);
       if (new Blob([data]).size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("备份超过 8 MB，请先分批整理记录");
       downloadBook(data, "application/json;charset=utf-8", "adaptive-subs-wordbook.json");
     } catch (e) { toast(`备份失败：${e.message}`); }
@@ -464,24 +506,30 @@
       if (file.size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("文件超过 8 MB");
       const incoming = AdaptiveWordbook.parse(JSON.parse(await file.text()));
       if (sequence !== bookImportSequence) return;
-      const merged = AdaptiveWordbook.merge(S.book, incoming), added = merged.length - S.book.length;
+      const current = playerStore.read().book || [];
+      const merged = AdaptiveWordbook.merge(current, incoming), added = merged.length - current.length;
       pendingBookImport = incoming;
       $("#bookImportSummary").textContent = `备份含 ${incoming.length} 条记录，将新增 ${added} 条，保留 ${incoming.length - added} 条已有记录。`;
       $("#bookImportError").textContent = "";
       $("#bookImportDialog").showModal();
     } catch (e) { if (sequence === bookImportSequence) toast(`无法读取生词本备份：${e.message}`); }
   }
-  function importBook() {
+  async function importBook() {
     if (!pendingBookImport) return;
+    const incoming = pendingBookImport;
+    $("#bookImportConfirm").disabled = true;
     try {
-      const merged = AdaptiveWordbook.merge(S.book, pendingBookImport), added = merged.length - S.book.length;
-      if (!saveBook(merged)) {
+      let added = 0;
+      if (!await saveBook(book => {
+        const merged = AdaptiveWordbook.merge(book, incoming); added = merged.length - book.length; return merged;
+      })) {
         $("#bookImportError").textContent = "浏览器保存失败，原有生词本未改变。请检查存储空间后重试。";
         return;
       }
       $("#bookImportDialog").close();
       toast(`生词本已恢复，新增 ${added} 条记录`);
     } catch (e) { $("#bookImportError").textContent = `恢复失败：${e.message}`; }
+    finally { $("#bookImportConfirm").disabled = false; }
   }
 
   // --------------------------------------------------------------- toast ---
@@ -885,7 +933,7 @@
     };
   }
 
-  function onTestClick(e) {
+  async function onTestClick(e) {
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
@@ -920,14 +968,15 @@
     else if (act === "tapply") {
       S.level = +b.dataset.lv;
       S.test = { est: T.result.est, date: new Date().toISOString().slice(0, 10) };
-      save(); renderAll();
+      if (!await save({ level: S.level, test: S.test })) return;
+      renderAll(); pushLevel();
       $("#testDialog").close();
       toast(`已按测试结果设置：≈ ${fmtNum(S.level)} 词`);
     }
   }
 
   // ------------------------------------------------------------- events ---
-  function onAction(e) {
+  async function onAction(e) {
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act, key = b.dataset.key;
@@ -936,21 +985,25 @@
     else if (act === "restore") { closeCard(true); restore(key); }
     else if (act === "book") {
       const ci = +b.dataset.c;
-      if (b.dataset.n != null || b.dataset.w) addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
+      if (b.dataset.n != null || b.dataset.w) await addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
       else {
         // from the pre-watch list: find the note with this key in that cue
         const ni = S.cues[ci].notes.findIndex((n) => markKey(n) === key);
-        addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
+        await addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
       }
       closeCard(true);
     }
     else if (act === "unbook") {
-      const index = +b.dataset.i, removed = S.book[index];
-      if (!removed || !saveBook(S.book.filter((_, i) => i !== index))) return;
+      let index, removed;
+      if (!await saveBook(book => {
+        index = book.findIndex(item => item.key === key); removed = book[index];
+        return book.filter(item => item.key !== key);
+      }) || !removed) return;
       toast(`已从生词本删除：${removed.term}`, () => {
-        if (bookKeys.has(removed.key)) return;
-        const next = S.book.slice(); next.splice(Math.min(index, next.length), 0, removed);
-        saveBook(next);
+        return saveBook(book => {
+          if (book.some(item => item.key === removed.key)) return book;
+          const next = book.slice(); next.splice(Math.min(index, next.length), 0, removed); return next;
+        });
       });
     }
     else if (act === "replay") seekCue(+b.dataset.c);
@@ -963,6 +1016,11 @@
   }
 
   function bindUI() {
+    $("#recoverStorage").addEventListener("click", recoverLocalStore);
+    $("#downloadStorage").addEventListener("click", () => downloadStorageCopies(true));
+    $("#downloadRecovery").addEventListener("click", () => downloadStorageCopies());
+    window.addEventListener("storage", event => { if (event.key === STORE_KEY || event.key === null) refreshLocalStore(); });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshLocalStore(); });
     $("#bookBackupFile").addEventListener("change", previewBookImport);
     $("#bookImportConfirm").addEventListener("click", importBook);
     $("#bookImportCancel").addEventListener("click", () => $("#bookImportDialog").close());
@@ -990,7 +1048,7 @@
       openVideo(v);
     });
     $("#videoSelect").addEventListener("change", (e) => openVideo(e.target.value));
-    $("#posSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.subPos = b.dataset.pos; save(); renderControls(); renderStage(); } });
+    $("#posSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.subPos = b.dataset.pos; save({ subPos: S.subPos }); renderControls(); renderStage(); } });
     $("#fsBtn").addEventListener("click", toggleFullscreen);
     $("#fsBar").addEventListener("click", (e) => {
       const b = e.target.closest("[data-fs]");
@@ -1006,12 +1064,12 @@
     $("#tab-transcript").addEventListener("click", (e) => { const r = e.target.closest(".tr-row"); if (r) seekCue(+r.dataset.c); });
     ["wheel", "touchmove"].forEach((ev) => $("#tab-transcript").addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true }));
 
-    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save(); renderAll(); pushLevel(); });
-    $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save(); renderAll(); } });
-    $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save(); renderAll(); } });
-    $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save(); renderAll(); } });
-    $("#autoPause").addEventListener("change", (e) => { S.autoPause = e.target.checked; pausedFor = -1; save(); toast(S.autoPause ? "每句结束时会自动暂停，按空格继续" : "已关闭每句暂停"); });
-    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save(); renderControls(); renderActivePanel(true); }));
+    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save({ level: S.level }); renderAll(); pushLevel(); });
+    $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save({ mode: S.mode }); renderAll(); } });
+    $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save({ gloss: S.gloss }); renderAll(); } });
+    $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save({ pref: S.pref }); renderAll(); } });
+    $("#autoPause").addEventListener("change", async (e) => { S.autoPause = e.target.checked; pausedFor = -1; if (await save({ autoPause: S.autoPause })) toast(S.autoPause ? "每句结束时会自动暂停，按空格继续" : "已关闭每句暂停"); });
+    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save({ tab: S.tab }); renderControls(); renderActivePanel(true); }));
 
     $("#prevLine").addEventListener("click", () => step(-1));
     $("#nextLine").addEventListener("click", () => step(1));
@@ -1023,7 +1081,7 @@
     $("#openIntro").addEventListener("click", () => $("#introDialog").showModal());
     $("#introTest").addEventListener("click", () => { $("#introDialog").close(); openTest(); });
     $("#introSkip").addEventListener("click", () => $("#introDialog").close());
-    $("#introDialog").addEventListener("close", () => { S.introSeen = true; save(); });
+    $("#introDialog").addEventListener("close", () => { S.introSeen = true; save({ introSeen: true }); });
     ["introDialog", "testDialog"].forEach((id) => $("#" + id).addEventListener("click", (e) => { if (e.target.id === id) e.target.close(); }));
 
     document.addEventListener("pointerdown", (e) => {
@@ -1196,6 +1254,7 @@
   // --------------------------------------------------------------- init ---
   async function init() {
     bindUI();
+    renderStorageNotice(); renderActivePanel();
     renderControls();
     renderStage();
     if (IS_FILE) {
@@ -1224,7 +1283,7 @@
       S.statusMsg = live ? "在上方粘贴一个 YouTube 链接开始" : "没有找到字幕数据（data/index.json）：先运行 annotate.py，或确认 data 文件夹已上传";
       renderStage();
     }
-    if (!S.introSeen) $("#introDialog").showModal();
+    if (!S.introSeen && !storageIssue) $("#introDialog").showModal();
   }
 
   init();

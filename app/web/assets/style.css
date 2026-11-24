@@ -292,6 +292,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; heigh
 .book-tools { flex-wrap: wrap; justify-content: flex-start; }
 .book-tools > span { flex-basis: 100%; }
 #bookImportError { color: var(--bad); }
+.storage-notice { margin: 16px 20px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--warn-soft); overflow-wrap: anywhere; }
+.storage-notice p { margin: 0 0 10px; }
+.storage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---------- word card ---------- */
 .word-card {

@@ -42,6 +42,17 @@
     <button class="btn btn-ghost icon-btn" id="openIntro" type="button" aria-label="这是什么" title="这是什么">?</button>
   </div>
 </header>
+<section class="storage-notice" id="storageNotice" role="alert" hidden>
+  <p id="storageMessage"></p>
+  <div class="storage-actions">
+    <button class="btn btn-ghost btn-sm" id="downloadStorage" type="button">下载原始数据</button>
+    <button class="btn btn-primary btn-sm" id="recoverStorage" type="button">保留副本并重建</button>
+  </div>
+</section>
+<section class="storage-notice" id="storageRecovery" hidden>
+  <p>浏览器中保留了重建前的原始数据副本，可下载留存或交给技术支持检查。这类副本不是可直接导入的生词本备份。</p>
+  <button class="btn btn-ghost btn-sm" id="downloadRecovery" type="button">下载保留副本</button>
+</section>
 
 <main class="layout">
   <section class="main-col">
@@ -199,6 +210,7 @@
 <script src="assets/learning.js"></script>
 <script src="assets/profile-sync.js"></script>
 <script src="assets/wordbook.js"></script>
+<script src="assets/player-store.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

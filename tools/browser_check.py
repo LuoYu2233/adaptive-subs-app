@@ -228,6 +228,93 @@ def main():
                     expect(page.locator("#bookCount")).to_have_text("2")
                     expect(page.locator("#tab-book .wrow")).to_have_count(2)
                     page.screenshot(path=str(output / "wordbook-backup.png"), full_page=True)
+                    # Two real tabs share records. A display setting must not resurrect a deleted entry.
+                    other = context.new_page()
+                    other.on("pageerror", lambda error: errors.append(str(error)))
+                    other.goto(base + "/player.html")
+                    expect(other.locator("#bookCount")).to_have_text("2")
+                    page.locator('[data-act="unbook"]').first.click()
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    expect(other.locator("#bookCount")).to_have_text("1")
+                    other.locator('[data-mode="plain"]').click()
+                    expect(other.locator('[data-mode="plain"]')).to_have_attribute("aria-checked", "true")
+                    assert len(page.evaluate("JSON.parse(localStorage.getItem('adaptive-subs:v2')).book")) == 1
+                    page.locator("#toast button").click()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    expect(other.locator("#bookCount")).to_have_text("2")
+
+                    # Hold the actual Web Lock, queue two imports, then release it to force contention.
+                    for index, target in enumerate((page, other)):
+                        imported = {**book_backup, "entries": [*book_backup["entries"],
+                            {**book_backup["entries"][0], "key": f"concurrent-{index}", "term": f"entry{index}"}]}
+                        target.locator("#bookBackupFile").set_input_files({"name": "merge.json", "mimeType": "application/json",
+                            "buffer": json.dumps(imported).encode()})
+                        expect(target.locator("#bookImportDialog")).to_be_visible()
+                    page.evaluate("""() => {
+                      window.lockHeld = false;
+                      navigator.locks.request('adaptive-subs:v2', async () => {
+                        window.lockHeld = true;
+                        await new Promise(resolve => { window.releaseStorageLock = resolve; });
+                      });
+                    }""")
+                    page.wait_for_function("() => window.lockHeld")
+                    page.locator("#bookImportConfirm").click()
+                    other.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    page.evaluate("() => window.releaseStorageLock()")
+                    expect(page.locator("#bookCount")).to_have_text("4")
+                    expect(other.locator("#bookCount")).to_have_text("4")
+                    expect(page.locator("#bookImportDialog")).not_to_be_visible()
+                    expect(other.locator("#bookImportDialog")).not_to_be_visible()
+                    other.close()
+
+                    # Corrupt local state cannot crash startup or be overwritten by unrelated controls.
+                    damaged_store = '{"book":["preserve-original",'
+                    page.evaluate("raw => localStorage.setItem('adaptive-subs:v2', raw)", damaged_store)
+                    page.reload()
+                    expect(page.locator("#storageNotice")).to_be_visible()
+                    expect(page.locator("#introDialog")).not_to_be_visible()
+                    page.locator('[data-mode="plain"]').click()
+                    expect(page.locator("#toast")).to_contain_text("本地数据损坏")
+                    assert page.evaluate("localStorage.getItem('adaptive-subs:v2')") == damaged_store
+                    page.locator(".tabs [data-tab='book']").click()
+                    page.locator('[data-act="backup-book"]').click()
+                    expect(page.locator("#toast")).to_contain_text("备份失败")
+                    with page.expect_download() as download:
+                        page.locator("#downloadStorage").click()
+                    original_path = home / "player-original.json"
+                    download.value.save_as(original_path)
+                    assert json.loads(original_path.read_text())["copies"][0]["raw"] == damaged_store
+                    page.evaluate("""() => {
+                      window.originalSetItem = Storage.prototype.setItem;
+                      Storage.prototype.setItem = function(key, value) {
+                        if (key.startsWith('adaptive-subs:v2:recovery:')) throw new DOMException('Test quota', 'QuotaExceededError');
+                        return window.originalSetItem.call(this, key, value);
+                      };
+                    }""")
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.locator("#recoverStorage").click()
+                    expect(page.locator("#toast")).to_contain_text("重建失败")
+                    assert page.evaluate("localStorage.getItem('adaptive-subs:v2')") == damaged_store
+                    restore_browser_storage()
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.locator("#recoverStorage").click()
+                    expect(page.locator("#storageNotice")).to_be_hidden()
+                    expect(page.locator("#storageRecovery")).to_be_visible()
+                    expect(page.locator("#introDialog")).to_be_visible()
+                    page.locator("#introSkip").click()
+                    with page.expect_download() as download:
+                        page.locator("#downloadRecovery").click()
+                    download.value.save_as(original_path)
+                    assert json.loads(original_path.read_text())["copies"][0]["raw"] == damaged_store
+                    page.locator(".tabs [data-tab='book']").click()
+                    expect(page.locator('[data-act="import-book"]')).to_be_visible()
+                    page.locator("#bookBackupFile").set_input_files(str(book_path))
+                    expect(page.locator("#bookImportSummary")).to_contain_text("将新增 2 条")
+                    page.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    assert (home / "profile.json").read_bytes() == profile_before
+                    page.screenshot(path=str(output / "player-storage-recovery.png"), full_page=True)
                     page.locator(".tabs [data-tab='preview']").click()
                     row = page.locator("#tab-preview .wrow").filter(has=page.get_by_text("银行", exact=True))
                     page.route("**/api/mark", lambda route: route.fulfill(status=507, content_type="application/json", body=json.dumps({"error": "测试保存失败"})))
@@ -332,6 +419,15 @@ def main():
                     (output / "transcript-performance.json").write_text(json.dumps({"cues": 6000, "mode_switch_ms": timings}))
 
                     page.set_viewport_size({"width": 390, "height": 844})
+                    page.goto(base + "/player.html?v=zzzzzzzzzzz")
+                    page.locator(".tabs [data-tab='book']").click()
+                    expect(page.locator('[data-act="import-book"]')).to_be_visible()
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Overflow on wordbook"
+                    page.locator("#bookBackupFile").set_input_files(str(book_path))
+                    expect(page.locator("#bookImportDialog")).to_be_visible()
+                    assert page.locator("#bookImportDialog").evaluate("e => e.getBoundingClientRect().right <= innerWidth")
+                    page.screenshot(path=str(output / "wordbook-mobile.png"), full_page=True)
+                    page.locator("#bookImportCancel").click()
                     for path in ("app", "setup", "profile", "demo", "privacy"):
                         page.goto(base + "/" + path)
                         page.wait_for_load_state("networkidle")
