@@ -44,7 +44,7 @@ def current() -> str:
 
 def model(provider: str | None = None) -> str:
     p = provider or current()
-    return os.environ.get("OPENAI_MODEL") if p == "openai" and os.environ.get("OPENAI_MODEL") else PROVIDERS[p]["model"]
+    return os.environ.get(f"{p.upper()}_MODEL") or PROVIDERS[p]["model"]
 
 
 def has_key(provider: str | None = None) -> bool:
@@ -89,7 +89,9 @@ def chat_options(model_name: str, effort: str | None) -> dict:
     return {}
 
 
-def cost_usd(provider: str, usage_total: dict) -> float:
+def cost_usd(provider: str, usage_total: dict, model_name: str | None = None) -> float | None:
+    if (model_name or model(provider)) != PROVIDERS[provider]["model"]:
+        return None  # Default-model prices must not be applied to a different model.
     pin, pcache, pout = PROVIDERS[provider]["price"]
     cached = usage_total.get("cached_input", 0)
     return ((usage_total.get("input", 0) - cached) * pin + cached * pcache + usage_total.get("output", 0) * pout) / 1e6

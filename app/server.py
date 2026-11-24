@@ -63,6 +63,7 @@ WORKERS = 12           # parallel LLM requests per video (spare capacity for jum
 URGENT_WINDOW = 90     # seconds ahead of the playhead handled with low effort (speed first)
 ASR_PER_JOB = 4        # speech-recognition requests in flight per video (the API also has a per-minute cap)
 NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
+CONFIG_LOCK = threading.RLock()
 
 
 
@@ -79,7 +80,8 @@ def saved_result(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if (isinstance(data, dict) and data.get("status", "complete") == "complete"
-                and isinstance(data.get("video"), dict) and isinstance(data.get("cues"), list)):
+                and isinstance(data.get("video"), dict) and isinstance(data.get("cues"), list)
+                and not (data.get("source") == "asr" and any(ASR.is_refusal(c.get("text", "")) for c in data["cues"] if isinstance(c, dict)))):
             return data
     except (OSError, ValueError):
         pass
@@ -314,7 +316,7 @@ class JobBusy(RuntimeError):
 
 def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | None = None,
             asr_url: str | None = None) -> Job | None:
-    with JOBS_LOCK:
+    with JOBS_LOCK, CONFIG_LOCK:
         now = time.time()
         for key, old in list(JOBS.items()):
             if old.state in ("done", "partial", "error", "cancelled") and now - old.started > 1800:
@@ -414,6 +416,8 @@ def _run_job(job: Job):
                 job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                                   "source": sub["source"], "cues": list(job.cues)})
         else:
+            sub = {**sub, "cues": clean_ext_cues(sub["cues"])}
+            job.cues = sub["cues"]
             job.sub = sub
             job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                               "source": sub["source"], "cues": job.cues})
@@ -935,13 +939,16 @@ def finalize(job: Job):
         job.state = "partial" if incomplete else "done"
     secs = time.time() - job.started
     tot = A.usage_total(job.usage)
+    cost = P.cost_usd(job.provider, tot, job.model)
+    cost_label = f"≈ ${cost:.3f}（估算）" if cost is not None else "费用以服务商账单为准"
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
           f"tokens: input {tot['input']:,} (cached {tot['cached_input']:,}), output {tot['output']:,} "
-          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} ≈ ${P.cost_usd(job.provider, tot):.3f}")
+          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} {cost_label}")
     if job.asr_usage:
         sec = job.asr_usage.get("asr_seconds", 0)
+        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if job.asr_model == "mimo-v2.5-asr" else ""
         print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
-              f"{sec / 60:.1f} min billed (about ¥{ASR.cost_cny(sec):.2f})")
+              f"{sec / 60:.1f} min billed{price_label}")
     job.seg = None                 # free the audio samples
     if incomplete:
         job.emit("fail", {"msg": "部分字幕处理失败；已生成的内容已保存，重试会复用成功的缓存。",
@@ -958,10 +965,19 @@ EXT_DATA = DATA / "extension"      # results for extension videos (not listed in
 EXT_HEADER = "X-Adaptive-Subs"
 EXT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,80}")
 MAX_CUES = 6000
+MAX_CUE_CHARS = 2000
+MAX_SUBTITLE_CHARS = 1_000_000
+
+
+class SubtitleLimit(ValueError):
+    pass
 
 
 def clean_ext_cues(raw) -> list[dict]:
+    if isinstance(raw, list) and len(raw) > MAX_CUES:
+        raise SubtitleLimit(f"字幕超过 {MAX_CUES} 行，请选择较短的视频")
     cues = []
+    total_chars = 0
     for c in raw if isinstance(raw, list) else []:
         try:
             s, e = float(c["s"]), float(c["e"])
@@ -969,9 +985,12 @@ def clean_ext_cues(raw) -> list[dict]:
         except (KeyError, TypeError, ValueError):
             continue
         if text and math.isfinite(s) and math.isfinite(e) and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):
-            cues.append({"s": round(s, 3), "e": round(max(e, s + 0.3), 3), "text": text[:400]})
+            total_chars += len(text)
+            if len(text) > MAX_CUE_CHARS or total_chars > MAX_SUBTITLE_CHARS:
+                raise SubtitleLimit("字幕文本过长，请使用已正确分句的字幕或选择较短的视频")
+            cues.append({"s": round(s, 3), "e": round(max(e, s + 0.3), 3), "text": text})
     cues.sort(key=lambda c: c["s"])
-    return cues[:MAX_CUES]
+    return cues
 
 
 # ----------------------------------------------------------------- http ---
@@ -1006,10 +1025,16 @@ STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "se
 LAST_EXT = 0.0            # when the browser extension last talked to us (shown in the control panel)
 STARTED = time.time()
 LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?")
-CONFIG_KEYS = ("ANNOTATION_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY")
+CONFIG_KEYS = ("ANNOTATION_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY",
+               "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")
 
 
 def save_config(updates: dict):
+    with CONFIG_LOCK:
+        _save_config(updates)
+
+
+def _save_config(updates: dict):
     """Write settings into the config file, keeping every other line as it is."""
     lines = CONFIG.read_text(encoding="utf-8").splitlines() if CONFIG.exists() else []
     out, seen = [], set()
@@ -1195,7 +1220,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             return self.send_json({
                 "provider": P.current(), "config_file": str(CONFIG),
-                "providers": [{"id": k, "name": v["name"], "model": v["model"], "note": v["note"], "price": v["price"],
+                "providers": [{"id": k, "name": v["name"], "model": P.model(k), "default_model": v["model"], "note": v["note"], "price": v["price"],
                                "key_hint": key_hint(v["key"])} for k, v in P.PROVIDERS.items()],
                 "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
             })
@@ -1259,6 +1284,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.post_request()
         except JobBusy as exc:
             return self.send_json({"error": str(exc), "retry": True}, 409)
+        except SubtitleLimit as exc:
+            return self.send_json({"error": str(exc)}, 400)
         except (OSError, sqlite3.Error):
             return self.send_json({"error": "本地文件保存失败，请检查磁盘空间和文件夹权限后重试"}, 507)
 
@@ -1363,10 +1390,6 @@ class Handler(SimpleHTTPRequestHandler):
                     data["cues"][i].update(text="", notes=[], zh="")
                 write_json(saved, data)
                 print(f"[{vid}] removed {len(tags)} non-speech labels (<chinese> ...) from the saved subtitles")
-            if refusal_lines(data):  # made before refusals were detected: blank them now, fix in the background
-                for i in refusal_lines(data):
-                    data["cues"][i].update(text="", notes=[], zh="")
-                threading.Thread(target=repair_saved, args=(vid, saved), daemon=True).start()
             return self.send_json({"id": vid, "cached": True, "data": data})
         if youtube and body.get("subs_only"):
             # the extension shows the plain English first; glosses are generated only after a click
@@ -1456,7 +1479,9 @@ class Handler(SimpleHTTPRequestHandler):
         if not P.has_key():
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
-            data = A.call_json(client(), P.model(), "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
+            with CONFIG_LOCK:
+                service, model = client(), P.model()
+            data = A.call_json(service, model, "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
         except Exception as e:
             return self.send_json({"error": f"查询失败：{short_err(e)[:80]}"}, 502)
         zh = A.clean(str(data.get("zh") or ""))[:16]
@@ -1473,6 +1498,13 @@ class Handler(SimpleHTTPRequestHandler):
             if prov not in P.PROVIDERS:
                 return self.send_json({"error": "未知的注释模型"}, 400)
             updates["ANNOTATION_PROVIDER"] = prov
+        models = body.get("models", {})
+        if not isinstance(models, dict):
+            return self.send_json({"error": "模型设置格式不正确"}, 400)
+        for pid, value in {**models, **({"asr": body["asr_model"]} if "asr_model" in body else {})}.items():
+            if pid not in (*P.PROVIDERS, "asr") or not isinstance(value, str) or (value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", value)):
+                return self.send_json({"error": "模型名称格式不正确"}, 400)
+            updates[f"{pid.upper()}_MODEL"] = value
         keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
         for pid, val in keys.items():
             if pid not in P.PROVIDERS or not isinstance(val, str):
@@ -1492,19 +1524,31 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_json({"ok": True, "provider": P.current()})
 
     def test_settings(self):
-        """Check each saved key with a free request (list models)."""
-        out = {}
-        for pid in P.PROVIDERS:
-            if not P.has_key(pid):
+        """Check selected services and model names without generating content."""
+        out, available = {}, {}
+        with CONFIG_LOCK:
+            selected = P.current()
+            checks = {pid: (P.client(pid) if P.has_key(pid) else None, P.model(pid)) for pid in {selected, "mimo"}}
+            asr_model = os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+        for pid, (service, model) in checks.items():
+            if service is None:
                 out[pid] = "未填写"
+                if pid == "mimo":
+                    out["asr"] = "未填写"
                 continue
             try:
-                P.client(pid).with_options(timeout=15, max_retries=0).models.list()
-                out[pid] = "ok"
+                response = service.with_options(timeout=15, max_retries=0).models.list()
+                ids = {m.id for m in response.data}
+                available[pid] = sorted(ids)[:200]
+                out[pid] = "ok" if model in ids else f"连接正常，但模型列表中没有 {model}，请核对模型名或访问权限"
+                if pid == "mimo":
+                    out["asr"] = "ok" if asr_model in ids else f"连接正常，但模型列表中没有 {asr_model}，请核对语音模型名或访问权限"
             except Exception as e:
                 code = getattr(e, "status_code", None)
-                out[pid] = "key 无效" if code in (401, 403) else f"连接失败：{short_err(e)[:80]}"
-        return self.send_json({"results": out})
+                out[pid] = "key 无效或权限不足" if code in (401, 403) else f"连接失败：{short_err(e)[:80]}"
+                if pid == "mimo":
+                    out["asr"] = out[pid]
+        return self.send_json({"results": out, "models": available})
 
     def stream(self, job: Job):
         self.send_response(200)

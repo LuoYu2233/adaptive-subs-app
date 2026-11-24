@@ -84,3 +84,9 @@ def test_rate_limit_wait_is_cancellable():
     limiter.wait()
     with pytest.raises(A.GenerationCancelled):
         limiter.wait(cancelled=lambda: True)
+
+
+def test_normal_spoken_risk_discussion_is_not_a_model_refusal():
+    assert not asr.is_refusal("The investment was considered high risk by analysts.")
+    assert not asr.is_refusal("My request was rejected yesterday.")
+    assert asr.is_refusal("The request was rejected because it was considered high risk.")

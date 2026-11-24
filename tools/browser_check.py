@@ -33,7 +33,7 @@ def main():
             "provider": "deepseek", "model": "test", "ann": {}, "zh": {}, "cues": [],
         })
         env = {k: v for k, v in os.environ.items() if k not in (
-            "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "OPENAI_MODEL")}
+            "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")}
         env.update(ASUBS_HOME=temp, ASUBS_NO_BROWSER="1", ASUBS_HEADLESS="1", ANNOTATION_PROVIDER="deepseek")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -94,8 +94,12 @@ def main():
 
                     page.goto(base + "/setup?app=1")
                     expect(page.locator("#key-deepseek")).to_be_visible()
+                    page.locator("#model-deepseek").locator("..").locator("summary").click()
+                    page.locator("#model-deepseek").fill("deepseek-custom-test")
                     page.locator("#save").click()
-                    expect(page.locator("#msg")).to_contain_text("还有 key 没设置好")
+                    expect(page.locator("#msg")).to_contain_text("还有设置需要检查")
+                    page.reload()
+                    expect(page.locator("#model-deepseek")).to_have_value("deepseek-custom-test")
 
                     page.goto(base + "/profile?app=1")
                     page.locator("#identity [data-id='undergrad']").click()

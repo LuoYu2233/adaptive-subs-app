@@ -11,7 +11,8 @@ def isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(annotate, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(server, "TASK_STORE", TaskStore(tmp_path / "tasks.sqlite3"))
     monkeypatch.setattr(server, "JOBS", {})
-    for key in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "ANNOTATION_PROVIDER"):
+    for key in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "ANNOTATION_PROVIDER",
+                "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL"):
         monkeypatch.delenv(key, raising=False)
     providers.reset_clients()
     yield

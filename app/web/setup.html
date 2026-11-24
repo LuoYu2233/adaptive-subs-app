@@ -77,17 +77,18 @@
 
   <section>
     <h2>1. 注释模型</h2>
-    <p class="sub">负责判断哪些词你可能不认识、写中文释义和整句翻译。三家都按用量计费，一集 10 分钟的视频大约几毛钱。</p>
+    <p class="sub">负责判断哪些词你可能不认识、写中文释义和整句翻译。按服务商和模型的用量计费，生成结果保存在本机供下次使用。</p>
     <div class="prov" id="prov"></div>
   </section>
 
   <section>
     <h2>2. 语音识别：小米 MiMo（固定）</h2>
-    <p class="sub">视频没有英文字幕时，用它把英语语音转成字幕（10 分钟约 ¥0.1）。有英文字幕的视频用不到。</p>
+    <p class="sub">视频没有英文字幕时，用它把英语语音转成字幕，按使用的语音模型计费。有英文字幕的视频用不到。</p>
     <div id="asrBox">
       <label class="k" for="key-mimo-asr">小米 MiMo API key</label>
       <input type="password" id="key-mimo-asr" autocomplete="off" spellcheck="false" placeholder="sk-…">
       <div class="hint" id="hint-mimo-asr"></div>
+      <details><summary>语音模型名称</summary><label class="k" for="model-asr">模型 ID</label><input id="model-asr" type="text" maxlength="120" spellcheck="false"></details>
       <div class="hint">在 <a href="https://platform.xiaomimimo.com" target="_blank" rel="noopener">platform.xiaomimimo.com</a> 注册后创建 API key。注释模型也选 MiMo 的话，两边共用这一个 key。</div>
     </div>
   </section>
@@ -136,12 +137,15 @@
           <span class="opt-name">${esc(p.name)}</span><span class="hint" style="margin:0">${esc(p.model)}</span>
           ${TAGS[id] ? `<span class="tag">${TAGS[id]}</span>` : ""}</span>
         <div class="opt-note">${esc(p.note)}</div>
-        <div class="keyrow">${keyField}</div>
+        <div class="keyrow">${keyField}<details><summary>更改注释模型</summary>
+          <label class="k" for="model-${id}">模型 ID</label><input id="model-${id}" type="text" value="${esc(p.model)}" maxlength="120" spellcheck="false">
+          <div class="hint">默认 ${esc(p.default_model)}；需支持文字对话和 JSON 输出。保存后会核对模型列表，不生成收费内容。</div></details></div>
       </label>`;
     }).join("");
     const asr = $("#hint-mimo-asr");
     asr.textContent = state.asr.key_hint || "还没填写";
     asr.className = "hint" + (state.asr.key_hint ? " ok" : "");
+    $("#model-asr").value = state.asr.model;
   }
 
   async function save() {
@@ -151,22 +155,23 @@
     $("#results").innerHTML = "";
     const provider = (document.querySelector('input[name="prov"]:checked') || {}).value || state.provider;
     const keys = { mimo: $("#key-mimo-asr").value.trim() };
+    const models = Object.fromEntries(ORDER.map(id => [id, $(`#model-${id}`).value.trim()]));
     for (const id of ["deepseek", "openai"]) { const el = $(`#key-${id}`); if (el) keys[id] = el.value.trim(); }
     try {
-      const r = await (await fetch("/api/settings", { method: "POST", headers: H, body: JSON.stringify({ provider, keys }) })).json();
+      const r = await (await fetch("/api/settings", { method: "POST", headers: H, body: JSON.stringify({ provider, keys, models, asr_model: $("#model-asr").value.trim() }) })).json();
       if (r.error) { msg.className = "bad"; msg.textContent = r.error; return; }
       msg.textContent = "已保存，正在测试 key…";
       const t = await (await fetch("/api/settings/test", { method: "POST", headers: H, body: "{}" })).json();
       await load();
       const name = Object.fromEntries(state.providers.map((p) => [p.id, p.name]));
       const res = t.results || {};
-      const needed = [provider, "mimo"];
+      const needed = [provider, "asr"];
       const bad = needed.filter((id) => res[id] !== "ok");
       $("#results").innerHTML = needed.filter((v, i, a) => a.indexOf(v) === i).map((id) =>
-        `<div>${esc(id === "mimo" ? "小米 MiMo（语音识别" + (provider === "mimo" ? " + 注释" : "") + "）" : name[id] + "（注释）")}：${res[id] === "ok" ? '<span style="color:var(--ok)">连接正常</span>' : `<span style="color:var(--bad)">${esc(res[id] || "未测试")}</span>`}</div>`).join("");
+        `<div>${esc(id === "asr" ? "小米 MiMo（语音识别）" : name[id] + "（注释）")}：${res[id] === "ok" ? '<span style="color:var(--ok)">连接正常，已找到模型</span>' : `<span style="color:var(--bad)">${esc(res[id] || "未测试")}</span>`}</div>`).join("");
       if (!bad.length) { msg.className = "ok"; msg.textContent = "都设置好了，可以去 B 站或 YouTube 看视频了"; }
-      else if (bad.length === 1 && bad[0] === "mimo" && provider !== "mimo") { msg.className = "ok"; msg.textContent = "注释可以用了；语音识别还没设置好（只影响没有英文字幕的视频）"; }
-      else { msg.className = "bad"; msg.textContent = "还有 key 没设置好，见下方"; }
+      else if (bad.length === 1 && bad[0] === "asr") { msg.className = "ok"; msg.textContent = "注释可以用了；语音识别还没设置好（只影响没有英文字幕的视频）"; }
+      else { msg.className = "bad"; msg.textContent = "还有设置需要检查，见下方"; }
       document.querySelectorAll('input[type="password"]').forEach((el) => { el.value = ""; });
     } catch (e) {
       msg.className = "bad"; msg.textContent = "连不上本地程序：请确认 Adaptive Subs 的窗口还开着";

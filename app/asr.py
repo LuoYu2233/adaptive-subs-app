@@ -641,12 +641,12 @@ class ContentRefused(Exception):
 
 
 # MiMo's refusal sentence, and close variants (a backstop in case finish_reason is not set)
-REFUSAL_RE = re.compile(r"^\s*the request was rejected because it was considered high risk\.?\s*$|"
-                        r"considered (as )?high[- ]risk|request (was|has been) (rejected|refused|blocked)", re.I)
+REFUSAL_RE = re.compile(r"\s*(?:the )?request (?:was|has been) (?:rejected|refused|blocked)"
+                        r" because it was considered (?:as )?high[- ]risk[.!]?\s*", re.I)
 
 
 def is_refusal(text: str) -> bool:
-    return bool(text) and bool(REFUSAL_RE.search(text))
+    return isinstance(text, str) and bool(REFUSAL_RE.fullmatch(text))
 
 
 def fix_i(text: str) -> str:

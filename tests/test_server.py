@@ -1,6 +1,7 @@
 import http.client
 import json
 import threading
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -135,3 +136,71 @@ def test_cancellation_endpoint_preserves_job(http_server):
 @pytest.mark.parametrize("path", ["/api/jobs/cancel", "/api/jobs/resume"])
 def test_job_mutations_require_header(http_server, path):
     assert request(http_server, "POST", path, '{"id":"abcdefghijk"}', {"Content-Type": "application/json"})[0] == 403
+
+
+def test_probe_never_repairs_old_asr_with_billable_work(http_server, monkeypatch):
+    S.EXT_DATA.mkdir()
+    vid = "yt_abcdefghijk_asr"
+    (S.EXT_DATA / f"{vid}.json").write_text(json.dumps({"status": "complete", "source": "asr", "video": {"id": vid},
+        "cues": [{"text": "The request was rejected because it was considered high risk."}]}))
+    start, repair = Mock(return_value=None), Mock()
+    monkeypatch.setattr(S, "get_job", start)
+    monkeypatch.setattr(S, "repair_saved", repair)
+    monkeypatch.setattr(S.P, "has_key", lambda *_: True)
+    monkeypatch.setattr(S.ASR, "configured", lambda: True)
+    status, body = request(http_server, "POST", "/api/ext/open", json.dumps({"id": vid, "source": "asr", "probe": True}), H)
+    assert status == 200 and json.loads(body)["cached"] is False
+    start.assert_called_once_with(vid, start=False)
+    repair.assert_not_called()
+
+
+def test_long_cues_are_preserved_instead_of_silently_truncated():
+    text = "a " * 300
+    cues = S.clean_ext_cues([{"s": 0, "e": 5, "text": text}])
+    assert cues[0]["text"] == text.strip()
+
+
+@pytest.mark.parametrize("cues", [
+    [{"s": 0, "e": 1, "text": "line"}] * (S.MAX_CUES + 1),
+    [{"s": 0, "e": 1, "text": "x" * (S.MAX_CUE_CHARS + 1)}],
+])
+def test_oversized_subtitles_are_rejected_before_a_job_starts(http_server, monkeypatch, cues):
+    start = Mock()
+    monkeypatch.setattr(S, "get_job", start)
+    monkeypatch.setattr(S.P, "has_key", lambda *_: True)
+    status, body = request(http_server, "POST", "/api/ext/open", json.dumps({"id": "bili_test", "cues": cues}), H)
+    assert status == 400 and json.loads(body)["error"]
+    start.assert_not_called()
+
+
+def test_model_configuration_is_saved_and_returned(http_server, monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "CONFIG", tmp_path / "settings.env")
+    # Track environment mutations made by save_config so they are restored after this test.
+    for key in ("DEEPSEEK_MODEL", "ASR_MODEL"):
+        monkeypatch.setenv(key, "old")
+    status, body = request(http_server, "POST", "/api/settings", json.dumps({"models": {"deepseek": "custom-model"}, "asr_model": "custom-asr"}), H)
+    assert status == 200 and json.loads(body)["ok"]
+    assert S.P.model("deepseek") == "custom-model"
+    settings = json.loads(request(http_server, "GET", "/api/settings", headers=H)[1])
+    assert next(p for p in settings["providers"] if p["id"] == "deepseek")["model"] == "custom-model"
+    assert settings["asr"]["model"] == "custom-asr"
+
+
+def test_model_names_cannot_inject_config_lines(http_server, monkeypatch):
+    save = Mock()
+    monkeypatch.setattr(S, "save_config", save)
+    status, _ = request(http_server, "POST", "/api/settings", json.dumps({"models": {"deepseek": "model\nMIMO_API_KEY=bad"}}), H)
+    assert status == 400
+    save.assert_not_called()
+
+
+def test_connection_check_distinguishes_missing_model_and_asr(http_server, monkeypatch):
+    service = Mock()
+    service.with_options.return_value.models.list.return_value = SimpleNamespace(data=[SimpleNamespace(id="mimo-v2.5-asr")])
+    monkeypatch.setattr(S.P, "has_key", lambda *_: True)
+    monkeypatch.setattr(S.P, "client", lambda *_: service)
+    status, body = request(http_server, "POST", "/api/settings/test", "{}", H)
+    result = json.loads(body)["results"]
+    assert status == 200 and result["asr"] == "ok"
+    assert "模型列表中没有" in result["deepseek"] and "模型列表中没有" in result["mimo"]
+    service.chat.completions.create.assert_not_called()

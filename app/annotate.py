@@ -92,6 +92,17 @@ def load_ranks(n: int = 100_000) -> dict[str, int]:
 
 
 def find_candidates(texts: list[str]) -> list[list[dict]]:
+    """Analyze bounded windows with neighboring cues so long videos do not exceed spaCy's limit."""
+    results = []
+    for start in range(0, len(texts), 100):
+        end = min(len(texts), start + 100)
+        lo, hi = max(0, start - 1), min(len(texts), end + 1)
+        batch = _find_candidates(texts[lo:hi])
+        results.extend(batch[start - lo:end - lo])
+    return results
+
+
+def _find_candidates(texts: list[str]) -> list[list[dict]]:
     """For each cue: [{word, lemma, rank}] content words rarer than MIN_RANK."""
     ranks = load_ranks()
     big = 10**9

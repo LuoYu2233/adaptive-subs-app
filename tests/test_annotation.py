@@ -130,3 +130,16 @@ def test_cancelled_work_never_calls_model():
     with pytest.raises(A.GenerationCancelled):
         A.call_json(client, "test", "low", A.ANNOTATE_PROMPT, [{"id": 0}], cancelled=lambda: True)
     client.chat.completions.create.assert_not_called()
+
+
+def test_large_transcript_windows_keep_neighbors_without_losing_cues(monkeypatch):
+    windows = []
+    def analyze(texts):
+        windows.append(texts)
+        return [[{"source": text}] for text in texts]
+    monkeypatch.setattr(A, "_find_candidates", analyze)
+    texts = [f"line {i}" for i in range(205)]
+    result = A.find_candidates(texts)
+    assert [row[0]["source"] for row in result] == texts
+    assert any("line 99" in w and "line 100" in w and "line 101" in w for w in windows)
+    assert max(map(len, windows)) <= 102
