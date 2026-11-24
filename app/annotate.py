@@ -281,7 +281,13 @@ def record_usage(resp, model: str, effort: str, label: str, sink: dict | None) -
 
 
 def usage_total(sink: dict) -> dict:
-    return {k: sum(v.get(k, 0) for v in sink.values()) for k in USAGE_FIELDS}
+    with _usage_lock:
+        return {k: sum(v.get(k, 0) for v in sink.values()) for k in USAGE_FIELDS}
+
+
+def usage_snapshot(sink: dict) -> dict:
+    with _usage_lock:
+        return {k: dict(v) for k, v in sink.items()}
 
 
 class ModelResponseError(RuntimeError):

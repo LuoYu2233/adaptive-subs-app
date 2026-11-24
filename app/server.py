@@ -254,6 +254,9 @@ class Job:
         self.restored = None
         self.thread = None
         self.feeder = None
+        self.asr_client = None
+        self.asr_model = os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+        self.asr_language = os.environ.get("ASR_LANGUAGE", "auto")
 
     def client(self):
         with self._client_lock:
@@ -269,11 +272,13 @@ class Job:
                     "sub": self.sub, "asr_url": self.asr_url,
                     "destination": "extension" if self.save_dir == EXT_DATA else "player",
                     "provider": self.provider, "model": self.model, "started": self.started,
+                    "asr_model": self.asr_model, "asr_language": self.asr_language,
+                    "asr_usage": ASR.usage_snapshot(self.asr_usage), "asr_stats": dict(self.asr_stats),
                     "done": self.finished, "total": self.total,
                     "cues": [dict(c) for c in getattr(self, "cues", [])],
                     "duration": getattr(self, "duration", 0),
                     "ann": {str(k): [dict(n) for n in v] for k, v in self.ann.items()},
-                    "zh": dict(self.zh), "usage": {k: dict(v) for k, v in self.usage.items()},
+                    "zh": dict(self.zh), "usage": A.usage_snapshot(self.usage),
                     "failed_tasks": list(self.failed_tasks),
                 }
                 state = self.state
@@ -334,9 +339,15 @@ def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | Non
                     save_dir = EXT_DATA if old.get("destination") == "extension" else DATA
             job = Job(vid, sub, save_dir, asr_url)
             job.restored = old
+            if old and old.get("provider") == job.provider and old.get("model") == job.model:
+                job.usage = old.get("usage", {})
+            if old and old.get("asr_model") == job.asr_model and old.get("asr_language") == job.asr_language:
+                job.asr_usage = old.get("asr_usage", {})
             # Freeze the client while creating the job so settings changes cannot
             # replace the key/provider for a job already in progress.
             job.client()
+            if asr_url:
+                job.asr_client = ASR.client()
             if old is None:
                 job.checkpoint()
             job.thread = threading.Thread(target=run_job, args=(job,), daemon=True)
@@ -537,7 +548,7 @@ def start_asr(job: Job) -> dict:
     while it arrives (asr.stream_audio + StreamSegmenter). Lines and their tasks are added to the job
     as they are cut, so recognition starts within seconds even for a two-hour video.
     Returns once the first lines exist (or the audio is done / failed)."""
-    if not ASR.configured():
+    if job.asr_client is None and not ASR.configured():
         raise ASR.AudioError("本地服务器没有配置 MIMO_API_KEY（.env），无法语音识别")
     job.cues, job.texts, job.cands, job.has_text, job.pieces = [], [], [], [], []
     job.feeding = True
@@ -640,10 +651,12 @@ def run_asr(job: Job, i: int):
     text, err = "", None
     before, after = ASR.pads(job.pieces, i)
     try:
-        text = ASR.transcribe(job.seg.view(), *job.pieces[i], job.asr_usage, before, after)
-    except ASR.ContentRefused:
-        # MiMo's content filter refused the line (swearing, "kill", "naked" ...): recognise it on this computer
-        text = local_fallback(job.seg.view(), job.pieces[i], before, after, f"{job.vid} #{i}")
+        try:
+            text = ASR.transcribe(job.seg.view(), *job.pieces[i], job.asr_usage, before, after,
+                                  client_instance=job.asr_client, model=job.asr_model, language=job.asr_language,
+                                  cancelled=lambda: job.aborted)
+        except ASR.ContentRefused:
+            text = local_fallback(job.seg.view(), job.pieces[i], before, after, f"{job.vid} #{i}")
     except Exception as e:
         err = short_err(e)
     chinese = bool(text) and ASR.mostly_chinese(text)
@@ -679,10 +692,9 @@ def run_asr(job: Job, i: int):
 
 
 def local_fallback(pcm, piece, before: float, after: float, label: str) -> str:
-    """A line the cloud recogniser refused -> local Whisper (or "" if it isn't available / fails)."""
+    """Use local Whisper when the cloud recogniser declines a line; failures remain explicit."""
     if not LOCAL_ASR.available():
-        print(f"[{label}] refused by the speech-recognition filter; no local model, line left empty")
-        return ""
+        raise ASR.AudioError("云端未识别这一句，且未安装本地语音模型；该句需要重试")
     try:
         t = time.time()
         text = LOCAL_ASR.transcribe(pcm, *piece, before, after)
@@ -690,7 +702,7 @@ def local_fallback(pcm, piece, before: float, after: float, label: str) -> str:
         return ASR.fix_i(ASR.strip_tags(text))
     except Exception as e:
         print(f"[{label}] local speech model failed: {short_err(e)}")
-        return ""
+        raise ASR.AudioError("本地语音识别失败，该句需要重试") from e
 
 
 REPAIRING: set = set()
@@ -911,6 +923,7 @@ def finalize(job: Job):
             "video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
             "generated": time.strftime("%Y-%m-%d"), "model": job.model, "provider": job.provider,
             "usage": {**job.usage, "total": A.usage_total(job.usage), **({"asr": job.asr_usage} if job.asr_usage else {})},
+            "asr_model": job.asr_model if job.asr_url else None,
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
     write_json(job.save_dir / f"{job.vid}.json", data)
@@ -1275,6 +1288,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "没有找到已保存的进度，请重新打开视频"}, 404)
             if not P.has_key():
                 return self.send_json({"error": key_missing_msg()}, 400)
+            if saved["payload"].get("asr_url") and not ASR.configured():
+                return self.send_json({"error": "请先在设置中填写语音识别 API key"}, 400)
             if saved["state"] == "done":
                 return self.send_json({"id": vid, "state": "done"})
             job = get_job(vid, start=True)
@@ -1338,7 +1353,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not (YT_ID_RE if youtube else EXT_ID_RE).fullmatch(vid):
             return self.send_json({"error": "bad id"}, 400)
         saved = (DATA if youtube else EXT_DATA) / f"{vid}.json"
-        if youtube and not saved.exists() and (EXT_DATA / f"yt_{vid}_asr.json").exists():
+        if youtube and saved_result(saved) is None and saved_result(EXT_DATA / f"yt_{vid}_asr.json") is not None:
             vid = f"yt_{vid}_asr"
             saved = EXT_DATA / f"{vid}.json"
         data = saved_result(saved)

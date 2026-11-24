@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import bisect
 import io
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,6 +30,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import numpy as np
+import annotate as A
+from storage import write_json
 
 SR = 16000
 FRAME = 0.03                 # analysis frame, seconds
@@ -514,17 +518,22 @@ class RateLimiter:
         self.next = 0.0
         self.lock = threading.Lock()
 
-    def wait(self):
+    def wait(self, cancelled=None):
         with self.lock:
             now = time.monotonic()
             t = max(now, self.next)
             self.next = t + self.interval
-        if t > now:
-            time.sleep(t - now)
+        while t > time.monotonic():
+            if cancelled and cancelled():
+                raise A.GenerationCancelled("任务已取消")
+            time.sleep(min(0.05, max(0, t - time.monotonic())))
 
 
 _client = None
 _client_lock = threading.Lock()
+_usage_lock = threading.Lock()
+_cache_locks = [threading.Lock() for _ in range(64)]
+ASR_SLOTS = threading.BoundedSemaphore(4)
 LIMIT = RateLimiter(float(os.environ.get("ASR_RPM", 90)))   # MiMo: 100 RPM per account
 
 
@@ -532,6 +541,11 @@ def reset_client():
     global _client
     with _client_lock:
         _client = None
+
+
+def usage_snapshot(usage: dict) -> dict:
+    with _usage_lock:
+        return dict(usage)
 
 
 def configured() -> bool:
@@ -545,7 +559,7 @@ def client():
             from openai import OpenAI
             _client = OpenAI(api_key=os.environ["MIMO_API_KEY"],
                              base_url=os.environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-                             max_retries=3, timeout=40)
+                             max_retries=0, timeout=40)
         return _client
 
 
@@ -560,25 +574,52 @@ def wav_bytes(samples: np.ndarray) -> bytes:
 
 
 def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
-               pad_before: float = 0.15, pad_after: float = 0.15) -> str:
+               pad_before: float = 0.15, pad_after: float = 0.15, *, client_instance=None,
+               model=None, language=None, cancelled=None) -> str:
     """Recognise one piece. A little padding keeps edge words from being clipped, but only into a
     real pause: where a long line was cut mid-speech, padding would make both halves hear the word."""
     a, b = max(0, int((s - pad_before) * SR)), min(len(pcm), int((e + pad_after) * SR))
-    data = base64.b64encode(wav_bytes(pcm[a:b])).decode("ascii")
-    LIMIT.wait()
-    r = client().chat.completions.create(
-        model=os.environ.get("ASR_MODEL", "mimo-v2.5-asr"),
-        messages=[{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": f"data:audio/wav;base64,{data}"}}]}],
-        extra_body={"asr_options": {"language": os.environ.get("ASR_LANGUAGE", "auto")}},
-    )
-    if usage is not None and r.usage is not None:
-        u = r.usage.model_dump()
-        usage["asr_calls"] = usage.get("asr_calls", 0) + 1
-        usage["asr_seconds"] = usage.get("asr_seconds", 0) + (u.get("seconds") or round(b / SR - a / SR))
-    text = re.sub(r"\s+", " ", r.choices[0].message.content or "").strip()
-    if r.choices[0].finish_reason == "content_filter" or is_refusal(text):
-        raise ContentRefused(text)
-    return fix_i(strip_tags(text))
+    if b <= a:
+        raise AudioError("音频片段为空")
+    model = model or os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+    language = language or os.environ.get("ASR_LANGUAGE", "auto")
+    service = client_instance or client()
+    raw = wav_bytes(pcm[a:b])
+    digest = hashlib.sha256(json.dumps([1, model, language, str(getattr(service, "base_url", ""))]).encode() + raw).hexdigest()
+    cache_file = A.CACHE_DIR / "asr" / f"{digest}.json"
+    with A.request_slot(_cache_locks[int(digest[:2], 16) % len(_cache_locks)], cancelled):
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if cached.get("version") == 1 and isinstance(cached.get("text"), str):
+                return cached["text"]
+        except (OSError, ValueError, AttributeError):
+            pass
+        with A.request_slot(ASR_SLOTS, cancelled):
+            LIMIT.wait(cancelled)
+            with A.request_slot(A.MODEL_SLOTS, cancelled):
+                data = base64.b64encode(raw).decode("ascii")
+                r = service.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": f"data:audio/wav;base64,{data}"}}]}],
+                    extra_body={"asr_options": {"language": language}},
+                )
+        if usage is not None:
+            u = r.usage.model_dump() if getattr(r, "usage", None) else {}
+            with _usage_lock:
+                usage["asr_calls"] = usage.get("asr_calls", 0) + 1
+                usage["asr_seconds"] = usage.get("asr_seconds", 0) + (u.get("seconds") or (b - a) / SR)
+        choice = r.choices[0]
+        text = choice.message.content
+        if choice.finish_reason == "content_filter" or is_refusal(text):
+            raise ContentRefused(text)
+        if not isinstance(text, str) or not text.strip():
+            raise AudioError("语音识别返回了空结果，请重试")
+        text = fix_i(strip_tags(re.sub(r"\s+", " ", text).strip()))
+        try:
+            write_json(cache_file, {"version": 1, "text": text})
+        except OSError:
+            print("语音识别缓存保存失败，本次结果仍可使用")
+        return text
 
 
 # Labels the recognisers put out instead of words when there is no speech: MiMo writes its language tag
