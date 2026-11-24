@@ -80,6 +80,46 @@ def main():
                     expect(page.locator("#toast")).to_contain_text("API key")
                     page.screenshot(path=str(output / "control-panel.png"), full_page=True)
 
+                    # Never claim the process stopped when a quit request failed or it still responds.
+                    quit_mode = "rejected"
+                    quit_requests = []
+                    def quit_response(route):
+                        quit_requests.append(route.request.method)
+                        if quit_mode == "network": return route.abort()
+                        if quit_mode == "rejected": return route.fulfill(status=503, json={"error": "测试退出失败"})
+                        return route.fulfill(json={"ok": True})
+                    page.route(base + "/api/quit", quit_response)
+                    page.locator("#quit").click()
+                    page.locator("#quitYes").click()
+                    expect(page.locator("#quitError")).to_contain_text("测试退出失败")
+                    expect(page.locator("#live")).to_be_visible()
+                    expect(page.locator("#quitYes")).to_be_enabled()
+                    quit_mode = "network"
+                    page.locator("#quitYes").click()
+                    expect(page.locator("#quitError")).to_contain_text("退出结果未确认")
+                    quit_mode = "acknowledged"
+                    page.locator("#quitYes").click()
+                    expect(page.locator("#quitYes")).to_be_disabled()
+                    expect(page.locator("#quitError")).to_contain_text("程序仍在响应", timeout=15000)
+                    assert len(quit_requests) == 3
+                    page.screenshot(path=str(output / "quit-unconfirmed.png"), full_page=True)
+                    # Hold an in-flight status read to verify it cannot redraw a disconnected console.
+                    delayed_status = []
+                    page.route(base + "/api/status", lambda route: delayed_status.append(route))
+                    for _ in range(100):
+                        if delayed_status: break
+                        page.wait_for_timeout(30)
+                    assert delayed_status
+                    page.route(base + "/api/health", lambda route: route.abort())
+                    page.locator("#quitYes").click()
+                    expect(page.get_by_text("已与程序断开连接", exact=True)).to_be_visible()
+                    for route in delayed_status: route.fulfill(json={"late": "discard this response"})
+                    page.wait_for_timeout(100)
+                    assert len(quit_requests) == 4 and server.poll() is None
+                    page.unroute(base + "/api/quit")
+                    page.unroute(base + "/api/status")
+                    page.unroute(base + "/api/health")
+
                     calls = []
                     on_request = lambda r: calls.append(r.url) if "/api/" in r.url else None
                     page.on("request", on_request)

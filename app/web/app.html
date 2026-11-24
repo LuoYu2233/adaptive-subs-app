@@ -373,8 +373,9 @@
 <dialog id="quitDlg">
   <h3>退出 Adaptive Subs？</h3>
   <p>退出后浏览器插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
+  <p id="quitError" role="status"></p>
   <div class="dlg-actions">
-    <button class="btn" type="button" data-close>取消</button>
+    <button class="btn" type="button" id="quitCancel" data-close>取消</button>
     <button class="btn primary" type="button" id="quitYes">退出程序</button>
   </div>
 </dialog>
@@ -390,6 +391,7 @@
   const ago = (s) => s < 60 ? "刚刚" : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let disconnected = false;
 
   // ------------------------------------------------------------------ intro ---
   // film frame -> frosted board covers the Chinese caption -> English line types in -> 枯燥 pops above "boring"
@@ -588,10 +590,13 @@
   }
 
   async function refresh() {
+    if (disconnected) return;
     try {
       const r = await fetch("/api/status", { headers: H, cache: "no-store" });
-      render(await r.json());
+      const status = await r.json();
+      if (!disconnected) render(status);
     } catch {
+      if (disconnected) return;
       $("#live").className = "live down";
       $("#live span").textContent = "程序没有响应";
     }
@@ -633,17 +638,44 @@
     try { await navigator.clipboard.writeText("chrome://extensions"); toast("已复制，粘贴到浏览器地址栏"); }
     catch { toast("复制失败，请手动输入 chrome://extensions"); }
   };
-  $("#quit").onclick = () => $("#quitDlg").showModal();
+  $("#quit").onclick = () => { $("#quitError").textContent = ""; $("#quitDlg").showModal(); };
+  $("#quitDlg").addEventListener("cancel", event => { if ($("#quitYes").disabled) event.preventDefault(); });
   $("#quitYes").onclick = async () => {
-    $("#quitDlg").close();
-    $("#shell").innerHTML = '<section class="stage"><div class="shade"></div><div class="stage-body"><div class="line">Adaptive Subs 已退出</div><div class="sub">可以关掉这个窗口了</div></div></section>';
-    try { await fetch("/api/quit", { method: "POST", headers: H, body: "{}" }); } catch {}
+    const button = $("#quitYes"), cancel = $("#quitCancel"), message = $("#quitError");
+    button.disabled = cancel.disabled = true;
+    button.textContent = "正在退出…";
+    message.textContent = "正在发送退出请求…";
+    try {
+      const response = await fetch("/api/quit", { method: "POST", headers: H, body: "{}", signal: AbortSignal.timeout(5000) });
+      const result = await response.json();
+      if (!response.ok || result.ok !== true) throw new Error(result.error || "退出请求未被确认，请稍后重试");
+      message.textContent = "退出请求已确认，正在等待连接断开…";
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(300);
+        try {
+          await fetch("/api/health", { cache: "no-store", signal: AbortSignal.timeout(700) });
+        } catch {
+          disconnected = true;
+          clearInterval(refreshTimer);
+          $("#quitDlg").close();
+          $("#shell").innerHTML = '<section class="stage"><div class="shade"></div><div class="stage-body"><div class="line">已与程序断开连接</div><div class="sub">可以关闭这个窗口了。再次使用时，请打开 Adaptive Subs。</div></div></section>';
+          return;
+        }
+      }
+      message.textContent = "程序仍在响应，尚未确认退出。可稍后重试，或取消并查看任务情况。";
+    } catch (error) {
+      message.textContent = error.name === "TypeError" || error.name === "TimeoutError"
+        ? "退出结果未确认，请检查程序状态后重试。" : error.message;
+    } finally {
+      button.disabled = cancel.disabled = false;
+      button.textContent = "退出程序";
+    }
   };
 
   if (introDone) $("#shell").classList.add("enter");
   playIntro();
   refresh();
-  setInterval(refresh, 2000);
+  const refreshTimer = setInterval(refresh, 2000);
 })();
 </script>
 </body>

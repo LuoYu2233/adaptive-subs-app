@@ -97,6 +97,13 @@ def main():
             assert (home / "profile.json").read_bytes() == original
             runtime_path.write_bytes(intact)
             report["bad_metadata_cannot_bypass_live_lock"] = True
+            request = urllib.request.Request(f"http://{current['host']}:{current['port']}/api/quit", data=b"{}",
+                headers={"X-Adaptive-Subs": "1", "Content-Type": "application/json"}, method="POST")
+            with opener.open(request, timeout=2) as response:
+                assert json.load(response)["ok"] is True
+            assert replacement.wait(timeout=5) == 0
+            assert (home / "profile.json").read_bytes() == original
+            report["acknowledged_quit_stops_real_process"] = True
             report["passed"] = True
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(report, indent=2))
