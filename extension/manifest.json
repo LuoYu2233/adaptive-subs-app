@@ -21,6 +21,7 @@
       ],
       "js": [
         "md5.js",
+        "learning.js",
         "content.js"
       ],
       "css": [

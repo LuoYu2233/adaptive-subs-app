@@ -69,7 +69,7 @@
   // never hides its uncommon meaning.
   const PF = { ok: false, rev: -1, level: 0, known: new Set(), unknown: new Set(), marks: new Map(), lastCheck: 0 };
   let defs = {};    // key -> short Chinese meaning, for words marked 不认识 that had no annotation
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptiveLearning.key;
   const effLevel = () => (PF.ok && PF.level) || cfg.level;
 
   // ------------------------------------------------------------ helpers ---
@@ -366,11 +366,8 @@
   // ------------------------------------------- which glosses to show (core) ---
   // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
   function noteState(n) {
-    const mk = markKey(n);
-    if (PF.unknown.has(mk)) return "forced";
-    if (PF.known.has(mk)) return "known";
     const pref = PREFS[cfg.pref] || PREFS.more;
-    return n.lv > effLevel() * pref.factor ? "hard" : "easy";
+    return AdaptiveLearning.state(n, PF.known, PF.unknown, effLevel() * pref.factor);
   }
 
   // rough base forms of a word as written, to match the library's lemma keys ("decided" -> "decide")
@@ -406,21 +403,7 @@
     const count = new Map();
     S.visible = S.cues.map((c) => {
       addMarkedWords(c);
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const st = noteState(n);
-        if (st === "forced" || st === "hard") cand.push({ i, lv: n.lv, key: markKey(n), forced: st === "forced" });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= pref.perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= pref.repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
+      return AdaptiveLearning.select(c.notes, PF.known, PF.unknown, effLevel() * pref.factor, pref, count);
     });
     S.dirty = true;
   }
@@ -453,9 +436,9 @@
     if (state === "known") { PF.known.add(key); PF.marks.set(key, "known"); }
     if (state === "unknown") { PF.unknown.add(key); PF.marks.set(key, "unknown"); }
     computeVisible();
-    const r = await bg({ type: "mark", payload: { key, state } });
+    const r = await bg({ type: "mark", payload: { key, state, detail: { term: word, zh: zhShort || "" } } });
     if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
-    const shown = key.replace(/^(sense|phrase):/, "");
+    const shown = AdaptiveLearning.label(key) + (key.startsWith("ctx:") && zhShort ? `（${zhShort}）` : "");
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
     loadProfile();
@@ -753,13 +736,15 @@
     if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
     if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
     if (!n) return "这一集没有给它注释";
+    if (noteState(n) === "known") return "根据熟词库或旧版词条标记不提示；这个意思不熟时可以单独标记";
+    if (noteState(n) === "forced") return "旧版词条或词汇测试标记为不认识；认识当前意思后可以单独标记";
     return noteState(n) === "hard" ? `难度约 ${n.lv.toLocaleString("en-US")} 词，高于你的水平（≈ ${effLevel().toLocaleString("en-US")}），所以注释`
       : `难度约 ${n.lv.toLocaleString("en-US")} 词，按你的水平（≈ ${effLevel().toLocaleString("en-US")}）不注释`;
   }
 
   function renderCard() {
     const n = CARD.note, mk = PF.marks.get(CARD.key);
-    const known = n && n.kind !== "word" ? "我懂这个意思" : "我认识";
+    const known = n && !n.local ? "我懂这个意思" : "我认识";
     const dim = (t) => h("div", "asubs-card-dim", t);
     const zhLine = (pos, zh) => h("div", "asubs-card-zh", pos ? h("span", "asubs-card-pos", pos) : null, zh);
     let meaning;
@@ -792,7 +777,7 @@
       ...meaning,
       ...(CARD.lists && CARD.lists.length ? [dim(`考试词表：${CARD.lists.join("、")}`)] : []),
       h("div", "asubs-card-why", cardReason()),
-      h("div", "asubs-card-btns", btn("known", known, mk === "known"), btn("unknown", "我不认识", mk === "unknown"),
+      h("div", "asubs-card-btns", btn("known", known, mk === "known"), btn("unknown", n && !n.local ? "这个意思不熟" : "我不认识", mk === "unknown"),
         mk ? btn("clear", "恢复默认") : null, dict));
     ui.card.hidden = false;
   }

@@ -1336,7 +1336,7 @@ class Handler(SimpleHTTPRequestHandler):
             threading.Timer(0.3, lambda: os._exit(0)).start()
             return self.send_json({"ok": True})
         if path == "/api/mark":
-            err = PROFILE.mark(body.get("key"), body.get("state"))
+            err = PROFILE.mark(body.get("key"), body.get("state"), body.get("detail"))
             return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
         if path == "/api/settings":
             return self.save_settings(body)

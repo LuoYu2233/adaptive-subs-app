@@ -98,6 +98,44 @@ def main():
                     expect(page.locator("#toast")).to_contain_text("API key")
                     page.screenshot(path=str(output / "player.png"), full_page=True)
 
+                    # Original test sentences exercise the actual player and profile API;
+                    # no YouTube content or model output is downloaded.
+                    data = home / "data"
+                    data.mkdir(exist_ok=True)
+                    cues = []
+                    for i, (text, zh) in enumerate((("The bank approved my loan.", "银行"),
+                                                    ("We walked along the river bank.", "河岸"))):
+                        offset = text.index("bank")
+                        cues.append({"s": i * 5, "e": i * 5 + 5, "text": text, "zh": "",
+                                     "notes": [{"s": offset, "e": offset + 4, "key": "bank", "zh": zh,
+                                                "kind": "sense", "lv": 15000}]})
+                    (data / "zzzzzzzzzzz.json").write_text(json.dumps({"status": "complete",
+                        "video": {"id": "zzzzzzzzzzz", "title": "词义回归示例", "duration": 10}, "cues": cues}), encoding="utf-8")
+                    (data / "index.json").write_text(json.dumps([{"id": "zzzzzzzzzzz", "title": "词义回归示例",
+                                                                  "file": "zzzzzzzzzzz.json"}]), encoding="utf-8")
+                    page.goto(base + "/player.html")
+                    expect(page.locator("#tab-transcript .tr-row")).to_have_count(2)
+                    page.locator("#introDialog").evaluate("element => { if (element.open) element.close(); }")
+                    page.locator(".tabs [data-tab='preview']").click()
+                    expect(page.locator("#levelValue")).to_contain_text("4,500")
+                    expect(page.locator("#tab-preview .wrow")).to_have_count(2)
+                    for meaning in ("银行", "河岸"):
+                        row = page.locator("#tab-preview .wrow").filter(has=page.get_by_text(meaning, exact=True))
+                        with page.expect_response(lambda r: r.url.endswith("/api/mark") and r.request.method == "POST") as response:
+                            row.locator("[data-act='book']").click()
+                        assert response.value.status == 200
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    row = page.locator("#tab-preview .wrow").filter(has=page.get_by_text("银行", exact=True))
+                    with page.expect_response(lambda r: r.url.endswith("/api/mark") and r.request.method == "POST") as response:
+                        row.locator("[data-act='know']").click()
+                    assert response.value.status == 200
+                    expect(page.locator("#tab-preview .wrow")).to_have_count(1)
+                    expect(page.locator("#tab-preview .w-zh")).to_have_text("河岸")
+                    page.screenshot(path=str(output / "meaning-feedback.png"), full_page=True)
+                    page.goto(base + "/profile")
+                    expect(page.locator("#marks")).to_contain_text("bank · 银行")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
+
                     page.set_viewport_size({"width": 390, "height": 844})
                     for path in ("app", "setup", "profile"):
                         page.goto(base + "/" + path)
@@ -108,7 +146,7 @@ def main():
                         page.screenshot(path=str(output / f"{path}-mobile.png"), full_page=True)
                     assert not errors, errors
                     browser.close()
-                print("Browser checks passed: recovery UI, settings, persisted profile, missing-key handling, mobile layout.")
+                print("Browser checks passed: recovery, settings, profile persistence, separate meaning feedback/wordbook, mobile layout.")
             finally:
                 server.terminate()
                 try:

@@ -92,7 +92,11 @@
     const m = P.marks, n = m.known.length + m.unknown.length;
     box.hidden = !n;
     if (!n) return;
-    const chip = (k, state) => `<span class="mk">${esc(k.replace(/^(sense|phrase):/, ""))}${/^sense:/.test(k) ? '<small class="muted">（特殊意思）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(k)}">×</button></span>`;
+    const chip = (k) => {
+      const detail = (P.mark_details || {})[k];
+      const text = detail && detail.zh ? `${detail.term || AdaptiveLearning.label(k)} · ${detail.zh}` : AdaptiveLearning.label(k);
+      return `<span class="mk">${esc(text)}${/^ctx:/.test(k) ? '<small class="muted">（当前意思）</small>' : /^sense:/.test(k) ? '<small class="muted">（旧版用法标记）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(text)}">×</button></span>`;
+    };
     $("#marks").innerHTML = `
       ${m.unknown.length ? `<div class="muted">我不认识（总是注释）</div><div class="marks">${m.unknown.map((k) => chip(k)).join("")}</div>` : ""}
       ${m.known.length ? `<div class="muted" style="margin-top:12px">我认识（不再注释）</div><div class="marks">${m.known.map((k) => chip(k)).join("")}</div>` : ""}

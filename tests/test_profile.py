@@ -27,3 +27,25 @@ def test_valid_profile_test_and_explicit_reset_are_saved_atomically(tmp_path):
     p = store.load()
     assert p["level"] == 5000
     assert p["known"] == [] and p["test"]["unknown"] == ["dock"]
+
+
+def test_context_marks_keep_separate_meanings_and_old_word_marks(tmp_path):
+    store = Store(tmp_path / "profile.json")
+    bank, shore = "ctx:bank:0123456789abcdef", "ctx:bank:fedcba9876543210"
+    assert store.mark("bank", "known") is None
+    assert store.mark(bank, "known", {"term": "bank", "zh": "银行"}) is None
+    assert store.mark(shore, "unknown", {"term": "bank", "zh": "河岸"}) is None
+    p = Store(store.path).load()
+    assert set(p["known"]) == {"bank", bank} and p["unknown"] == [shore]
+    assert p["mark_details"][shore]["zh"] == "河岸"
+    assert store.mark(bank, "clear") is None
+    assert bank not in store.load()["mark_details"]
+    assert store.load()["mark_details"][shore]["zh"] == "河岸"
+
+
+def test_invalid_mark_metadata_leaves_existing_marks_unchanged(tmp_path):
+    store = Store(tmp_path / "profile.json")
+    store.mark("bank", "known")
+    before = store.path.read_bytes()
+    assert store.mark("ctx:bank:0123456789abcdef", "known", {"zh": []})
+    assert store.path.read_bytes() == before

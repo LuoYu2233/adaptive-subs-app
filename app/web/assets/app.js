@@ -50,7 +50,8 @@
   const isHard = (n) => n.lv > S.level * PREFS[S.pref].factor;   // above the viewer's level?
   // marks / known-word library are keyed by word; phrases and special senses get their own keys,
   // so knowing a word never hides its uncommon meaning
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptiveLearning.key;
+  const noteState = n => AdaptiveLearning.state(n, S.known, S.unknown, S.level * PREFS[S.pref].factor);
   // Opened from the local program: the profile (level + known-word library + marks) lives there,
   // shared with the Bilibili extension and the profile page. On GitHub Pages: this browser only.
   let shared = null;
@@ -80,25 +81,8 @@
   // ------------------------------------------------ visibility (core rule) ---
   function computeVisible() {
     const count = new Map();
-    S.visible = S.cues.map((c) => {
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const mk = markKey(n);
-        const forced = S.unknown.has(mk);
-        if (!forced && S.known.has(mk)) return;
-        if (forced || isHard(n)) cand.push({ i, forced, lv: n.lv, key: mk });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= PREFS[S.pref].perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= PREFS[S.pref].repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
-    });
+    S.visible = S.cues.map(c => AdaptiveLearning.select(c.notes, S.known, S.unknown,
+      S.level * PREFS[S.pref].factor, PREFS[S.pref], count));
   }
 
   // ---------------------------------------------------------- rendering ---
@@ -125,14 +109,14 @@
     c.notes.forEach((n, i) => {
       html += wrapWords(t.slice(pos, n.s), ci);
       const word = esc(t.slice(n.s, n.e));
-      const extra = (S.unknown.has(markKey(n)) ? " forced" : "") + (bookKeys.has(n.key) ? " inbook" : "");
+      const extra = (noteState(n) === "forced" ? " forced" : "") + (bookKeys.has(markKey(n)) || bookKeys.has(n.key) ? " inbook" : "");
       const attrs = `data-c="${ci}" data-n="${i}"`;
       if (style !== "none" && vis.has(i)) {
         html += style === "over"
           ? `<span class="tok g${extra}" ${attrs}><span class="w">${word}</span><span class="zh">${esc(n.zh)}</span></span>`
           : `<span class="tok p${extra}" ${attrs}><span class="w">${word}</span><span class="pz">(${esc(n.zh)})</span></span>`;
       } else {
-        html += `<span class="tok${bookKeys.has(n.key) ? " inbook" : ""}" ${attrs}>${word}</span>`;
+        html += `<span class="tok${bookKeys.has(markKey(n)) || bookKeys.has(n.key) ? " inbook" : ""}" ${attrs}>${word}</span>`;
       }
       pos = n.e;
     });
@@ -202,7 +186,7 @@
     else if (es) html += '<button type="button" class="btn btn-ghost" data-generation="cancel">取消生成</button>';
     $("#density").innerHTML = html;
     $("#levelValue").textContent = `≈ ${fmtNum(S.level)} 词`;
-    $("#levelRange").value = LEVELS.indexOf(S.level);
+    $("#levelRange").value = LEVELS.indexOf(nearestLevel(S.level));
     $("#levelRange").setAttribute("aria-valuetext", `${S.level} 词`);
   }
 
@@ -261,7 +245,7 @@
     const agg = new Map();
     S.cues.forEach((c, ci) => c.notes.forEach((n) => {
       const mk = markKey(n);
-      if ((S.known.has(mk) && !S.unknown.has(mk)) || !(isHard(n) || S.unknown.has(mk))) return;
+      if (!["hard", "forced"].includes(noteState(n))) return;
       let a = agg.get(mk);
       if (!a) agg.set(mk, (a = { key: mk, zh: n.zh, kind: n.kind, lv: n.lv, count: 0, first: ci, n }));
       a.count++;
@@ -280,7 +264,7 @@
       <p class="panel-intro">按你现在的词汇量（<b>≈ ${fmtNum(S.level)}</b>），这集最值得先认识的 ${Math.min(15, total)} 个词。已经认识的点「认识」，看的时候就不再提示。</p>
       ${list.slice(0, 15).map((a) => `
         <div class="wrow">
-          <div><div class="w-term">${esc(a.key)}</div><div class="w-zh">${esc(a.zh)}</div></div>
+          <div><div class="w-term">${esc(a.n.key)}</div><div class="w-zh">${esc(a.zh)}</div></div>
           <div class="w-actions">
             <button class="btn btn-ghost btn-sm" data-act="know" data-key="${esc(a.key)}">认识</button>
             <button class="btn btn-ghost btn-sm" data-act="book" data-c="${a.first}" data-key="${esc(a.key)}">${bookKeys.has(a.key) ? "✓ 已收藏" : "+ 生词本"}</button>
@@ -334,7 +318,10 @@
   }
 
   // ------------------------------------------------------ personal marks ---
-  const shownKey = (k) => k.replace(/^(sense|phrase):/, "");
+  const shownKey = key => {
+    const note = key.startsWith("ctx:") && S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
+    return AdaptiveLearning.label(key) + (note ? `（${note.zh}）` : "");
+  };
   function markKnown(key, silent) {
     S.known.add(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "known");
     if (!silent) toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => { S.known.delete(key); save(); renderAll(); pushMark(key, "clear"); });
@@ -353,16 +340,18 @@
       const p = await r.json();
       if (!r.ok || !Array.isArray(p.known)) return;
       shared = p;
-      S.level = nearestLevel(p.level);
+      S.level = Number.isFinite(p.level) && p.level > 0 ? p.level : 3000;
       S.known = new Set(p.known);
       S.unknown = new Set(p.unknown);
-      if (S.cues.length) renderAll(); else renderControls();
+      renderAll(false);
     } catch { /* old program version: keep this browser's own marks */ }
   }
   async function pushMark(key, state) {
     if (!shared) return;
     try {
-      const r = await fetch("api/mark", { method: "POST", headers: API_H, body: JSON.stringify({ key, state }) });
+      const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
+      const r = await fetch("api/mark", { method: "POST", headers: API_H,
+        body: JSON.stringify({ key, state, detail: note ? { term: note.key, zh: note.zh } : undefined }) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       loadShared();
     } catch { toast("标记没能保存到 Adaptive Subs 程序（只保存在这个浏览器里）"); }
@@ -387,13 +376,11 @@
     const c = S.cues[ci];
     if (noteIdx != null) {
       const n = c.notes[noteIdx];
-      return { key: n.key, mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
+      return { key: markKey(n), mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
     }
-    // a word without a pre-generated gloss: use the same gloss if it appears elsewhere
+    // A different sentence's gloss can describe a different meaning. Keep this entry unglossed.
     const key = word.toLowerCase();
-    let found = null;
-    S.cues.some((cc) => cc.notes.some((n) => (n.key === key ? (found = n) : false)));
-    return { key, term: word, zh: found ? found.zh : "", kind: found ? found.kind : "word", lv: found ? found.lv : 0, sentence: c.text, t: c.s, hasNote: !!found };
+    return { key, term: word, zh: "", kind: "word", lv: 0, sentence: c.text, t: c.s, hasNote: false };
   }
 
   function exportCSV() {
@@ -444,13 +431,13 @@
     let main;
     if (note) {
       const action = shown
-        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">我认识了，不再提示</button>`
+        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">认识这个意思，不再提示</button>`
         : S.known.has(key)
           ? `<button class="btn btn-primary btn-sm" data-act="restore" data-key="${esc(key)}">恢复提示</button>`
-          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">标为生词，总是提示</button>`;
+          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">这个意思不熟，总是提示</button>`;
       const why = shown
-        ? (S.unknown.has(key) ? "你标记过这个词，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
-        : S.known.has(key) ? (shared && note.kind === "word" ? "在你的熟词库里（考试词表 / 常见词 / 测试 / 你的标记），所以不提示" : "你标记过认识，所以不提示") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
+        ? (noteState(note) === "forced" ? "你标记过不熟悉，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
+        : noteState(note) === "known" ? (S.known.has(key) ? "你标记过认识这个意思，所以不提示" : "根据熟词库或旧版词条标记不提示；这个意思不熟时可以单独标记") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个意思本集提示够多次了";
       main = `
         <div class="wc-head"><span class="wc-term">${esc(term)}</span>
           <span class="tag ${note.kind !== "word" ? `tag-${note.kind}` : ""}">${KIND_LABEL[note.kind]}</span>
@@ -860,7 +847,7 @@
       if (b.dataset.n != null || b.dataset.w) addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
       else {
         // from the pre-watch list: find the note with this key in that cue
-        const ni = S.cues[ci].notes.findIndex((n) => n.key === key);
+        const ni = S.cues[ci].notes.findIndex((n) => markKey(n) === key);
         addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
       }
       closeCard(true);

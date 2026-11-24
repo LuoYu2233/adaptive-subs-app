@@ -39,6 +39,7 @@ EXAMS = {   # id: (name, min, max)
 }
 IDENTITIES = {"high": "高中生", "undergrad": "大学生", "grad": "研究生", "work": "已工作", "other": "其他"}
 KEY_RE = re.compile(r"[a-z][a-z' .:-]{0,79}")
+CONTEXT_KEY_RE = re.compile(r"ctx:[a-z][a-z' .-]{0,59}:[0-9a-f]{16}")
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000]
 
 
@@ -188,6 +189,7 @@ class Store:
                           "marked_known": len(m_known), "marked_unknown": len(m_unknown)},
                 "known": sorted(known), "unknown": sorted(unknown),
                 "marks": {"known": sorted(m_known), "unknown": sorted(m_unknown)},
+                "mark_details": {k: v for k, v in (p.get("mark_details") or {}).items() if k in m_known or k in m_unknown},
             }
             self._cache = (rev, out)
             return out
@@ -258,13 +260,18 @@ class Store:
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
             if body.get("reset_marks"):
                 p["known"], p["unknown"] = [], []
+                p["mark_details"] = {}
             self._save(p)
             return None
 
-    def mark(self, key: str, state: str) -> str | None:
+    def mark(self, key: str, state: str, detail=None) -> str | None:
         key = str(key or "").lower().strip()
-        if not KEY_RE.fullmatch(key) or state not in ("known", "unknown", "clear"):
+        if not (KEY_RE.fullmatch(key) or CONTEXT_KEY_RE.fullmatch(key)) or state not in ("known", "unknown", "clear"):
             return "bad mark"
+        if detail is not None and (not isinstance(detail, dict) or any(
+            not isinstance(detail.get(k, ""), str) for k in ("term", "zh")
+        )):
+            return "bad mark detail"
         with self.lock:
             p = self.load()
             known, unknown = set(p.get("known") or []), set(p.get("unknown") or [])
@@ -275,6 +282,11 @@ class Store:
             elif state == "unknown":
                 unknown.add(key)
             p["known"], p["unknown"] = sorted(known), sorted(unknown)
+            details = p.setdefault("mark_details", {})
+            if state == "clear":
+                details.pop(key, None)
+            elif detail:
+                details[key] = {"term": detail.get("term", "")[:100], "zh": detail.get("zh", "")[:80]}
             self._save(p)
             return None
 
@@ -282,4 +294,5 @@ class Store:
         with self.lock:
             p = self.load()
             p["known"], p["unknown"] = [], []
+            p["mark_details"] = {}
             self._save(p)
