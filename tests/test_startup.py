@@ -65,7 +65,7 @@ def test_invalid_port_rejected_by_argument_parser(value):
 
 
 @pytest.mark.parametrize("version", [S.VERSION, "0.3.0"])
-def test_startup_reuses_matching_version_but_cannot_silently_open_an_old_one(tmp_path, monkeypatch, version):
+def test_startup_cannot_silently_reuse_an_unprotected_old_process(tmp_path, monkeypatch, version):
     monkeypatch.setattr(S, "HOME", tmp_path)
     monkeypatch.setattr(S.A, "load_dotenv", lambda *args: None)
     monkeypatch.setattr(S.applog, "install", lambda *args: None)
@@ -75,12 +75,8 @@ def test_startup_reuses_matching_version_but_cannot_silently_open_an_old_one(tmp
     monkeypatch.setattr(S, "probe_server", lambda *args: health(version=version))
     monkeypatch.setattr(S, "run_window", window)
     monkeypatch.setattr(sys, "argv", ["server.py", "--gui"])
-    if version == S.VERSION:
-        S.main()
-        window.assert_called_once_with("http://127.0.0.1:8765/app", None)
-    else:
-        with pytest.raises(RuntimeError, match="请先退出"): S.main()
-        window.assert_not_called()
+    with pytest.raises(RuntimeError, match="请先退出"): S.main()
+    window.assert_not_called()
     assert bind.call_count == 1
 
 

@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 
 import numpy as np
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,7 @@ import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
 import video_catalog
+from instance_lock import InstanceLock, read_instance
 from storage import atomic_write, write_json
 from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
 from version import VERSION
@@ -68,6 +70,8 @@ ASR_PER_JOB = 4        # speech-recognition requests in flight per video (the AP
 CHECKPOINT_INTERVAL = 1.0  # seconds between background snapshots; explicit boundaries always flush
 NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
 CONFIG_LOCK = threading.RLock()
+INSTANCE_ID = uuid.uuid4().hex
+INSTANCE_GUARD = None
 
 
 
@@ -1279,7 +1283,8 @@ class Handler(SimpleHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
             self.note_extension()
-            return self.send_json({"ok": True, "app": "adaptive-subs", "version": VERSION, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
+            return self.send_json({"ok": True, "app": "adaptive-subs", "version": VERSION, "instance": INSTANCE_ID,
+                                   "instance_locked": INSTANCE_GUARD is not None, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path.startswith("/api/") and not self.ext_ok():
@@ -1712,6 +1717,7 @@ def port_number(value):
 
 
 def main():
+    global INSTANCE_GUARD
     HOME.mkdir(parents=True, exist_ok=True)
     A.load_dotenv(CONFIG)
     A.CACHE_DIR = HOME / ".cache"
@@ -1719,7 +1725,7 @@ def main():
     ap.add_argument("--port", type=port_number, default=os.environ.get("PORT", "8765"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="open the player in the browser once the server is up")
-    ap.add_argument("--app", action="store_true", help="packaged program: open the settings page if no key is set")
+    ap.add_argument("--app", action="store_true", help="open the control panel in the browser")
     ap.add_argument("--gui", action="store_true", help="show the control panel in a window (no console needed)")
     args = ap.parse_args()
     if args.host not in ("127.0.0.1", "localhost"):
@@ -1736,8 +1742,43 @@ def main():
             import webbrowser
             threading.Timer(1.0, webbrowser.open, [f"http://{args.host}:{port}/{page}"]).start()
 
-    # Port busy? If it's this server already running, just open it; if it's something else
-    # (e.g. an old plain file server, which has no live features), move to the next free port.
+    guard = InstanceLock(HOME)
+    if not guard.acquire():
+        return reuse_instance(args, open_browser, want_browser)
+    try:
+        INSTANCE_GUARD = guard
+        guard.publish(VERSION, INSTANCE_ID, args.host)
+        return serve_owned(args, open_browser, guard)
+    finally:
+        INSTANCE_GUARD = None
+        guard.close()
+
+
+def reuse_instance(args, open_browser, want_browser):
+    # A stale metadata file alone never blocks startup: only a live OS lock reaches this branch.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        info = read_instance(HOME)
+        existing = probe_server(info["host"], info["port"]) if info else None
+        if existing and existing.get("instance") == info["instance"]:
+            if existing["version"] != VERSION:
+                raise RuntimeError(f"同一数据目录正在由 Adaptive Subs {existing['version']} 使用；当前版本是 {VERSION}。"
+                                   "请先退出已运行的程序，再启动当前版本。")
+            args.host = info["host"]
+            print(f"Adaptive Subs is already running: http://{info['host']}:{info['port']}/app")
+            if args.gui:
+                return run_window(f"http://{info['host']}:{info['port']}/app", None)
+            open_browser(info["port"])
+            if want_browser:
+                time.sleep(2)
+            return
+        time.sleep(0.1)
+    raise RuntimeError("同一数据目录的程序正在启动或退出，尚未确认连接。请稍后重试；不要删除正在使用的锁文件。")
+
+
+def serve_owned(args, open_browser, guard):
+    # The directory lock excludes another modern owner of this data. Other directories
+    # can use the next port; legacy processes must be closed before upgrading.
     port, httpd = args.port, None
     last_port = min(args.port + 19, 65535)
     for candidate in range(args.port, last_port + 1):
@@ -1747,21 +1788,23 @@ def main():
             break
         except OSError:
             existing = probe_server(args.host, candidate)
-            if existing:
+            if existing and existing.get("instance_locked") is not True:
                 if existing["version"] != VERSION:
                     raise RuntimeError(f"端口 {candidate} 上运行着 Adaptive Subs {existing['version']}，当前启动的是 {VERSION}。"
                                        "请先退出已运行的程序，再启动当前版本，避免继续使用旧版或同时写入数据。")
-                print(f"Adaptive Subs is already running: http://{args.host}:{candidate}/player.html")
-                if args.gui:                       # second start: just show the running program's panel
-                    return run_window(f"http://{args.host}:{candidate}/app", None)
-                open_browser(candidate)
-                if want_browser:
-                    time.sleep(2)
-                return
+                raise RuntimeError("已运行的程序未启用同目录保护，请先退出，再启动当前版本。")
             print(f"  port {candidate} is in use by another program, trying {candidate + 1}…")
     if httpd is None:
         sys.exit(f"No free port between {args.port} and {last_port}.")
 
+    try:
+        guard.publish(VERSION, INSTANCE_ID, args.host, port)
+        return run_server(httpd, args, port, open_browser)
+    finally:
+        httpd.server_close()
+
+
+def run_server(httpd, args, port, open_browser):
     try:
         TASK_STORE.mark_interrupted()
     except (TaskStoreCorrupt, OSError, sqlite3.Error) as error:

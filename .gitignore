@@ -8,6 +8,8 @@ profile.json
 profile.tmp
 recovery/
 tasks.sqlite3*
+.instance.lock
+.instance.json
 
 # local Python environment and caches
 .venv/
