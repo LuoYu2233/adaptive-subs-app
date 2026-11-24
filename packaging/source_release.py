@@ -63,13 +63,18 @@ def build(root=ROOT):
     destination = root / "release" / f"AdaptiveSubs-{version}-source.zip"
     destination.parent.mkdir(exist_ok=True)
     prefix = f"AdaptiveSubs-{version}-source/"
-    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, body in sorted(entries.items()):
             info = zipfile.ZipInfo(prefix + name, (2026, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             archive.writestr(info, body)
-    checksum = digest(destination.read_bytes())
+    body = content.getvalue()
+    checksum = digest(body)
+    if destination.exists() and digest(destination.read_bytes()) != checksum:
+        raise ValueError("A different package already exists for this version; increment the version before packaging")
+    destination.write_bytes(body)
     destination.with_suffix(".zip.sha256").write_text(f"{checksum}  {destination.name}\n", encoding="utf-8")
     return destination, checksum, revision
 

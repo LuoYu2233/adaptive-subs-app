@@ -6,14 +6,15 @@ let cfg = { ...DEFAULTS };
 let prof = null;          // profile summary from the local program (null: program not running / old version)
 
 const nearest = (x) => LEVELS.reduce((a, b) => (Math.abs(b - x) < Math.abs(a - x) ? b : a));
-const level = () => (prof ? nearest(prof.level) : cfg.level);
+let draftLevel = null, levelRequest = 0;
+const level = () => draftLevel ?? (prof ? prof.level : cfg.level);
 
 function render() {
   $("#enabled").checked = cfg.enabled;
   $("#hideNative").checked = cfg.hideNative;
-  const i = Math.max(0, LEVELS.indexOf(level()));
+  const i = Math.max(0, LEVELS.indexOf(nearest(level())));
   $("#level").value = i;
-  $("#levelValue").textContent = `≈ ${LEVELS[i].toLocaleString("en-US")} 词`;
+  $("#levelValue").textContent = `≈ ${level().toLocaleString("en-US")} 词`;
   $("#levelNote").textContent = !prof ? "程序没开时只保存在这个浏览器里" : prof.test
     ? `来自词汇测试（${prof.test.date}）· 拖动可以手动调整`
     : prof.setup ? "按考试成绩 / 身份估计 · 做一次词汇测试会更准" : "拖动调整，或建立英语画像自动设置";
@@ -51,18 +52,29 @@ chrome.storage.local.get(["settings"], (r) => {
 $("#enabled").addEventListener("change", (e) => { cfg.enabled = e.target.checked; save(); });
 $("#hideNative").addEventListener("change", (e) => { cfg.hideNative = e.target.checked; save(); });
 $("#level").addEventListener("input", (e) => {
-  cfg.level = LEVELS[+e.target.value];
-  save();
-  if (prof) {
-    prof.level = cfg.level;
-    clearTimeout(window._lvTimer);           // save to the shared profile once the slider stops
-    window._lvTimer = setTimeout(() => {
-      chrome.runtime.sendMessage({ type: "setprofile", payload: { level: cfg.level } }, () => {
-        chrome.storage.local.set({ profileRev: Date.now() });     // tell open video tabs to reload it
-      });
-    }, 300);
-  }
+  draftLevel = LEVELS[+e.target.value];
   render();
+});
+$("#level").addEventListener("change", () => {
+  cfg.level = draftLevel ?? LEVELS[+$("#level").value];
+  save();
+  if (!prof) { draftLevel = null; $("#saveStatus").textContent = "已保存在此浏览器；本机画像尚未连接"; return; }
+  const request = ++levelRequest;
+  $("#saveStatus").textContent = "正在保存词汇量…";
+  // Send on release/change, before the popup can close. The service worker owns ordering.
+  chrome.runtime.sendMessage({ type: "setprofile", payload: { level: cfg.level } }, (result) => {
+    const error = chrome.runtime.lastError;
+    if (request !== levelRequest) return;
+    draftLevel = null;
+    if (error || !result || result.error || !Number.isFinite(result.level)) {
+      $("#saveStatus").textContent = `画像未保存：${result?.error || "连接失败，请重试"}`;
+      render();
+      return;
+    }
+    prof = result; renderProfile(); render();
+    $("#saveStatus").textContent = "已保存到本机画像";
+    chrome.storage.local.set({ profileRev: result.rev });
+  });
 });
 document.querySelectorAll(".seg[data-key]").forEach((seg) => {
   seg.addEventListener("click", (e) => {

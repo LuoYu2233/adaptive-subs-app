@@ -29,6 +29,7 @@ def check_extension(playwright, base, home, output):
         bili.write_text(json.dumps(data | {"video": data["video"] | {"id": bili.stem}}))
         external = []
         fail_mark = False
+        fail_profile = False
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
         with wave.open(sound, "wb") as wav:
@@ -39,7 +40,7 @@ def check_extension(playwright, base, home, output):
         def route_request(route):
             url = route.request.url
             if url.startswith(base + "/"):
-                if fail_mark and url.endswith("/api/mark"):
+                if (fail_mark and url.endswith("/api/mark")) or (fail_profile and url.endswith("/api/profile") and route.request.method == "POST"):
                     return route.fulfill(status=507, content_type="application/json", body=json.dumps({"error": "测试磁盘不可写"}))
                 return route.continue_()
             if url.startswith("chrome-extension://"):
@@ -106,6 +107,26 @@ def check_extension(playwright, base, home, output):
             page.screenshot(path=str(output / f"extension-{site}.png"), full_page=True)
             assert not errors, errors
             page.close()
+        popup = context.new_page()
+        popup.goto(worker.url.rsplit("/", 1)[0] + "/popup.html")
+        expect(popup.locator("#levelValue")).to_contain_text("4,500")
+        fail_profile = True
+        popup.locator("#level").focus()
+        popup.locator("#level").press("End")
+        expect(popup.locator("#saveStatus")).to_contain_text("画像未保存")
+        expect(popup.locator("#levelValue")).to_contain_text("4,500")
+        fail_profile = False
+        popup.locator("#level").press("Home")
+        expect(popup.locator("#saveStatus")).to_contain_text("已保存到本机画像")
+        assert json.loads((home / "profile.json").read_text())["level"] == 1500
+        # Requests are queued in the service worker, including server discovery.
+        result = worker.evaluate("() => Promise.all([2000, 6000, 5000].map(level => handle({type:'setprofile',payload:{level}})))")
+        assert [r["level"] for r in result] == [2000, 6000, 5000]
+        assert result[0]["rev"] < result[1]["rev"] < result[2]["rev"]
+        assert json.loads((home / "profile.json").read_text())["level"] == 5000
+        popup.reload()
+        expect(popup.locator("#levelValue")).to_contain_text("5,000")
+        popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)
         (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2))
         print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and separate meaning feedback.")
     except Exception:

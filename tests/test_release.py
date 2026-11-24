@@ -53,6 +53,11 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
     (tmp_path / "README.md").write_text("uncommitted change")
     with pytest.raises(ValueError, match="working-tree"):
         BUILD.build(tmp_path)
+    git("add", "README.md")
+    git("-c", "user.name=Release Test", "-c", "user.email=test@example.invalid", "commit", "-m", "changed source")
+    with pytest.raises(ValueError, match="increment the version"):
+        BUILD.build(tmp_path)
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("name", [".env", "app/config.env", "app/profile.json", "app/logs/output.txt", "app/.cache/output.json"])

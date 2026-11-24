@@ -1,6 +1,8 @@
-# 0.4.0-alpha.1 本地试用版
+# 0.4.0-alpha.2 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
+
+与 alpha.1 相比，alpha.2 增加日志容量控制与脱敏、Unicode 注释定位修复、损坏结果重试、更严格的模型响应校验、长字幕渲染优化和插件弹窗保存反馈。旧版源码包保留供回退。
 
 ## 这一版的变化
 
@@ -34,7 +36,7 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.1-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.2-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。

@@ -9,6 +9,7 @@ const PORTS = Array.from({ length: 20 }, (_, i) => 8765 + i);   // server.py mov
 const HEADERS = { "X-Adaptive-Subs": "1" };                     // server.py only accepts this from us
 let base = null;
 let lastHealth = null, lastCheck = 0;
+let profileWrites = Promise.resolve();
 
 async function health(b) {
   try {
@@ -44,7 +45,7 @@ async function json(r) {
   try { return await r.json(); } catch { return { error: `本地服务器返回了 HTTP ${r.status}` }; }
 }
 
-async function handle(msg) {
+async function perform(msg) {
   if (msg.type === "subtitle") {
     const u = new URL(msg.url);
     if (u.protocol !== "https:" || !/(^|\.)hdslb\.com$/.test(u.hostname)) throw new Error("字幕地址不是 B 站的文件服务器");
@@ -74,12 +75,15 @@ async function handle(msg) {
       return await json(r);
     }
     if (msg.type === "mark" || msg.type === "setprofile" || msg.type === "explain") {
-      const r = await fetch(`${s.base}/api/${{ mark: "mark", setprofile: "profile", explain: "explain" }[msg.type]}`, {
+      const send = async () => {
+        const r = await fetch(`${s.base}/api/${{ mark: "mark", setprofile: "profile", explain: "explain" }[msg.type]}`, {
         method: "POST",
         headers: { ...HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(msg.payload),
-      });
-      return await json(r);
+        });
+        return await json(r);
+      };
+      return await send();
     }
     if (msg.type === "define") {
       const r = await fetch(`${s.base}/api/define?w=${encodeURIComponent(msg.word)}`, { headers: HEADERS, cache: "no-store" });
@@ -108,6 +112,13 @@ async function handle(msg) {
     return { error: "noserver" };
   }
   throw new Error("unknown message");
+}
+
+function handle(msg) {
+  if (msg.type !== "mark" && msg.type !== "setprofile") return perform(msg);
+  const result = profileWrites.then(() => perform(msg));
+  profileWrites = result.catch(() => {});
+  return result;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
