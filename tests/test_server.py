@@ -480,3 +480,14 @@ def test_simultaneous_settings_writers_cannot_both_use_one_revision(http_server,
     assert sorted(status for status, _ in results) == [200, 409]
     winner = next(model for status, model in results if status == 200)
     assert S.P.model("deepseek") == winner and f"DEEPSEEK_MODEL={winner}" in path.read_text()
+
+
+@pytest.mark.parametrize("asr_url,cache_version,warning", [("https://www.youtube.com/watch?v=abcdefghijk", None, True),
+    ("https://www.youtube.com/watch?v=abcdefghijk", 2, False), (None, None, False)])
+def test_old_speech_task_discloses_cache_reprocessing_before_resume(http_server, asr_url, cache_version, warning):
+    S.TASK_STORE.save("yt_abcdefghijk_asr", "interrupted", {
+        "title": "Original pending task", "asr_url": asr_url, "asr_cache_version": cache_version})
+    status, raw = request(http_server, "GET", "/api/status", headers=H)
+    assert status == 200
+    task = next(job for job in json.loads(raw)["jobs"] if job["id"] == "yt_abcdefghijk_asr")
+    assert task["cache_update"] is warning

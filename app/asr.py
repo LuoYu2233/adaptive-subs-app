@@ -617,6 +617,37 @@ def wav_bytes(samples: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+MAX_TRANSCRIPT_CHARS = 20000
+MAX_TRANSCRIPT_CACHE_BYTES = 128 * 1024
+TRANSCRIPT_CACHE_VERSION = 2  # Only confirmed complete, UTF-8 encodable responses.
+
+
+def valid_transcript(text):
+    if not isinstance(text, str) or len(text) > MAX_TRANSCRIPT_CHARS or (text and not text.strip()):
+        return False
+    try:
+        text.encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def cached_transcript(path):
+    """None means unusable cache; an empty string is a valid saved silence result."""
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_TRANSCRIPT_CACHE_BYTES + 1)
+        if len(raw) > MAX_TRANSCRIPT_CACHE_BYTES:
+            return None
+        value = json.loads(raw.decode("utf-8"))
+        if (isinstance(value, dict) and set(value) == {"version", "text"}
+                and type(value["version"]) is int and value["version"] == TRANSCRIPT_CACHE_VERSION and valid_transcript(value["text"])):
+            return value["text"]
+    except (OSError, ValueError, RecursionError):
+        pass
+    return None
+
+
 def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
                pad_before: float = 0.15, pad_after: float = 0.15, *, client_instance=None,
                model=None, language=None, cancelled=None) -> str:
@@ -629,15 +660,12 @@ def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
     language = language or os.environ.get("ASR_LANGUAGE", "auto")
     service = client_instance or client()
     raw = wav_bytes(pcm[a:b])
-    digest = hashlib.sha256(json.dumps([1, model, language, str(getattr(service, "base_url", ""))]).encode() + raw).hexdigest()
+    digest = hashlib.sha256(json.dumps([TRANSCRIPT_CACHE_VERSION, model, language, str(getattr(service, "base_url", ""))]).encode() + raw).hexdigest()
     cache_file = A.CACHE_DIR / "asr" / f"{digest}.json"
     with A.request_slot(_cache_locks[int(digest[:2], 16) % len(_cache_locks)], cancelled):
-        try:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if cached.get("version") == 1 and isinstance(cached.get("text"), str):
-                return cached["text"]
-        except (OSError, ValueError, AttributeError):
-            pass
+        cached = cached_transcript(cache_file)
+        if cached is not None:
+            return cached
         with A.request_slot(ASR_SLOTS, cancelled):
             LIMIT.wait(cancelled)
             with A.request_slot(A.MODEL_SLOTS, cancelled):
@@ -654,15 +682,21 @@ def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
                 usage.update(asr_calls=previous["asr_calls"] + 1,
                              asr_seconds=previous["asr_seconds"] + seconds,
                              asr_estimated_calls=previous["asr_estimated_calls"] + int(estimated))
-        choice = r.choices[0]
-        text = choice.message.content
-        if choice.finish_reason == "content_filter" or is_refusal(text):
+        choices = getattr(r, "choices", None)
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise AudioError("语音识别返回的结果格式不正确，请重试")
+        choice = choices[0]
+        text = getattr(getattr(choice, "message", None), "content", None)
+        reason = getattr(choice, "finish_reason", None)
+        if reason == "content_filter" or is_refusal(text):
             raise ContentRefused(text)
-        if not isinstance(text, str) or not text.strip():
-            raise AudioError("语音识别返回了空结果，请重试")
+        if reason != "stop":
+            raise AudioError("语音识别结果未确认完整结束，请重试")
+        if not valid_transcript(text) or not text:
+            raise AudioError("语音识别没有返回有效文本，请重试")
         text = fix_i(strip_tags(re.sub(r"\s+", " ", text).strip()))
         try:
-            write_json(cache_file, {"version": 1, "text": text})
+            write_json(cache_file, {"version": TRANSCRIPT_CACHE_VERSION, "text": text})
         except OSError:
             print("语音识别缓存保存失败，本次结果仍可使用")
         return text

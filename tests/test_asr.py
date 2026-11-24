@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
+import hashlib
+import json
 
 import numpy as np
 import pytest
@@ -51,6 +53,72 @@ def test_explicit_music_label_is_valid_cached_silence(pcm):
     assert asr.transcribe(pcm, 0, 1, client_instance=service) == ""
     assert asr.transcribe(pcm, 0, 1, client_instance=service) == ""
     assert service.chat.completions.create.call_count == 1
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"version":2,"text":"Original \\ud800"}',
+    b'{"version":2,"text":"   "}', b'{"version":true,"text":"wrong version"}',
+    b'{"version":1,"text":"old completion was not verified"}',
+    b'[]', b'{broken', b'\xff',
+    b'{"version":2,"text":' + b'[' * 10000 + b'0' + b']' * 10000 + b'}',
+    json.dumps({"version": 2, "text": "x" * (asr.MAX_TRANSCRIPT_CHARS + 1)}).encode(),
+    b' ' * (asr.MAX_TRANSCRIPT_CACHE_BYTES + 1),
+])
+def test_unusable_audio_cache_is_replaced_only_by_valid_new_result(pcm, raw):
+    service = client()
+    asr.transcribe(pcm, 0, 1, client_instance=service)
+    cache = next((A.CACHE_DIR / "asr").glob("*.json"))
+    cache.write_bytes(raw)
+    assert asr.transcribe(pcm, 0, 1, client_instance=service) == "I went to the bank."
+    assert service.chat.completions.create.call_count == 2
+    assert asr.cached_transcript(cache) == "I went to the bank."
+    assert asr.transcribe(pcm, 0, 1, client_instance=service) == "I went to the bank."
+    assert service.chat.completions.create.call_count == 2
+
+
+@pytest.mark.parametrize("reason", ["length", "tool_calls", "function_call", None, "unknown"])
+def test_unfinished_transcripts_are_not_cached_as_complete(pcm, reason):
+    service = client("This sentence was cut", reason)
+    with pytest.raises(asr.AudioError, match="完整结束"):
+        asr.transcribe(pcm, 0, 1, client_instance=service)
+    assert service.chat.completions.create.call_count == 1
+    assert not list((A.CACHE_DIR / "asr").glob("*.json"))
+
+
+@pytest.mark.parametrize("text", ["Original \ud800", "x" * (asr.MAX_TRANSCRIPT_CHARS + 1)])
+def test_invalid_new_transcript_cannot_poison_cache(pcm, text):
+    service = client(text)
+    with pytest.raises(asr.AudioError, match="有效文本"):
+        asr.transcribe(pcm, 0, 1, client_instance=service)
+    assert not list((A.CACHE_DIR / "asr").glob("*.json"))
+
+
+def test_old_cache_key_is_preserved_but_not_reused_for_unverified_completion(pcm):
+    service = client("A complete new transcript.")
+    raw = asr.wav_bytes(pcm)
+    digest = hashlib.sha256(json.dumps([1, "test", "auto", ""]).encode() + raw).hexdigest()
+    old = A.CACHE_DIR / "asr" / f"{digest}.json"
+    old.parent.mkdir(parents=True)
+    original = b'{"version":1,"text":"A cut sentence"}'
+    old.write_bytes(original)
+    assert asr.transcribe(pcm, 0, 1, client_instance=service, model="test") == "A complete new transcript."
+    assert old.read_bytes() == original and len(list(old.parent.glob("*.json"))) == 2
+    assert service.chat.completions.create.call_count == 1
+
+
+def test_truncated_recognition_keeps_job_partial_and_never_emits_done(pcm, tmp_path):
+    job = S.Job("yt_abcdefghijk_asr", save_dir=tmp_path, asr_url="https://www.youtube.com/watch?v=abcdefghijk")
+    job.title, job.duration = "Original transcript fixture", 1
+    job.seg = SimpleNamespace(view=lambda: pcm)
+    job.pieces, job.texts, job.has_text = [(0, 1)], [""], [False]
+    job.cues = [{"s": 0, "e": 1, "text": ""}]
+    job.asr_client = client("This transcript was cut", "length")
+    S.run_asr(job, 0)
+    assert job.has_text == [True] and job.asr_stats["errors"] == 1
+    S.finalize(job)
+    assert job.state == "partial" and not any(kind == "done" for kind, _ in job.events)
+    assert json.loads((tmp_path / f"{job.vid}.json").read_text())["status"] == "partial"
+    assert job.asr_client.chat.completions.create.call_count == 1
 
 
 def test_audio_cache_disk_failure_does_not_repeat_request(pcm, monkeypatch):

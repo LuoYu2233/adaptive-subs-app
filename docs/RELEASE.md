@@ -1,4 +1,4 @@
-# 0.4.0-alpha.15 本地试用版
+# 0.4.0-alpha.16 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -29,6 +29,8 @@ alpha.13 改善控制台打开文件夹的操作，按系统请求文件管理�
 alpha.14 改进源码与 Windows 制包流程：只收集 Git 提交中的源码及插件，Windows 构建使用隔离临时目录、固定语音模型与重新生成的词频表。两类 ZIP 完整写入后才发布，同版本不同内容拒绝覆盖；Windows 包增加版本、提交、依赖版本和文件校验清单。Linux 上已验证合成二进制的打包边界，尚未构建或验收 Windows EXE；本次实际交付仍是源码包。
 
 alpha.15 改进设置页失败恢复：读取失败不会再允许无效保存，HTTP 错误和超时不会误报成功；保存与模型列表检查分别确认，检查失败可单独重试。保存响应丢失时提示重新读取，不自动重复保存。多个窗口通过编辑版本防止旧表单覆盖新设置；冲突时保留当前填写并要求重读，程序重启后旧表单也需重读。升级时刷新已打开的设置页。模型列表检查结果不代表实际生成能力或额度。
+
+alpha.16 防止异常用量字段触发重复生成或丢弃有效转写；用量不完整时不显示金额估算，语音时长估算有单独标记。语音缓存增加结构、编码和大小校验，截断或未确认正常结束的响应不会再缓存为成功。语音缓存升级为版本 2：旧文件保留，但主动重试未完成的语音任务会重新识别旧缓存对应的片段，可能产生新的语音用量；控制台会在旧任务上显示提示。已完成的视频仍可直接读取，不自动重新生成。
 
 ## 这一版的变化
 
@@ -62,8 +64,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.15-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.15-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.16-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.16-source.zip
 python tools/instance_check.py           # 临时数据目录，验证重复启动、崩溃恢复和退出
 python tools/runtime_check.py            # 模拟组件缺失，再加载真实本地组件验证修复
 ```

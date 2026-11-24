@@ -344,6 +344,7 @@ class Job:
                     "provider": self.provider, "model": self.model, "started": self.started,
                     "endpoint_id": self.endpoint_id, "asr_endpoint_id": self.asr_endpoint_id,
                     "asr_model": self.asr_model, "asr_language": self.asr_language,
+                    "asr_cache_version": ASR.TRANSCRIPT_CACHE_VERSION,
                     "asr_usage": ASR.usage_snapshot(self.asr_usage), "asr_stats": dict(self.asr_stats),
                     "done": self.finished, "total": self.total,
                     "cues": [dict(c) for c in getattr(self, "cues", [])],
@@ -1244,6 +1245,7 @@ def app_status(port: int) -> dict:
         running.append({"id": saved["id"], "title": p.get("title") or saved["id"],
                         "state": "interrupted" if saved["state"] in ("running", "cancelling") else saved["state"],
                         "done": p.get("done", 0), "total": p.get("total", 0), "asr": bool(p.get("asr_url")),
+                        "cache_update": bool(p.get("asr_url") and p.get("asr_cache_version") != ASR.TRANSCRIPT_CACHE_VERSION),
                         "feeding": False, "started": p.get("started", saved["updated"]), "persistence_error": False})
     running.sort(key=lambda x: -x["started"])
     profile_error, profile_recoverable = None, False

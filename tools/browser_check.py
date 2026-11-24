@@ -91,6 +91,11 @@ def main():
                     expect(page.locator("#videos")).to_contain_text("待恢复")
                     page.locator("[data-job='resume']").click()
                     expect(page.locator("#toast")).to_contain_text("API key")
+                    TaskStore(home / "tasks.sqlite3").save("yt_legacy00000_asr", "interrupted", {
+                        "title": "旧语音任务示例", "asr_url": "https://www.youtube.com/watch?v=legacy00000",
+                        "started": time.time(), "done": 0, "total": 1})
+                    page.reload()
+                    expect(page.locator("#videos")).to_contain_text("可能产生新的语音用量")
                     page.screenshot(path=str(output / "control-panel.png"), full_page=True)
 
                     folder_mode = "unavailable"
