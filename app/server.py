@@ -19,6 +19,7 @@ The OpenAI key stays on this machine (.env); the page never sees it.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -1119,34 +1120,51 @@ def extension_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "extension"
 
 
+@functools.lru_cache(maxsize=256)
+def recent_metadata(path: Path, stamp: tuple):
+    """Cache only validated metadata; the file identity and change times invalidate it."""
+    data = saved_result(path)
+    if data is None or data["video"]["id"] != path.stem:
+        return None
+    return {"id": path.stem, "title": (data["video"]["title"] or path.stem)[:2000]}
+
+
 def recent_videos(limit: int = 8) -> list:
-    """Videos finished before (Bilibili extension + player), newest first. Only the head of each file is read."""
-    out = []
+    """Completed video files only, newest first; unchanged files are not reparsed on every poll."""
+    if limit <= 0:
+        return []
+    candidates = []
     for folder, kind in ((EXT_DATA, "bili"), (DATA, "youtube")):
         if not folder.exists():
             continue
         for f in folder.glob("*.json"):
-            if f.name == "index.json":
+            if f.name == "index.json" or not EXT_ID_RE.fullmatch(f.stem):
                 continue
             try:
-                with f.open(encoding="utf-8") as stream:
-                    head = stream.read(600)
-                modified = f.stat().st_mtime
-                m = re.search(r'"title":"((?:[^"\\]|\\.)*)"', head) or re.search(r'"title":\s*"((?:[^"\\]|\\.)*)"', head)
-                if not m or '"video"' not in head:      # not a processed video (word lists, test bank ...)
+                f.resolve().relative_to(folder.resolve())
+                if not f.is_file():
                     continue
-                title = json.loads(f'"{m.group(1)}"')
+                stat = f.stat()
+                if stat.st_size > 32 * 1024 * 1024:
+                    continue
+                stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                candidates.append((stat.st_mtime, str(f), f, stamp, kind))
             except (OSError, ValueError):
                 continue
-            vid = f.stem
-            bv = re.match(r"bili_(BV[0-9A-Za-z]{10})", vid)
-            yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
-            url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
-                   f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or kind == "youtube" else "")
-            out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
-                        "mtime": modified})
-    out.sort(key=lambda x: -x["mtime"])
-    return out[:limit]
+    out = []
+    for modified, _, path, stamp, kind in sorted(candidates, key=lambda row: (-row[0], row[1])):
+        metadata = recent_metadata(path, stamp)
+        if metadata is None:
+            continue
+        vid = metadata["id"]
+        bv = re.match(r"bili_(BV[0-9A-Za-z]{10})(?:_|$)", vid)
+        yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
+        url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
+               f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or (kind == "youtube" and YT_ID_RE.fullmatch(vid)) else "")
+        out.append({**metadata, "url": url, "asr": vid.endswith("_asr"), "mtime": modified})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def app_status(port: int) -> dict:

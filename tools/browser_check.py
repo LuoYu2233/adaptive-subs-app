@@ -30,6 +30,16 @@ def main():
         home = Path(temp)
         damaged_tasks = b"damaged original task database"
         (home / "tasks.sqlite3").write_bytes(damaged_tasks)
+        recent_folder = home / "data"
+        recent_folder.mkdir()
+        recent_fixtures = []
+        for ident, title, state in (("badbadbad00", "\ud800", "complete"),
+                                  ("partial0000", "不应作为完成记录显示", "partial"),
+                                  ("complete000", "最近视频的原创长标题" * 100, "complete")):
+            path = recent_folder / f"{ident}.json"
+            path.write_text(json.dumps({"video": {"id": ident, "title": title, "duration": 1}, "status": state,
+                "cues": [{"s": 0, "e": 1, "text": "Original status sample.", "notes": []}]}))
+            recent_fixtures.append(path)
         env = {k: v for k, v in os.environ.items() if k not in (
             "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")}
         env.update(ASUBS_HOME=temp, ASUBS_NO_BROWSER="1", ASUBS_HEADLESS="1", ANNOTATION_PROVIDER="deepseek")
@@ -63,6 +73,9 @@ def main():
 
                     page.goto(base + "/app")
                     expect(page.locator("#taskIssue")).to_be_visible(timeout=20000)
+                    expect(page.locator("#videos")).to_contain_text("最近视频的原创长标题")
+                    expect(page.locator("#videos")).not_to_contain_text("不应作为完成记录显示")
+                    for path in recent_fixtures: path.unlink()
                     assert (home / "tasks.sqlite3").read_bytes() == damaged_tasks
                     page.screenshot(path=str(output / "task-recovery.png"), full_page=True)
                     page.once("dialog", lambda dialog: dialog.accept())

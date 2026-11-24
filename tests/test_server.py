@@ -95,6 +95,17 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+def test_status_remains_available_when_recent_video_title_is_invalid(http_server, monkeypatch):
+    monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
+    value = {"video": {"id": "abcdefghijk", "title": "\ud800", "duration": 1},
+        "cues": [{"s": 0, "e": 1, "text": "Original sample.", "notes": []}]}
+    raw = json.dumps(value).encode()
+    (S.DATA / "abcdefghijk.json").write_bytes(raw)
+    status, body = request(http_server, "GET", "/api/status", headers=H)
+    assert status == 200 and json.loads(body)["recent"] == []
+    assert (S.DATA / "abcdefghijk.json").read_bytes() == raw
+
+
 @pytest.mark.parametrize("path,policy", [
     ("/", "strict-origin-when-cross-origin"), ("/player.html?v=abcdefghijk", "strict-origin-when-cross-origin"),
     ("/profile", "no-referrer"), ("/setup", "no-referrer"), ("/api/health", "no-referrer"),
