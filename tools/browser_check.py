@@ -91,6 +91,87 @@ def main():
                     expect(page.locator("#videos")).to_contain_text("待恢复")
                     page.locator("[data-job='resume']").click()
                     expect(page.locator("#toast")).to_contain_text("API key")
+
+                    action_mode, action_calls, pending_actions = "error", [], []
+                    def action_response(route):
+                        action_calls.append(route.request.post_data_json)
+                        if action_mode == "error": return route.fulfill(status=500, json={})
+                        if action_mode == "wrong-id": return route.fulfill(json={"id": "unrelated00", "state": "running"})
+                        if action_mode == "invalid-state": return route.fulfill(json={"id": "abcdefghijk", "state": "unexpected"})
+                        if action_mode == "done": return route.fulfill(json={"id": "abcdefghijk", "state": "done"})
+                        pending_actions.append(route)
+                    page.route(base + "/api/jobs/resume", action_response)
+                    task_button = page.locator('[data-job="resume"][data-id="abcdefghijk"]')
+                    for action_mode in ("error", "wrong-id", "invalid-state"):
+                        before = len(action_calls)
+                        task_button.click()
+                        expect(page.locator("#toast")).to_contain_text("未确认操作结果")
+                        expect(task_button).to_be_enabled()
+                        expect(task_button).to_have_text("继续处理")
+                        assert len(action_calls) == before + 1
+                    action_mode = "done"
+                    task_button.click()
+                    expect(page.locator("#toast")).to_contain_text("任务已经完成")
+                    action_mode = "pending"
+                    task_button.click()
+                    before = len(action_calls)
+                    expect(task_button).to_be_disabled()
+                    page.wait_for_timeout(2200)  # At least one real status poll redraws this row.
+                    expect(task_button).to_be_disabled()
+                    expect(task_button).to_have_text("提交中…")
+                    task_button.dispatch_event("click")
+                    assert len(action_calls) == before  # Even a synthetic click cannot submit twice.
+                    pending_actions.pop().fulfill(json={"id": "abcdefghijk", "state": "running"})
+                    expect(page.locator("#toast")).to_contain_text("任务正在处理")
+                    expect(task_button).to_be_enabled()
+                    page.evaluate("""() => {
+                        window.originalActionTimeout = AbortSignal.timeout;
+                        AbortSignal.timeout = ms => originalActionTimeout(ms === 10000 ? 250 : ms);
+                    }""")
+                    task_button.click()
+                    before = len(action_calls)
+                    expect(page.locator("#toast")).to_contain_text("请求超时")
+                    expect(task_button).to_be_enabled()
+                    expect(task_button).to_have_text("继续处理")
+                    assert len(action_calls) == before
+                    page.evaluate("AbortSignal.timeout = window.originalActionTimeout; delete window.originalActionTimeout")
+                    for route in pending_actions: route.abort("failed")
+                    page.unroute(base + "/api/jobs/resume", action_response)
+
+                    held_status = []
+                    def hold_status(route): held_status.append(route)
+                    page.route(base + "/api/status", hold_status)
+                    page.wait_for_timeout(6500)  # Multiple intervals, but only one outstanding read.
+                    assert len(held_status) == 1
+                    held_status[0].fulfill(status=503, json={})
+                    expect(page.locator("#live span")).to_have_text("程序没有响应")
+                    page.unroute(base + "/api/status", hold_status)
+                    expect(page.locator("#live span")).not_to_have_text("程序没有响应", timeout=10000)
+
+                    def running_status(route):
+                        response = route.fetch()
+                        status = response.json()
+                        for job in status["jobs"]:
+                            if job["id"] == "abcdefghijk": job["state"] = "running"
+                        route.fulfill(response=response, json=status)
+                    cancel_state, cancel_calls = "running", []
+                    def cancel_response(route):
+                        cancel_calls.append(route.request.post_data_json)
+                        route.fulfill(json={"id": "abcdefghijk", "state": cancel_state})
+                    page.route(base + "/api/status", running_status)
+                    page.route(base + "/api/jobs/cancel", cancel_response)
+                    page.reload()
+                    cancel_button = page.locator('[data-job="cancel"][data-id="abcdefghijk"]')
+                    cancel_button.click()
+                    expect(page.locator("#toast")).to_contain_text("未确认操作结果")
+                    expect(cancel_button).to_be_enabled()
+                    cancel_state = "cancelling"
+                    cancel_button.click()
+                    expect(page.locator("#toast")).to_contain_text("正在停止，已经发出的请求会先完成")
+                    assert cancel_calls == [{"id": "abcdefghijk"}] * 2
+                    page.unroute(base + "/api/status", running_status)
+                    page.unroute(base + "/api/jobs/cancel", cancel_response)
+
                     TaskStore(home / "tasks.sqlite3").save("yt_legacy00000_asr", "interrupted", {
                         "title": "旧语音任务示例", "asr_url": "https://www.youtube.com/watch?v=legacy00000",
                         "started": time.time(), "done": 0, "total": 1})

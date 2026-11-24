@@ -407,7 +407,8 @@
   const ago = (s) => s < 60 ? "刚刚" : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let disconnected = false;
+  let disconnected = false, refreshing = false;
+  const pendingTasks = new Set();
 
   // ------------------------------------------------------------------ intro ---
   // film frame -> frosted board covers the Chinese caption -> English line types in -> 枯燥 pops above "boring"
@@ -596,8 +597,8 @@
       const pct = j.total ? Math.min(100, Math.round((100 * j.done) / j.total)) : 0;
       rows.push(`<div class="vid"><div class="vid-t" title="${esc(j.title)}">${esc(j.title)}${j.asr ? '<span class="badge">语音识别</span>' : ""}</div>
         <div class="vid-m">${j.persistence_error ? "进度未能保存" : j.state === "running" ? `${pct}%` : ({ error: "出错了", partial: "部分完成", cancelled: "已取消", cancelling: "正在停止", interrupted: "待恢复", done: "完成" }[j.state] || j.state)}
-          ${j.state === "running" ? `<button class="btn" data-job="cancel" data-id="${esc(j.id)}">取消</button>`
-            : ["error", "partial", "cancelled", "interrupted"].includes(j.state) ? `<button class="btn" data-job="resume" data-id="${esc(j.id)}">${j.asr ? "重试识别" : "继续处理"}</button>` : ""}</div>
+          ${j.state === "running" ? `<button class="btn" data-job="cancel" data-id="${esc(j.id)}" data-label="取消" ${pendingTasks.has(j.id) ? "disabled" : ""}>${pendingTasks.has(j.id) ? "提交中…" : "取消"}</button>`
+            : ["error", "partial", "cancelled", "interrupted"].includes(j.state) ? `<button class="btn" data-job="resume" data-id="${esc(j.id)}" data-label="${j.asr ? "重试识别" : "继续处理"}" ${pendingTasks.has(j.id) ? "disabled" : ""}>${pendingTasks.has(j.id) ? "提交中…" : j.asr ? "重试识别" : "继续处理"}</button>` : ""}</div>
         ${j.state === "running" ? `<div class="bar-p"><span style="width:${pct}%"></span></div>` : ""}
         ${j.cache_update ? '<p class="sub">旧版语音缓存无法确认结果完整性。重试会重新识别相关片段，可能产生新的语音用量。</p>' : ""}</div>`);
     }
@@ -618,27 +619,55 @@
   }
 
   async function refresh() {
-    if (disconnected) return;
+    if (disconnected || refreshing) return;
+    refreshing = true;
     try {
-      const r = await fetch("/api/status", { headers: H, cache: "no-store" });
+      const r = await fetch("/api/status", { headers: H, cache: "no-store", signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error("Status unavailable");
       const status = await r.json();
       if (!disconnected) render(status);
     } catch {
       if (disconnected) return;
       $("#live").className = "live down";
       $("#live span").textContent = "程序没有响应";
+    } finally { refreshing = false; }
+  }
+
+  async function changeTask(task) {
+    const id = task.dataset.id, action = task.dataset.job;
+    if (disconnected || pendingTasks.has(id) || !["cancel", "resume"].includes(action)) return;
+    pendingTasks.add(id);
+    task.disabled = true;
+    task.textContent = "提交中…";
+    try {
+      const response = await fetch(`/api/jobs/${action}`, { method: "POST", headers: H,
+        body: JSON.stringify({ id }), signal: AbortSignal.timeout(10000) });
+      const result = await response.json();
+      if (!response.ok || result?.error) throw new Error(typeof result?.error === "string" ? result.error : `本地程序返回错误（${response.status}）`);
+      const messages = { running: "任务正在处理", cancelling: "正在停止，已经发出的请求会先完成",
+        cancelled: "任务已停止", done: "任务已经完成", partial: "任务仍有未完成内容，请查看任务状态", error: "任务处理失败，请查看任务状态与日志" };
+      if (result?.id !== id || typeof result.state !== "string" || !Object.hasOwn(messages, result.state) || (action === "cancel" && result.state === "running")) {
+        throw new Error("本地程序没有返回匹配的操作结果");
+      }
+      if (!disconnected) toast(messages[result.state]);
+    } catch (error) {
+      const reason = ["TimeoutError", "AbortError"].includes(error.name) ? "请求超时"
+        : error instanceof SyntaxError ? "程序返回了无法读取的响应"
+        : error instanceof TypeError ? "连不上本地程序" : error.message || "连接失败";
+      if (!disconnected) toast(`未确认操作结果：${reason}。请核对任务状态；没有自动重试。`);
+    } finally {
+      pendingTasks.delete(id);
+      document.querySelectorAll("[data-job]").forEach(button => {
+        if (button.dataset.id === id) { button.disabled = false; button.textContent = button.dataset.label; }
+      });
+      if (!disconnected) await refresh();
     }
   }
 
   document.addEventListener("click", async (e) => {
     const task = e.target.closest("[data-job]");
     if (task) {
-      task.disabled = true;
-      const result = await fetch(`/api/jobs/${task.dataset.job}`, { method: "POST", headers: H,
-        body: JSON.stringify({ id: task.dataset.id }) }).then((r) => r.json()).catch(() => ({ error: "连不上程序" }));
-      toast(result.error || (task.dataset.job === "cancel" ? "正在停止，已经发出的请求会先完成" : "任务已恢复"));
-      task.disabled = false;
-      await refresh();
+      await changeTask(task);
     }
     const f = e.target.closest("[data-folder]");
     if (f) {
