@@ -1,6 +1,5 @@
 "use strict";
-const LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000];
-const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom", cover: "on" };
+const { LEVELS, DEFAULTS } = AdaptiveSettings;
 const $ = (s) => document.querySelector(s);
 let cfg = { ...DEFAULTS };
 let prof = null;          // profile summary from the local program (null: program not running / old version)
@@ -37,15 +36,28 @@ function renderProfile() {
   $("#openProfile").textContent = prof.setup ? "英语画像 ›" : "建立英语画像（约 3 分钟）";
 }
 
-function save() {
-  chrome.storage.local.set({ settings: cfg });
+let settingsWrite = 0;
+function save(onStored) {
+  const request = ++settingsWrite;
+  chrome.storage.local.set({ settings: cfg }, () => {
+    const failed = chrome.runtime.lastError;
+    if (request !== settingsWrite) return;
+    $("#settingsIssue").hidden = !failed;
+    if (failed) $("#settingsIssue").textContent = "显示设置未能保存，当前修改仅在本次弹窗中生效。可以重新选择设置后重试。";
+    if (onStored) onStored(!failed);
+  });
   render();
 }
 
 // (The cover board is off by default for every UP 主 / channel — P on the video or the row
 // below turns it on — so there is no list of UP 主s it was closed for any more.)
 chrome.storage.local.get(["settings"], (r) => {
-  cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
+  const failed = chrome.runtime.lastError;
+  const checked = AdaptiveSettings.inspect(r?.settings);
+  cfg = checked.settings;
+  $("#settingsIssue").hidden = !failed && !checked.invalid;
+  $("#settingsIssue").textContent = failed ? "显示设置暂时无法读取，当前使用默认显示；已有画像和标记不变。"
+    : "部分显示设置无效，当前使用对应默认值；原始存储尚未修改，已有画像和标记不变。";
   render();
 });
 
@@ -57,8 +69,13 @@ $("#level").addEventListener("input", (e) => {
 });
 $("#level").addEventListener("change", () => {
   cfg.level = draftLevel ?? LEVELS[+$("#level").value];
+  if (!prof) {
+    $("#saveStatus").textContent = "正在保存浏览器设置…";
+    save(ok => { $("#saveStatus").textContent = ok ? "已保存在此浏览器；本机画像尚未连接" : "浏览器设置未保存，请重试"; });
+    draftLevel = null;
+    return;
+  }
   save();
-  if (!prof) { draftLevel = null; $("#saveStatus").textContent = "已保存在此浏览器；本机画像尚未连接"; return; }
   const request = ++levelRequest;
   $("#saveStatus").textContent = "正在保存词汇量…";
   // Send on release/change, before the popup can close. The service worker owns ordering.

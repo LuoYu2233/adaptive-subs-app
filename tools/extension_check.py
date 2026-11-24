@@ -33,6 +33,7 @@ def check_extension(playwright, base, home, output):
         delay_lookup = False
         mismatched_version = False
         missing_runtime = False
+        offline = False
         pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
@@ -46,6 +47,8 @@ def check_extension(playwright, base, home, output):
             if url == "http://127.0.0.1:1/api/health":
                 return route.fulfill(json={"ok": True})
             if url.startswith(base + "/"):
+                if offline and url.endswith("/api/health"):
+                    return route.fulfill(status=503, json={})
                 if (mismatched_version or missing_runtime) and url.endswith("/api/health"):
                     version = "0.3.0" if mismatched_version else json.loads((extension / "manifest.json").read_text())["version_name"]
                     return route.fulfill(json={"ok": True, "app": "adaptive-subs", "version": version, "ext": 2,
@@ -104,6 +107,14 @@ def check_extension(playwright, base, home, output):
             gloss = page.locator(".asubs-gz")
             expect(gloss).to_have_text("银行", timeout=20000)
             expect(page.locator(".asubs-w")).to_have_text("bank")
+            # Storage changes after the content script loaded use the same validation.
+            worker.evaluate("() => chrome.storage.local.set({settings: {enabled: 'false', level: null, mode: 'unknown', pref: 'more'}})")
+            expect(gloss).to_have_text("银行")
+            assert worker.evaluate("() => chrome.storage.local.get('settings')")["settings"]["level"] is None
+            worker.evaluate("() => chrome.storage.local.set({settings: {enabled: true, mode: 'plain'}, profileRev: Date.now()})")
+            expect(gloss).to_have_count(0)
+            worker.evaluate("() => chrome.storage.local.set({settings: {enabled: true, mode: 'adaptive'}})")
+            expect(gloss).to_have_text("银行")
             # Delayed lookups for an earlier word must never alter a later card's mark key.
             delay_lookup = True
             page.locator('.asubs-t[data-w="approved"]').click()
@@ -153,6 +164,10 @@ def check_extension(playwright, base, home, output):
             assert not errors, errors
             page.close()
         popup = context.new_page()
+        popup_errors = []
+        popup.on("pageerror", lambda error: popup_errors.append(str(error)))
+        popup.on("console", lambda message: popup_errors.append(message.text)
+                 if message.type == "error" and "Error handling response" in message.text else None)
         popup.goto(worker.url.rsplit("/", 1)[0] + "/popup.html")
         expect(popup.locator("#levelValue")).to_contain_text("4,500")
         fail_profile = True
@@ -188,6 +203,47 @@ def check_extension(playwright, base, home, output):
         missing_runtime = False
         popup.reload()
         expect(popup.locator("#status")).not_to_contain_text("与插件版本不同")
+        before_profile = (home / "profile.json").read_bytes()
+        broken_settings = {"level": None, "enabled": "false", "mode": "unknown", "pref": "less"}
+        worker.evaluate("settings => chrome.storage.local.set({settings})", broken_settings)
+        offline = True
+        popup.reload()
+        expect(popup.locator("#status")).to_contain_text("程序没开", timeout=20000)
+        expect(popup.locator("#levelValue")).to_contain_text("3,000")
+        expect(popup.locator("#settingsIssue")).to_contain_text("原始存储尚未修改")
+        expect(popup.locator('[data-key="pref"] [data-v="less"]')).to_have_attribute("aria-checked", "true")
+        expect(popup.locator('[data-key="mode"] [data-v="adaptive"]')).to_have_attribute("aria-checked", "true")
+        assert worker.evaluate("() => chrome.storage.local.get('settings')")["settings"] == broken_settings
+        assert (home / "profile.json").read_bytes() == before_profile
+        popup.screenshot(path=str(output / "extension-settings-recovery.png"), full_page=True)
+        # Use an actual Chrome quota rejection in this isolated browser profile.
+        popup.evaluate("""() => {
+            const original = chrome.storage.local.set;
+            const quota = chrome.storage.local.QUOTA_BYTES;
+            if (!Number.isInteger(quota) || quota <= 0 || quota > 20 * 1024 * 1024) throw new Error('Unexpected test storage quota');
+            window.restorePreferenceWrites = () => { chrome.storage.local.set = original; };
+            chrome.storage.local.set = (_, callback) => original.call(chrome.storage.local,
+                {asubsQuotaFailureFixture: 'x'.repeat(quota + 1)}, callback);
+        }""")
+        popup.locator('[data-key="mode"] [data-v="bilingual"]').click()
+        expect(popup.locator("#settingsIssue")).to_contain_text("未能保存")
+        assert worker.evaluate("() => chrome.storage.local.get('settings')")["settings"] == broken_settings
+        assert worker.evaluate("() => chrome.storage.local.get('asubsQuotaFailureFixture')") == {}
+        popup.evaluate("restorePreferenceWrites(); delete window.restorePreferenceWrites")
+        popup.locator('[data-key="mode"] [data-v="plain"]').click()
+        expect(popup.locator("#settingsIssue")).to_be_hidden()
+        stored = worker.evaluate("() => chrome.storage.local.get('settings')")["settings"]
+        assert stored["mode"] == "plain" and stored["pref"] == "less" and stored["level"] == 3000
+        popup.locator("#level").focus()
+        popup.locator("#level").press("End")
+        expect(popup.locator("#saveStatus")).to_contain_text("已保存在此浏览器")
+        assert worker.evaluate("() => chrome.storage.local.get('settings')")["settings"]["level"] == 15000
+        assert (home / "profile.json").read_bytes() == before_profile
+        assert not popup_errors, popup_errors
+        offline = False
+        worker.evaluate("() => chrome.storage.local.set({settings: {}})")
+        popup.reload()
+        expect(popup.locator("#levelValue")).to_contain_text("5,000")
         popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)
         (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2))
         print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and separate meaning feedback.")

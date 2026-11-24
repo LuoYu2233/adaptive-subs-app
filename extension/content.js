@@ -12,13 +12,12 @@
   if (window.__adaptiveSubs) return;
   window.__adaptiveSubs = true;
 
-  const LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000];
   const PREFS = {
     more: { factor: 0.7, perLine: 4, repeat: 3 },
     normal: { factor: 1.0, perLine: 3, repeat: 2 },
     less: { factor: 1.3, perLine: 2, repeat: 1 },
   };
-  const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom", cover: "on" };
+  const DEFAULTS = AdaptiveSettings.DEFAULTS;
   const GAP_GRACE = 0.5;     // a line stays this long after it ends, then the box disappears
   // Bilibili request signature ("WBI"): fixed shuffle of the two keys published by /nav
   const MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28,
@@ -1052,8 +1051,7 @@
     keysHint = !!(r && r.asubsKeysHint);
     POS = (r && r.asubsPos) || {};
     COVER = (r && r.asubsCover) || {};
-    cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
-    if (!LEVELS.includes(cfg.level)) cfg.level = DEFAULTS.level;
+    cfg = AdaptiveSettings.normalize(r?.settings);
     defs = (r && r.asubsDefs) || {};
     computeVisible();
     loadProfile();
@@ -1074,11 +1072,11 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
+    if (changes.profileRev) loadProfile();      // Other settings may change in the same storage event.
     if (changes.asubsCover) { COVER = changes.asubsCover.newValue || {}; lastLayout = ""; }
     if (!changes.settings) return;
     const wasOn = cfg.enabled;
-    cfg = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
+    cfg = AdaptiveSettings.normalize(changes.settings.newValue);
     lastLayout = "";
     computeVisible();
     showPill();

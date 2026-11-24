@@ -1,4 +1,4 @@
-# 0.4.0-alpha.16 本地试用版
+# 0.4.0-alpha.17 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -32,6 +32,8 @@ alpha.15 改进设置页失败恢复：读取失败不会再允许无效保存�
 
 alpha.16 防止异常用量字段触发重复生成或丢弃有效转写；用量不完整时不显示金额估算，语音时长估算有单独标记。语音缓存增加结构、编码和大小校验，截断或未确认正常结束的响应不会再缓存为成功。语音缓存升级为版本 2：旧文件保留，但主动重试未完成的语音任务会重新识别旧缓存对应的片段，可能产生新的语音用量；控制台会在旧任务上显示提示。已完成的视频仍可直接读取，不自动重新生成。
 
+alpha.17 改善任务操作反馈：取消/恢复核对 HTTP、任务 ID 和状态，超时或异常响应不误报成功；等待期间跨轮询保持按钮禁用，状态读取不重叠积累。插件显示设置增加统一校验，坏配置不再令弹窗数值空白或影响字幕脚本；有效选项保留，无效项临时使用默认值并提示。读取不会覆盖原存储，主动保存失败会显示原因；本机画像和学习标记不受显示设置恢复影响。
+
 ## 这一版的变化
 
 - 不同语境的同词异义分别学习；播放器和插件共享筛选、重复提示与标记保存规则。
@@ -64,8 +66,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.16-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.16-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.17-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.17-source.zip
 python tools/instance_check.py           # 临时数据目录，验证重复启动、崩溃恢复和退出
 python tools/runtime_check.py            # 模拟组件缺失，再加载真实本地组件验证修复
 ```
