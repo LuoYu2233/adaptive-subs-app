@@ -37,6 +37,21 @@ def request(httpd, method, path, body=None, headers=None):
 H = {"X-Adaptive-Subs": "1", "Content-Type": "application/json"}
 
 
+def test_invalid_profile_input_returns_400_without_erasing_marks(http_server, monkeypatch):
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
+    S.PROFILE.update({"identity": "undergrad", "exams": {"cet4": 560}})
+    S.PROFILE.mark("bank", "known")
+    before = S.PROFILE.path.read_bytes()
+    for payload in ({"reset_marks": "false"}, {"reset_marks": 1}, {"level": False}, {"exams": {"cet_4": 600}}):
+        status, raw = request(http_server, "POST", "/api/profile", json.dumps(payload), H)
+        assert status == 400 and json.loads(raw)["error"]
+        assert S.PROFILE.path.read_bytes() == before
+    assert request(http_server, "POST", "/api/profile", '{"reset_marks":false}', H)[0] == 200
+    assert S.PROFILE.load()["known"] == ["bank"]
+    assert request(http_server, "POST", "/api/profile", '{"reset_marks":true}', H)[0] == 200
+    assert S.PROFILE.load()["known"] == []
+
+
 @pytest.mark.parametrize("path", ["/api/open?url=abcdefghijk", "/api/focus?v=abcdefghijk&t=4", "/api/stream?v=abcdefghijk", "/api/status"])
 def test_api_requires_custom_header(http_server, path):
     assert request(http_server, "GET", path)[0] == 403

@@ -49,6 +49,16 @@ MAX_MARKS = 10000
 BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown", "mark_details"}
 
 
+def input_number(value, *, integer=False):
+    """Accept form numbers and numeric strings, without coercing booleans or fractions to integers."""
+    if type(value) not in (int, float, str):
+        raise ValueError("invalid number type")
+    number = float(value)
+    if not math.isfinite(number) or (integer and not number.is_integer()):
+        raise ValueError("invalid numeric value")
+    return int(number) if integer else number
+
+
 class ProfileConflict(ValueError):
     pass
 
@@ -327,6 +337,10 @@ class Store:
 
     def update(self, body: dict) -> str | None:
         """Profile fields from the setup page. Returns an error message or None."""
+        if not isinstance(body, dict) or set(body) - {"identity", "field", "exams", "level", "test", "reset_marks"}:
+            return "画像包含不支持的字段"
+        if "reset_marks" in body and type(body["reset_marks"]) is not bool:
+            return "重置标记必须明确使用 true 或 false"
         with self.lock:
             p = self.load()
             if "identity" in body:
@@ -337,16 +351,20 @@ class Store:
                     return "身份选项不对"
                 p["identity"] = ident or None
             if "field" in body:
-                p["field"] = str(body.get("field") or "").strip()[:40] or None
+                if body["field"] is not None and not isinstance(body["field"], str):
+                    return "专业或行业应为文字"
+                p["field"] = (body["field"] or "").strip()[:40] or None
             if "exams" in body:
                 exams = {}
                 if not isinstance(body["exams"], dict):
                     return "考试成绩格式不正确"
                 for k, v in (body.get("exams") or {}).items():
-                    if k not in EXAMS or v in (None, ""):
+                    if k not in EXAMS:
+                        return "考试成绩包含不支持的考试类型"
+                    if v in (None, ""):
                         continue
                     try:
-                        v = float(v)
+                        v = input_number(v)
                     except (TypeError, ValueError, OverflowError):
                         return f"{EXAMS[k][0]}的分数不是数字"
                     lo, hi = EXAMS[k][1], EXAMS[k][2]
@@ -356,24 +374,28 @@ class Store:
                 p["exams"] = exams
             if "level" in body:
                 try:
-                    p["level"] = min(LEVELS, key=lambda lv: abs(lv - int(body["level"])))
+                    level = input_number(body["level"], integer=True)
+                    if not 1 <= level <= 100000:
+                        raise ValueError
+                    p["level"] = min(LEVELS, key=lambda lv: abs(lv - level))
                 except (TypeError, ValueError, OverflowError):
-                    return "词汇量不是数字"
+                    return "词汇量应为 1 到 100000 之间的整数"
             if ("exams" in body or "identity" in body) and "level" not in body and not p.get("test"):
                 p.pop("level", None)      # no test yet: the level follows the exams / identity
             if "test" in body:
-                if not isinstance(body["test"], dict):
+                if not isinstance(body["test"], dict) or set(body["test"]) - {"est", "known", "unknown", "bands"}:
                     return "测试结果格式不正确"
                 t = body["test"]
                 try:
-                    est = int(t.get("est"))
+                    est = input_number(t.get("est"), integer=True)
                     if not 0 < est <= 100_000:
                         raise ValueError
                 except (TypeError, ValueError, OverflowError):
                     return "测试结果不完整"
                 for name in ("known", "unknown"):
                     xs = t.get(name, [])
-                    if not isinstance(xs, list) or len(xs) > 500 or any(not isinstance(x, str) for x in xs):
+                    if not isinstance(xs, list) or len(xs) > 500 or any(
+                            not isinstance(x, str) or not KEY_RE.fullmatch(x.lower()) for x in xs):
                         return "测试词表格式不正确"
                 clean = lambda xs: sorted({str(x).lower() for x in (xs or []) if KEY_RE.fullmatch(str(x).lower())})[:500]
                 if set(clean(t.get("known"))) & set(clean(t.get("unknown"))):
@@ -382,7 +404,7 @@ class Store:
                 if not isinstance(raw_bands, list) or len(raw_bands) > 20:
                     return "测试分段结果格式不正确"
                 try:
-                    bands = [round(float(b), 3) for b in raw_bands]
+                    bands = [round(input_number(b), 3) for b in raw_bands]
                     if any(not math.isfinite(b) or not 0 <= b <= 1 for b in bands):
                         raise ValueError
                 except (TypeError, ValueError, OverflowError):
@@ -390,14 +412,16 @@ class Store:
                 p["test"] = {"est": est, "date": time.strftime("%Y-%m-%d"), "bands": bands,
                              "known": clean(t.get("known")), "unknown": clean(t.get("unknown"))}
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
-            if body.get("reset_marks"):
+            if body.get("reset_marks") is True:
                 p["known"], p["unknown"] = [], []
                 p["mark_details"] = {}
             self._save(p)
             return None
 
     def mark(self, key: str, state: str, detail=None) -> str | None:
-        key = str(key or "").lower().strip()
+        if not isinstance(key, str):
+            return "bad mark"
+        key = key.lower().strip()
         if not (KEY_RE.fullmatch(key) or CONTEXT_KEY_RE.fullmatch(key)) or state not in ("known", "unknown", "clear"):
             return "bad mark"
         if detail is not None and (not isinstance(detail, dict) or any(
