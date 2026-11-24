@@ -14,6 +14,14 @@
   let P = null;          // server payload
   let identity = null;
   let recoveryFingerprint = null;
+  let profileReady = false, profileLoading = false;
+
+  function setProfileReady(ready) {
+    profileReady = ready;
+    for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = !ready;
+    for (const id of ["saveProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = !ready;
+    if (ready) $("#profileConnection").hidden = true;
+  }
 
   function validProfile(p) {
     const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -68,6 +76,7 @@
   });
 
   $("#saveProfile").addEventListener("click", async () => {
+    if (!profileReady) return;
     const msg = $("#msg1"), btn = $("#saveProfile");
     const exams = {};
     for (const [id] of EXAMS) { const v = $(`#ex-${id}`).value.trim(); if (v !== "") exams[id] = v; }
@@ -154,10 +163,14 @@
     $("#backupFile").value = "";
   }
   async function refreshProfile(value) {
+    if (!validProfile(value)) throw new Error("画像响应不完整，请重新读取核对");
     P = value; T = null;
+    setProfileReady(true);
     renderForm(); renderSummary(); await renderTest();
   }
   function showRecovery(error) {
+    setProfileReady(false);
+    $("#profileConnection").hidden = true;
     recoveryFingerprint = error.details.fingerprint;
     $("#recoveryPanel").hidden = false;
     $("#recoveryMessage").textContent = error.message;
@@ -169,6 +182,7 @@
     const button = $("#rebuildProfile"); button.disabled = true;
     try {
       const result = await api("/api/profile/recover", { fingerprint: recoveryFingerprint });
+      if (!validProfile(result.profile) || typeof result.backup_path !== "string") throw new Error("恢复响应不完整，请刷新后核对原始备份及画像");
       recoveryFingerprint = null; $("#recoveryPanel").hidden = true;
       for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = false;
       for (const id of ["exportProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = false;
@@ -187,12 +201,12 @@
       dataMessage("备份已交给浏览器下载，请检查下载列表。");
     } catch (e) { dataMessage(e.message, true); }
   });
-  $("#chooseBackup").addEventListener("click", () => $("#backupFile").click());
+  $("#chooseBackup").addEventListener("click", () => { if (profileReady) $("#backupFile").click(); });
   $("#cancelRestore").addEventListener("click", cancelRestore);
   $("#backupFile").addEventListener("change", async () => {
     const file = $("#backupFile").files[0];
     cancelRestore();
-    if (!file) return;
+    if (!file || !profileReady) return;
     try {
       if (file.size > 5 * 1024 * 1024) throw new Error("备份超过 5 MB，请检查是否选对了文件");
       const backup = JSON.parse(await file.text());
@@ -205,7 +219,7 @@
     } catch (e) { dataMessage(e instanceof SyntaxError ? "文件不是有效的 JSON 备份" : e.message, true); }
   });
   $("#restoreProfile").addEventListener("click", async () => {
-    if (!pendingBackup) return;
+    if (!pendingBackup || !profileReady) return;
     const btn = $("#restoreProfile"); btn.disabled = true;
     try {
       const value = await api("/api/profile/import", { backup: pendingBackup, expected_rev: pendingRev });
@@ -215,7 +229,7 @@
     finally { btn.disabled = false; }
   });
   $("#clearProfile").addEventListener("click", async () => {
-    if (!P || !confirm("清除本机的身份、成绩、词汇测试和全部认识 / 不认识标记？仅能用你保存的备份恢复。")) return;
+    if (!profileReady || !P || !confirm("清除本机的身份、成绩、词汇测试和全部认识 / 不认识标记？仅能用你保存的备份恢复。")) return;
     const btn = $("#clearProfile"); btn.disabled = true;
     try {
       const value = await api("/api/profile/clear", { expected_rev: P.rev });
@@ -412,6 +426,7 @@
   }
 
   $("#test").addEventListener("click", async (e) => {
+    if (!profileReady) return;
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
@@ -503,16 +518,27 @@
   }
 
   // ------------------------------------------------------------------ boot ---
-  (async () => {
+  async function initializeProfile() {
+    if (profileLoading) return;
+    profileLoading = true;
+    setProfileReady(false);
+    $("#profileConnection").hidden = false;
+    $("#reloadProfile").disabled = true;
+    $("#profileConnectionMessage").className = "msg";
+    $("#profileConnectionMessage").textContent = "正在读取本机画像，请稍候…";
     try {
       P = await api("/api/profile");
+      setProfileReady(true);
+      renderForm(); renderSummary(); await renderTest();
     } catch (e) {
       if (e.details?.recoverable) { showRecovery(e); return; }
-      $("#msg1").className = "msg bad";
-      $("#msg1").textContent = e.details?.error || "连不上本地程序：请确认 Adaptive Subs 的窗口还开着，然后刷新本页";
+      $("#profileConnectionMessage").className = "msg bad";
+      $("#profileConnectionMessage").textContent = `暂时无法读取画像：${e.message}。现有记录未改动，请恢复后重新读取；画像备份仍可尝试下载。`;
+    } finally {
+      profileLoading = false;
+      $("#reloadProfile").disabled = false;
     }
-    renderForm();
-    renderSummary();
-    renderTest();
-  })();
+  }
+  $("#reloadProfile").addEventListener("click", initializeProfile);
+  initializeProfile();
 })();

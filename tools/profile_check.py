@@ -13,10 +13,20 @@ def check_profile(context, base, home, output):
     mode = "reject"
     fail_read = False
     export_override = None
+    read_mode = None
+    pending_reads, all_profile_posts = [], []
 
     def save_response(route):
-        if route.request.method != "POST": return route.continue_()
+        if route.request.method != "POST":
+            if read_mode == "component": return route.fulfill(status=503, json={"error": "测试英语词库暂不可用", "component": True})
+            if read_mode == "malformed": return route.fulfill(json={})
+            if read_mode == "null": return route.fulfill(body="null", content_type="application/json")
+            if read_mode == "pending":
+                pending_reads.append(route)
+                return
+            return route.continue_()
         body = route.request.post_data_json
+        all_profile_posts.append(body)
         if "test" not in body: return route.continue_()
         posts.append(body)
         if mode == "reject": return route.fulfill(status=507, json={"error": "测试磁盘不可写"})
@@ -57,8 +67,48 @@ def check_profile(context, base, home, output):
     page.route(base + "/api/profile", save_response)
     page.route(base + "/api/profile/export", export_response)
     try:
-        page.goto(base + "/profile")
         before = (home / "profile.json").read_bytes()
+        for read_mode in ("component", "malformed", "null"):
+            page.goto(base + "/profile")
+            expect(page.locator("#profileConnectionMessage")).to_contain_text("无法读取画像")
+            expect(page.locator("#saveProfile")).to_be_disabled()
+            expect(page.locator("#s1")).to_be_hidden()
+            expect(page.locator("#s3")).to_be_hidden()
+            expect(page.locator("#chooseBackup")).to_be_disabled()
+            expect(page.locator("#clearProfile")).to_be_disabled()
+            expect(page.locator("#recoveryPanel")).to_be_hidden()
+            page.locator("#saveProfile").dispatch_event("click")
+            assert (home / "profile.json").read_bytes() == before
+            assert not all_profile_posts
+        with page.expect_download() as download_info:
+            page.locator("#exportProfile").click()
+        backup_path = output / "profile-unavailable-backup.json"
+        download_info.value.save_as(backup_path)
+        assert json.loads(backup_path.read_text())["profile"] == original["profile"]
+        page.screenshot(path=str(output / "profile-load-failure.png"), full_page=True)
+        page.evaluate("""() => {
+            window.originalReadTimeout = AbortSignal.timeout;
+            AbortSignal.timeout = ms => originalReadTimeout(ms === 10000 ? 500 : ms);
+        }""")
+        read_mode = "pending"
+        page.locator("#reloadProfile").click()
+        expect(page.locator("#reloadProfile")).to_be_disabled()
+        expect(page.locator("#profileConnectionMessage")).to_contain_text("正在读取")
+        expect(page.locator("#profileConnectionMessage")).to_contain_text("请求超时")
+        expect(page.locator("#reloadProfile")).to_be_enabled()
+        assert (home / "profile.json").read_bytes() == before
+        page.evaluate("AbortSignal.timeout = window.originalReadTimeout; delete window.originalReadTimeout")
+        for route in pending_reads: route.abort("failed")
+        pending_reads.clear()
+        read_mode = None
+        page.locator("#reloadProfile").click()
+        expect(page.locator("#profileConnection")).to_be_hidden()
+        expect(page.locator("#saveProfile")).to_be_enabled()
+        expect(page.locator("#s1")).to_be_visible()
+        expect(page.locator("#field")).to_have_value(original["profile"].get("field") or "")
+        for key, value in original["profile"].get("exams", {}).items():
+            assert float(page.locator("#ex-" + key).input_value()) == value
+        assert not all_profile_posts and (home / "profile.json").read_bytes() == before
         complete_test()
         expect(page.locator("[data-test-save]")).to_contain_text("尚未确认保存")
         expect(page.locator("#test")).not_to_contain_text("结果已保存")
