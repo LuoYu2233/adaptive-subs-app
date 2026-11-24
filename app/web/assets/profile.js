@@ -13,11 +13,17 @@
                  ["kaoyan", "考研英语", 100, 1], ["ielts", "雅思", 9, 0.5], ["toefl", "托福", 120, 1]];
   let P = null;          // server payload
   let identity = null;
+  let recoveryFingerprint = null;
 
   async function api(path, body) {
     const r = await fetch(path, body ? { method: "POST", headers: H, body: JSON.stringify(body) } : { headers: H });
     const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-    if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+    if (!r.ok || j.error) {
+      const error = new Error(j.error || `HTTP ${r.status}`);
+      error.details = j;
+      if (j.recoverable) showRecovery(error);
+      throw error;
+    }
     return j;
   }
 
@@ -132,6 +138,26 @@
     P = value; T = null;
     renderForm(); renderSummary(); await renderTest();
   }
+  function showRecovery(error) {
+    recoveryFingerprint = error.details.fingerprint;
+    $("#recoveryPanel").hidden = false;
+    $("#recoveryMessage").textContent = error.message;
+    for (const id of ["s1", "s2", "s3", "s4", "summary"]) $("#" + id).hidden = true;
+    for (const id of ["exportProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = true;
+  }
+  $("#rebuildProfile").addEventListener("click", async () => {
+    if (!recoveryFingerprint || !confirm("先完整保留原始文件，再重建为空画像？重建后可以导入有效备份。")) return;
+    const button = $("#rebuildProfile"); button.disabled = true;
+    try {
+      const result = await api("/api/profile/recover", { fingerprint: recoveryFingerprint });
+      recoveryFingerprint = null; $("#recoveryPanel").hidden = true;
+      for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = false;
+      for (const id of ["exportProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = false;
+      await refreshProfile(result.profile);
+      dataMessage(`原始文件已保留在 ${result.backup_path}。画像已重建，可选择有效备份恢复。`);
+    } catch (error) { $("#recoveryMessage").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
   $("#exportProfile").addEventListener("click", async () => {
     try {
       const backup = await api("/api/profile/export");
@@ -403,8 +429,9 @@
     try {
       P = await api("/api/profile");
     } catch (e) {
+      if (e.details?.recoverable) { showRecovery(e); return; }
       $("#msg1").className = "msg bad";
-      $("#msg1").textContent = "连不上本地程序：请确认 Adaptive Subs 的窗口还开着，然后刷新本页";
+      $("#msg1").textContent = e.details?.error || "连不上本地程序：请确认 Adaptive Subs 的窗口还开着，然后刷新本页";
     }
     renderForm();
     renderSummary();

@@ -214,6 +214,23 @@ def main():
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
+                    damaged_profile = b'{"known":["preserve-original",'
+                    (home / "profile.json").write_bytes(damaged_profile)
+                    page.goto(base + "/app")
+                    expect(page.locator("#b3")).to_have_text("恢复画像")
+                    page.goto(base + "/profile")
+                    expect(page.locator("#recoveryPanel")).to_be_visible()
+                    assert (home / "profile.json").read_bytes() == damaged_profile
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    page.locator("#rebuildProfile").click()
+                    expect(page.locator("#dataMessage")).to_contain_text("原始文件已保留")
+                    assert next((home / "recovery").iterdir()).read_bytes() == damaged_profile
+                    page.locator("#backupFile").set_input_files(str(backup_path))
+                    expect(page.locator("#restorePreview")).to_be_visible()
+                    page.locator("#restoreProfile").click()
+                    expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
+
                     # Long transcripts keep unaffected DOM rows when mode/gloss state changes.
                     response = page.request.post(base + "/api/profile", data={"reset_marks": True}, headers={"X-Adaptive-Subs": "1"})
                     assert response.status == 200

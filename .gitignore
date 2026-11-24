@@ -6,6 +6,7 @@
 # your learner profile and word marks (personal)
 profile.json
 profile.tmp
+recovery/
 tasks.sqlite3*
 
 # local Python environment and caches

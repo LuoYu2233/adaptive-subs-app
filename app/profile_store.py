@@ -21,15 +21,17 @@ from __future__ import annotations
 import json
 import copy
 import datetime
+import hashlib
 import math
 import re
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
 import annotate as A
-from storage import write_json
+from storage import atomic_write_bytes, write_json
 
 EXAM_FILE = Path(__file__).parent / "data" / "exam_words.json"     # built by tools/make_exam_words.py (ECDICT)
 TAGS = ["zk", "gk", "cet4", "cet6", "ky", "ielts", "toefl", "gre"]
@@ -49,6 +51,12 @@ BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknow
 
 class ProfileConflict(ValueError):
     pass
+
+
+class ProfileCorrupt(ValueError):
+    def __init__(self, raw):
+        super().__init__("学习档案损坏或格式不兼容，原文件未改动；请在英语画像页保留副本后重建，再恢复有效备份")
+        self.fingerprint = hashlib.sha256(raw).hexdigest()
 
 
 def validate_backup(backup: dict) -> dict:
@@ -211,10 +219,39 @@ class Store:
 
     def load(self) -> dict:
         try:
-            p = json.loads(self.path.read_text(encoding="utf-8"))
-            return p if isinstance(p, dict) else {}
-        except (OSError, ValueError):
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
             return {}
+        try:
+            p = json.loads(raw.decode("utf-8"), parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+            json.dumps(p, ensure_ascii=False).encode("utf-8")
+            if not isinstance(p, dict) or type(p.get("rev", 0)) is not int or not 0 <= p.get("rev", 0) < 9007199254740991:
+                raise ValueError("invalid profile revision")
+            validate_backup({"format": "adaptive-subs-profile", "version": 1,
+                             "profile": {k: v for k, v in p.items() if k in BACKUP_FIELDS}})
+            return p
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            raise ProfileCorrupt(raw) from None
+
+    def recover(self, fingerprint: str) -> str:
+        """Preserve exactly the damaged bytes before explicitly rebuilding an empty profile."""
+        with self.lock:
+            try:
+                self.load()
+            except ProfileCorrupt as error:
+                if error.fingerprint != fingerprint:
+                    raise ProfileConflict("档案已变化，请刷新页面后重新确认") from None
+            else:
+                raise ProfileConflict("当前档案没有损坏，请刷新页面")
+            raw = self.path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != fingerprint:
+                raise ProfileConflict("档案已变化，请刷新页面后重新确认")
+            name = f"profile-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.corrupt"
+            backup = self.path.parent / "recovery" / name
+            atomic_write_bytes(backup, raw)
+            # Exceed ordinary revision counters so open clients accept the recovered profile.
+            self._save({"rev": int(time.time() * 1000)})
+            return str(backup)
 
     def _save(self, p: dict):
         p["rev"] = int(p.get("rev", 0)) + 1

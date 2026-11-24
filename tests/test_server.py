@@ -146,6 +146,22 @@ def test_oversized_numeric_focus_is_rejected(http_server):
     assert request(http_server, "POST", "/api/focus", json.dumps({"t": 10 ** 400}), H)[0] == 400
 
 
+def test_corrupt_profile_has_protected_non_destructive_recovery(http_server, monkeypatch):
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
+    raw = b'{"known":["saved-record",'
+    S.PROFILE.path.write_bytes(raw)
+    status, body = request(http_server, "GET", "/api/profile", headers=H)
+    assert status == 503 and json.loads(body)["recoverable"]
+    fingerprint = json.loads(body)["fingerprint"]
+    assert request(http_server, "POST", "/api/mark", '{"key":"bank","state":"known"}', H)[0] == 503
+    assert S.PROFILE.path.read_bytes() == raw
+    body = json.dumps({"fingerprint": fingerprint})
+    assert request(http_server, "POST", "/api/profile/recover", body)[0] == 403
+    assert request(http_server, "POST", "/api/profile/recover", body, H)[0] == 200
+    assert S.PROFILE.export_backup()["profile"] == {}
+    assert next((S.PROFILE.path.parent / "recovery").iterdir()).read_bytes() == raw
+
+
 def test_job_capacity_returns_actionable_http_error(http_server, monkeypatch):
     monkeypatch.setattr(S.P, "has_key", lambda: True)
     monkeypatch.setattr(S, "get_job", Mock(side_effect=S.JobBusy("请先完成或取消一个任务")))

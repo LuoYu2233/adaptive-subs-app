@@ -1122,14 +1122,20 @@ def app_status(port: int) -> dict:
                         "done": p.get("done", 0), "total": p.get("total", 0), "asr": bool(p.get("asr_url")),
                         "feeding": False, "started": p.get("started", saved["updated"]), "persistence_error": False})
     running.sort(key=lambda x: -x["started"])
-    prof = PROFILE.payload()
+    profile_error = None
+    try:
+        prof = PROFILE.payload()
+    except (PS.ProfileCorrupt, OSError) as error:
+        profile_error = str(error) if isinstance(error, PS.ProfileCorrupt) else "学习档案无法读取，请检查文件权限"
+        prof = {"setup": False, "level": 3000, "test": None, "lists": [],
+                "stats": {"known": 0, "marked_known": 0, "marked_unknown": 0}}
     return {
         "version": VERSION, "port": port, "uptime": int(time.time() - STARTED),
         "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
         "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
         "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
-                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"]},
+                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"], "error": profile_error},
         "jobs": running, "recent": recent_videos(),
         "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
     }
@@ -1194,6 +1200,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        try:
+            return self.get_request()
+        except PS.ProfileCorrupt as error:
+            return self.profile_problem(error)
+        except (OSError, sqlite3.Error):
+            return self.send_json({"error": "本地数据无法读取，请检查文件权限和磁盘状态"}, 503)
+
+    def profile_problem(self, error):
+        return self.send_json({"error": str(error), "recoverable": True, "fingerprint": error.fingerprint}, 503)
+
+    def get_request(self):
         if not self.local_only():
             return
         u = urlparse(self.path)
@@ -1290,6 +1307,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         try:
             return self.post_request()
+        except PS.ProfileCorrupt as error:
+            return self.profile_problem(error)
         except JobBusy as exc:
             return self.send_json({"error": str(exc), "retry": True}, 409)
         except SubtitleLimit as exc:
@@ -1303,13 +1322,21 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
                         "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume",
-                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear"):
+                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear", "/api/profile/recover"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/profile/recover":
+            if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
+                return self.send_json({"error": "请重新打开画像页并确认恢复"}, 400)
+            try:
+                backup_path = PROFILE.recover(body["fingerprint"])
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error)}, 409)
+            return self.send_json({"profile": PROFILE.payload(), "backup_path": backup_path})
         if path in ("/api/profile/import/preview", "/api/profile/import", "/api/profile/clear"):
             try:
                 if path.endswith("/preview"):

@@ -60,7 +60,7 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("name", [".env", "app/config.env", "app/profile.json", "app/logs/output.txt", "app/.cache/output.json"])
+@pytest.mark.parametrize("name", [".env", "app/config.env", "app/profile.json", "app/logs/output.txt", "app/.cache/output.json", "app/recovery/profile.corrupt"])
 def test_release_rejects_accidentally_tracked_private_data(name):
     with pytest.raises(ValueError):
         BUILD.selected(name)

@@ -30,7 +30,7 @@ def selected(name):
     if path.is_absolute() or ".." in path.parts:
         raise ValueError("Unsafe archive path")
     if name != ".env.example" and (path.name.endswith(".env") or path.name in {".env", "profile.json", "tasks.sqlite3"}
-                                  or any(p in {".cache", "logs", ".venv", "__pycache__", "models"} for p in path.parts)):
+                                  or any(p in {".cache", "logs", ".venv", "__pycache__", "models", "recovery"} for p in path.parts)):
         raise ValueError(f"Runtime or private file must not be tracked for release: {name}")
     return name in ROOT_FILES or (len(path.parts) == 1 and name.startswith("requirements") and name.endswith(".txt")) or path.parts[0] in FOLDERS
 

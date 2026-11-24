@@ -500,6 +500,10 @@
         <div class="line">${gl("", "Annotating", "正在注释", " this video…")}</div>
         <div class="sub" id="jobTitle"></div>`, pct);
       $("#jobTitle").textContent = `${job.title}  ${pct}%`;
+    } else if (s.profile.error) {
+      stage("profileerror", `<div class="kicker"><i></i>画像需要恢复</div>
+        <div class="line">学习记录暂时无法读取</div><div class="sub">原文件没有改动。保留副本后可重建画像，再导入有效备份。</div>
+        <a class="btn primary" href="/profile?app=1">恢复画像</a>`, null);
     } else {
       stage("ready", `<div class="kicker"><i></i>一切就绪</div>
         <div class="line">${gl("", "Ready", "准备好了", " when you are.")}</div>
@@ -510,9 +514,9 @@
     const seen = s.ext_seen;
     status(2, seen != null ? "ok" : "idle", seen == null ? "还没连接过。装好后打开一个 B 站或 YouTube 视频，这里会变成已连接" : `已连接，最近一次联系是${ago(seen)}`);
     const p = s.profile;
-    status(3, p.setup ? "ok" : "idle", p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
-      : "还没建立。做个 3 分钟的词汇测试，注释会准很多");
-    $("#b3").textContent = p.setup ? "打开" : "开始";
+    status(3, p.error ? "warn" : p.setup ? "ok" : "idle", p.error || (p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
+      : "还没建立。做个 3 分钟的词汇测试，注释会准很多"));
+    $("#b3").textContent = p.error ? "恢复画像" : p.setup ? "打开" : "开始";
     $("#b3").className = p.setup ? "btn" : "btn primary";
     status(4, s.asr ? "ok" : "idle", (s.asr ? "小米 MiMo，没有英文字幕的视频也能用" : "没设置，只影响没有英文字幕的视频") +
       (s.local_asr ? "；接口拒绝的句子由本机模型补上" : ""));
@@ -539,7 +543,8 @@
           : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
       if (introDone || !first) growBars(first ? 400 : 60);
     }
-    showVocab($("#num"), p.level, "<small>词</small>");
+    if (p.error) $("#num").textContent = "需恢复";
+    else showVocab($("#num"), p.level, "<small>词</small>");
 
     // videos (redrawn only when they change)
     const rows = [];
