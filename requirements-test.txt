@@ -1,0 +1,4 @@
+# Offline regression tests do not need a model, API credentials or a desktop UI.
+pytest==9.2.0
+srt==3.5.3
+numpy==2.5.5

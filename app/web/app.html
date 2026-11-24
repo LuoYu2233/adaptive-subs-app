@@ -553,7 +553,7 @@
     for (const j of s.jobs) {
       const pct = j.total ? Math.min(100, Math.round((100 * j.done) / j.total)) : 0;
       rows.push(`<div class="vid"><div class="vid-t" title="${esc(j.title)}">${esc(j.title)}${j.asr ? '<span class="badge">语音识别</span>' : ""}</div>
-        <div class="vid-m">${j.state === "running" ? `${pct}%` : j.state === "error" ? "出错了" : "完成"}</div>
+        <div class="vid-m">${j.state === "running" ? `${pct}%` : ({ error: "出错了", partial: "部分完成", cancelled: "已取消", interrupted: "待恢复", done: "完成" }[j.state] || j.state)}</div>
         ${j.state === "running" ? `<div class="bar-p"><span style="width:${pct}%"></span></div>` : ""}</div>`);
     }
     const running = new Set(s.jobs.map((j) => j.id));

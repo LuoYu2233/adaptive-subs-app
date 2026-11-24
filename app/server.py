@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -40,6 +41,7 @@ import asr as ASR
 import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
+from storage import atomic_write, write_json
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
@@ -67,6 +69,18 @@ def client():
 
 def key_missing_msg() -> str:
     return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：在插件里点「打开设置」填写"
+
+
+def saved_result(path: Path) -> dict | None:
+    """Only complete, well-formed results may short-circuit a generation request."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (isinstance(data, dict) and data.get("status", "complete") == "complete"
+                and isinstance(data.get("video"), dict) and isinstance(data.get("cues"), list)):
+            return data
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 # ------------------------------------------------------------ subtitles ---
@@ -223,7 +237,7 @@ class Job:
         self.finished = 0
         self.ann: dict[int, list] = {}
         self.zh: dict[int, str] = {}
-        self.first: dict[tuple, dict] = {}    # (key, kind) -> first note, for consistent glosses
+        self.failed_tasks: list[dict] = []
         self.state = "running"
         self.started = time.time()
         self.first_ann_at = None
@@ -251,7 +265,7 @@ def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | Non
             asr_url: str | None = None) -> Job | None:
     with JOBS_LOCK:
         job = JOBS.get(vid)
-        if job and job.state == "error" and start:
+        if job and job.state in ("error", "partial", "cancelled") and start:
             job = None                         # retry a failed video
         if job is None and start:
             job = JOBS[vid] = Job(vid, sub, save_dir, asr_url)
@@ -372,15 +386,17 @@ def worker(job: Job):
                 run_annotation(job, t["ids"], "low" if urgent else "medium")
             else:
                 run_translation(job, t)
-        except Exception:
+        except Exception as exc:
             traceback.print_exc()
+            with job.cond:
+                job.failed_tasks.append({"kind": t["kind"], "ids": list(t["ids"]), "error": short_err(exc)})
         with job.cond:
             if t["kind"] == "asr":
                 job.asr_inflight -= 1
                 job.cond.notify_all()
             job.finished += 1
             done, total = job.finished, job.progress_total()
-        job.emit("progress", {"done": done, "total": total})
+        job.emit("progress", {"done": done, "total": total, "failed": len(job.failed_tasks)})
 
 
 # ---------------------------------------------------- speech recognition ---
@@ -708,12 +724,6 @@ def run_annotation(job: Job, ids: list[int], effort: str):
     A.blend_word_levels(chunk)
     with job.cond:
         for c in chunk:
-            for n in c["notes"]:
-                k = (n["key"], n["kind"])
-                if k in job.first:
-                    n["zh"], n["lv"] = job.first[k]["zh"], job.first[k]["lv"]
-                else:
-                    job.first[k] = n
             job.ann[c["i"]] = c["notes"]
         if job.first_ann_at is None:
             job.first_ann_at = time.time()
@@ -747,21 +757,29 @@ def run_translation(job: Job, t: dict):
                 job.total += 1
     if got:
         job.emit("zh", {str(i): z for i, z in got.items()})
+    if failed and t["retry"]:
+        raise A.ModelResponseError(f"{len(failed)} 行翻译未成功对齐，请重试")
 
 
 def finalize(job: Job):
+    missing_ann = [i for i, c in enumerate(job.cues) if c["text"] and i not in job.ann]
+    missing_zh = [i for i, c in enumerate(job.cues) if c["text"] and i not in job.zh]
+    incomplete = bool(missing_ann or missing_zh or job.failed_tasks or getattr(job, "audio_error", None)
+                      or job.asr_stats["errors"])
     cues = [{"s": c["s"], "e": c["e"], "text": c["text"], "zh": job.zh.get(i, ""), "notes": job.ann.get(i, [])}
             for i, c in enumerate(job.cues) if c["text"]]
     A.unify_glosses(cues)   # final pass in video order
-    data = {"video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
+    data = {"schema_version": 2, "status": "partial" if incomplete else "complete",
+            "missing": {"annotations": missing_ann, "translations": missing_zh},
+            "video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
             "generated": time.strftime("%Y-%m-%d"), "model": P.model(),
             "usage": {**job.usage, "total": A.usage_total(job.usage), **({"asr": job.asr_usage} if job.asr_usage else {})},
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
-    (job.save_dir / f"{job.vid}.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    if job.save_dir == DATA:      # YouTube videos appear in the player's list; extension videos don't
+    write_json(job.save_dir / f"{job.vid}.json", data)
+    if job.save_dir == DATA and not incomplete:
         A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
-    job.state = "done"
+    job.state = "partial" if incomplete else "done"
     secs = time.time() - job.started
     tot = A.usage_total(job.usage)
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
@@ -772,6 +790,10 @@ def finalize(job: Job):
         print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
               f"{sec / 60:.1f} min billed (about ¥{ASR.cost_cny(sec):.2f})")
     job.seg = None                 # free the audio samples
+    if incomplete:
+        job.emit("fail", {"msg": "部分字幕处理失败；已生成的内容已保存，重试会复用成功的缓存。",
+                          "retry": True, "partial": True, "missing": data["missing"]})
+        return
     job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"]})
 
 
@@ -793,7 +815,7 @@ def clean_ext_cues(raw) -> list[dict]:
             text = A.clean(str(c["text"]))
         except (KeyError, TypeError, ValueError):
             continue
-        if text and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):   # [Music]
+        if text and math.isfinite(s) and math.isfinite(e) and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):
             cues.append({"s": round(s, 3), "e": round(max(e, s + 0.3), 3), "text": text[:400]})
     cues.sort(key=lambda c: c["s"])
     return cues[:MAX_CUES]
@@ -847,7 +869,7 @@ def save_config(updates: dict):
             out.append(ln)
     out += [f"{k}={v}" for k, v in updates.items() if k not in seen and v]
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text("\n".join(out) + "\n", encoding="utf-8")
+    atomic_write(CONFIG, "\n".join(out) + "\n")
     for k, v in updates.items():
         if v:
             os.environ[k] = v
@@ -964,6 +986,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")   # always serve the latest player files
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
     def send_json(self, obj, code=200):
@@ -984,6 +1009,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
+        if u.path.startswith("/api/") and not self.ext_ok():
+            return
         if u.path == "/api/profile":
             if not self.ext_ok():
                 return
@@ -1009,24 +1036,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
             })
         if u.path == "/api/open":
-            vid = parse_video_id(q.get("url", ""))
-            if not vid:
-                return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
-            if (DATA / f"{vid}.json").exists():
-                return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
-            if not P.has_key():
-                return self.send_json({"error": key_missing_msg()}, 400)
-            get_job(vid, start=True)
-            return self.send_json({"id": vid, "cached": False})
+            return self.send_json({"error": "请更新播放器：开始处理需要 POST 请求"}, 405)
         if u.path == "/api/focus":
-            job = get_job(q.get("v", ""), start=False)
-            if job:
-                try:
-                    with job.cond:
-                        job.focus = max(0.0, float(q.get("t", 0)))
-                except ValueError:
-                    pass
-            return self.send_json({"ok": True})
+            return self.send_json({"error": "use POST"}, 405)
         if u.path == "/api/stream":
             job = get_job(q.get("v", ""), start=False)
             if not job:
@@ -1056,7 +1068,12 @@ class Handler(SimpleHTTPRequestHandler):
             LAST_EXT = time.time()
 
     def ext_ok(self) -> bool:
-        if self.headers.get(EXT_HEADER) == "1":
+        origin = self.headers.get("Origin")
+        # A fixed custom header prevents ordinary cross-site requests, but it is
+        # not an identity token. Explicit foreign/null origins are rejected too.
+        valid_origin = not origin or origin == f"http://{self.headers.get('Host')}" or bool(
+            re.fullmatch(r"chrome-extension://[a-p]{32}", origin))
+        if self.headers.get(EXT_HEADER) == "1" and valid_origin:
             self.note_extension()
             return True
         self.send_json({"error": "forbidden"}, 403)
@@ -1065,7 +1082,10 @@ class Handler(SimpleHTTPRequestHandler):
     def read_body(self):
         try:
             n = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(min(n, 8_000_000)).decode("utf-8"))
+            if not 0 < n <= 8_000_000 or self.headers.get_content_type() != "application/json":
+                return None
+            body = json.loads(self.rfile.read(n).decode("utf-8"),
+                              parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
             return body if isinstance(body, dict) else None
         except (ValueError, UnicodeDecodeError):
             return None
@@ -1075,13 +1095,35 @@ class Handler(SimpleHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
-                        "/api/open-folder", "/api/quit"):
+                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/open":
+            vid = parse_video_id(body.get("url", "") if isinstance(body.get("url"), str) else "")
+            if not vid:
+                return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
+            if saved_result(DATA / f"{vid}.json"):
+                return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
+            if not P.has_key():
+                return self.send_json({"error": key_missing_msg()}, 400)
+            get_job(vid, start=True)
+            return self.send_json({"id": vid, "cached": False})
+        if path == "/api/focus":
+            try:
+                focus = float(body.get("t", 0))
+                if not math.isfinite(focus):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return self.send_json({"error": "invalid playback time"}, 400)
+            job = get_job(str(body.get("v", "")), start=False)
+            if job:
+                with job.cond:
+                    job.focus = max(0.0, focus)
+            return self.send_json({"ok": True})
         if path == "/api/profile":
             if body.get("reset_marks"):
                 PROFILE.reset_marks()
@@ -1122,8 +1164,8 @@ class Handler(SimpleHTTPRequestHandler):
         if youtube and not saved.exists() and (EXT_DATA / f"yt_{vid}_asr.json").exists():
             vid = f"yt_{vid}_asr"
             saved = EXT_DATA / f"{vid}.json"
-        if saved.exists():          # done before: send the whole result at once
-            data = json.loads(saved.read_text(encoding="utf-8"))
+        data = saved_result(saved)
+        if data is not None:       # Partial/corrupt results must remain retryable.
             tags = tag_only_lines(data)
             if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there
                 for i in tags:

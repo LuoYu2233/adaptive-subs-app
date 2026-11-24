@@ -35,8 +35,10 @@ import threading
 import time
 
 import srt
+from storage import write_json
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).parent          # app/: data/ next to the code
 PROJECT = ROOT.parent                 # repository root: .env and the API cache when run from source
@@ -281,11 +283,45 @@ def usage_total(sink: dict) -> dict:
     return {k: sum(v.get(k, 0) for v in sink.values()) for k in USAGE_FIELDS}
 
 
+class ModelResponseError(RuntimeError):
+    """A generation failed; it must never be confused with an empty annotation."""
+
+
+def validate_response(data, system: str, payload) -> dict:
+    if not isinstance(data, dict):
+        raise ModelResponseError("模型返回格式错误：需要 JSON 对象")
+    if system in (ANNOTATE_PROMPT, GLOSS_PROMPT, TRANSLATE_PROMPT):
+        items = data.get("items")
+        if not isinstance(items, list) or any(not isinstance(it, dict) for it in items):
+            raise ModelResponseError("模型返回格式错误：缺少字幕结果列表")
+        expected = {it["id"] for it in payload}
+        seen = set()
+        for item in items:
+            i = item.get("id")
+            if type(i) is not int or i not in expected or i in seen:
+                raise ModelResponseError("模型返回了无效或重复的字幕编号")
+            seen.add(i)
+            if system == ANNOTATE_PROMPT:
+                notes = item.get("notes")
+                if not isinstance(notes, list) or any(
+                    not isinstance(n, dict) or not isinstance(n.get("span"), str)
+                    or not n["span"].strip() or not isinstance(n.get("zh"), str)
+                    or not n["zh"].strip() for n in notes
+                ):
+                    raise ModelResponseError("模型返回了不完整的词义注释")
+        if system == ANNOTATE_PROMPT and seen != expected:
+            raise ModelResponseError("模型遗漏了部分字幕，请重试")
+    return data
+
+
 def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None) -> dict:
     blob = json.dumps([model, effort, system, payload], ensure_ascii=False)
     cache_file = CACHE_DIR / f"{hashlib.sha256(blob.encode()).hexdigest()[:24]}.json"
     if cache_file.exists():
-        return json.loads(cache_file.read_text(encoding="utf-8"))   # cached: costs nothing
+        try:
+            return validate_response(json.loads(cache_file.read_text(encoding="utf-8")), system, payload)
+        except (OSError, ValueError, ModelResponseError):
+            pass  # Interrupted/obsolete cache: regenerate, and replace it atomically on success.
     label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss"}.get(system, "other")
     import providers
     extra = providers.chat_options(model, effort)    # GPT reasoning effort / DeepSeek & MiMo thinking switch
@@ -304,14 +340,14 @@ def call_json(client, model: str, effort: str, system: str, payload, usage: dict
             record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
             text = (resp.choices[0].message.content or "").strip()
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)  # some models wrap JSON in a code fence
-            data = json.loads(text)
-            CACHE_DIR.mkdir(exist_ok=True)
-            cache_file.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            data = validate_response(json.loads(text), system, payload)
+            write_json(cache_file, data)
             return data
         except Exception as e:  # malformed JSON or transient API error: retry once
             last_err = e
-    print(f"  ! batch failed: {last_err}", flush=True)
-    return {"items": []}
+            if getattr(e, "status_code", None) in (400, 401, 403, 404):
+                break  # Retrying an invalid key/model/request only wastes time.
+    raise ModelResponseError("模型请求失败，已生成的结果会保留，请检查连接或设置后重试") from last_err
 
 
 RUN_USAGE: dict = {}   # token usage of this command-line run
@@ -421,15 +457,14 @@ def translate_lines(texts, model, effort) -> dict[int, str]:
 
 
 def unify_glosses(cues: list[dict]) -> None:
-    """Same word + same kind -> same gloss everywhere (first one wins)."""
-    first: dict[tuple, dict] = {}
+    """Normalize individual glosses without overwriting context-dependent meanings.
+
+    A lemma (bank) and kind (word) do not identify a sense (银行 / 河岸).
+    Even equal gloss strings need not imply equal difficulty in different contexts.
+    """
     for c in cues:
         for n in c["notes"]:
-            k = (n["key"], n["kind"])
-            if k in first:
-                n["zh"], n["lv"] = first[k]["zh"], first[k]["lv"]
-            else:
-                first[k] = n
+            n["zh"] = clean_zh(n["zh"])
 
 
 def visible_notes(cues: list[dict], level: int, max_repeat: int = 2, per_line: int = 3) -> list[list[dict]]:

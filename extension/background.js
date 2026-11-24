@@ -99,7 +99,8 @@ async function handle(msg) {
       return await json(r);
     }
     if (msg.type === "focus") {
-      await fetch(`${s.base}/api/focus?v=${encodeURIComponent(msg.id)}&t=${Number(msg.t) || 0}`, { cache: "no-store" });
+      await fetch(`${s.base}/api/focus`, { method: "POST", headers: { ...HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ v: msg.id, t: Number(msg.t) || 0 }), cache: "no-store" });
       return { ok: true };
     }
   } catch {

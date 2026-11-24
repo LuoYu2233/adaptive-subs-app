@@ -549,7 +549,8 @@
     const jumped = lastFocusT >= 0 && Math.abs(t - lastFocusT) > 3;
     if (jumped || lastSentFocus < 0 || Math.abs(t - lastSentFocus) > 20) {
       lastSentFocus = t;
-      fetch(`api/focus?v=${encodeURIComponent(S.video.id)}&t=${t.toFixed(1)}`).catch(() => {});
+      fetch("api/focus", { method: "POST", headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ v: S.video.id, t }) }).catch(() => {});
     }
     lastFocusT = t;
   }
@@ -1011,7 +1012,8 @@
     if (saved) return loadSaved(saved);
     if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
     let r;
-    try { r = await (await fetch(`api/open?url=${encodeURIComponent(v)}`)).json(); }
+    try { r = await (await fetch("api/open", { method: "POST",
+      headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" }, body: JSON.stringify({ url: v }) })).json(); }
     catch { toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
     if (r.error) { toast(r.error); return; }
     if (r.cached) {
@@ -1032,7 +1034,7 @@
       queued = true;
       setTimeout(() => { queued = false; renderAll(false); }, 400);
     };
-    const src = new EventSource(`api/stream?v=${encodeURIComponent(id)}`);
+    const src = new AdaptiveEvents(id);
     es = src;
     const on = (type, fn) => src.addEventListener(type, (e) => { if (es === src) fn(JSON.parse(e.data)); });
     on("status", (d) => { S.statusMsg = d.msg; renderStage(); });
@@ -1067,7 +1069,7 @@
       toast(d.msg);
     });
     src.onerror = () => {   // EventSource retries on its own; give up only if the server is gone
-      if (es === src && src.readyState === EventSource.CLOSED) { es = null; toast("和本地服务器的连接断开了，请确认 Adaptive Subs 程序还开着"); }
+      if (es === src && src.readyState === 2) { es = null; toast("和本地服务器的连接断开了，请确认 Adaptive Subs 程序还开着"); }
     };
   }
 
