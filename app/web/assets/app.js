@@ -154,6 +154,7 @@
     if (ci < 0 || !S.cues[ci]) {
       line.className = "line";
       line.innerHTML = `<span class="placeholder">${esc(S.cues.length ? "▶ 播放视频，字幕会显示在这里" : S.statusMsg || "正在加载字幕…")}</span>`
+        + (!S.cues.length && !S.video && live ? ' <a class="btn btn-primary" href="demo">先体验示例</a>' : "")
         + (S.retryId && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">重试</button>` : "");
       const rb = $(".retry-btn", line);
       if (rb) rb.onclick = () => openVideo(S.retryId);

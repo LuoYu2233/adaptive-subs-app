@@ -70,6 +70,28 @@ def main():
                     expect(page.locator("#toast")).to_contain_text("API key")
                     page.screenshot(path=str(output / "control-panel.png"), full_page=True)
 
+                    calls = []
+                    on_request = lambda r: calls.append(r.url) if "/api/" in r.url else None
+                    page.on("request", on_request)
+                    page.goto(base + "/demo")
+                    expect(page.locator("#density")).to_contain_text("2 处提示")
+                    page.locator('[data-note="0"]').click()
+                    expect(page.locator("#meaningZh")).to_have_text("银行")
+                    page.locator("#known").click()
+                    expect(page.locator('[data-note="1"] .gloss')).to_have_text("河岸")
+                    page.locator("#unknown").click()
+                    page.locator("#level").focus()
+                    page.locator("#level").press("End")
+                    expect(page.locator('[data-note="0"] .gloss')).to_have_text("银行")
+                    expect(page.locator('[data-note="1"] .gloss')).to_have_count(0)
+                    page.get_by_text("中英对照", exact=True).click()
+                    expect(page.locator(".translation")).to_have_count(3)
+                    page.locator("#reset").click()
+                    expect(page.locator("#density")).to_contain_text("2 处提示")
+                    page.screenshot(path=str(output / "demo.png"), full_page=True)
+                    page.remove_listener("request", on_request)
+                    assert calls == [], f"Demo unexpectedly requested an API: {calls}"
+
                     page.goto(base + "/setup?app=1")
                     expect(page.locator("#key-deepseek")).to_be_visible()
                     page.locator("#save").click()
@@ -137,7 +159,7 @@ def main():
                     expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
                     page.set_viewport_size({"width": 390, "height": 844})
-                    for path in ("app", "setup", "profile"):
+                    for path in ("app", "setup", "profile", "demo"):
                         page.goto(base + "/" + path)
                         page.wait_for_load_state("networkidle")
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Overflow on {path}"
