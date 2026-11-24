@@ -161,6 +161,74 @@ def main():
                             row.locator("[data-act='book']").click()
                         assert response.value.status == 200
                     expect(page.locator("#bookCount")).to_have_text("2")
+                    # Wordbook backups are lossless, previewed and merged without changing profile marks.
+                    page.locator(".tabs [data-tab='book']").click()
+                    with page.expect_download() as download:
+                        page.locator('[data-act="backup-book"]').click()
+                    book_path = home / "wordbook-backup.json"
+                    download.value.save_as(book_path)
+                    book_backup = json.loads(book_path.read_text())
+                    assert book_backup["format"] == "adaptive-subs-wordbook"
+                    assert {item["zh"] for item in book_backup["entries"]} == {"银行", "河岸"}
+                    assert "😀" in book_backup["entries"][0]["sentence"]
+                    profile_before = (home / "profile.json").read_bytes()
+
+                    def fail_browser_storage():
+                        page.evaluate("""() => {
+                          window.originalSetItem = Storage.prototype.setItem;
+                          Storage.prototype.setItem = function(key, value) {
+                            if (key === 'adaptive-subs:v2') throw new DOMException('Test quota', 'QuotaExceededError');
+                            return window.originalSetItem.call(this, key, value);
+                          };
+                        }""")
+
+                    def restore_browser_storage():
+                        page.evaluate("() => { Storage.prototype.setItem = window.originalSetItem; }")
+
+                    fail_browser_storage()
+                    page.locator('[data-act="unbook"]').first.click()
+                    expect(page.locator("#toast")).to_contain_text("浏览器存储不可用")
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    restore_browser_storage()
+                    page.locator('[data-act="unbook"]').first.click()
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    fail_browser_storage()
+                    page.locator("#toast button").click()
+                    expect(page.locator("#toast")).to_be_visible()
+                    expect(page.locator("#toast")).to_contain_text("浏览器存储不可用")
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    restore_browser_storage()
+                    assert len(page.evaluate("JSON.parse(localStorage.getItem('adaptive-subs:v2')).book")) == 1
+                    page.locator("#bookBackupFile").set_input_files(str(book_path))
+                    expect(page.locator("#bookImportSummary")).to_contain_text("将新增 1 条")
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    page.locator("#bookImportCancel").click()
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    page.locator("#bookBackupFile").set_input_files(str(book_path))
+                    expect(page.locator("#bookImportDialog")).to_be_visible()
+                    fail_browser_storage()
+                    page.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookImportError")).to_contain_text("原有生词本未改变")
+                    expect(page.locator("#bookCount")).to_have_text("1")
+                    restore_browser_storage()
+                    page.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookImportDialog")).not_to_be_visible()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    page.locator("#bookBackupFile").set_input_files(str(book_path))
+                    expect(page.locator("#bookImportSummary")).to_contain_text("将新增 0 条")
+                    page.locator("#bookImportConfirm").click()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    invalid_book = home / "wordbook-invalid.json"
+                    invalid_book.write_text(json.dumps({**book_backup, "entries": [book_backup["entries"][0], {"key": "broken"}]}))
+                    page.locator("#bookBackupFile").set_input_files(str(invalid_book))
+                    expect(page.locator("#toast")).to_contain_text("无法读取生词本备份")
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    assert (home / "profile.json").read_bytes() == profile_before
+                    page.reload()
+                    expect(page.locator("#bookCount")).to_have_text("2")
+                    expect(page.locator("#tab-book .wrow")).to_have_count(2)
+                    page.screenshot(path=str(output / "wordbook-backup.png"), full_page=True)
+                    page.locator(".tabs [data-tab='preview']").click()
                     row = page.locator("#tab-preview .wrow").filter(has=page.get_by_text("银行", exact=True))
                     page.route("**/api/mark", lambda route: route.fulfill(status=507, content_type="application/json", body=json.dumps({"error": "测试保存失败"})))
                     row.locator("[data-act='know']").click()

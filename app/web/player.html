@@ -152,6 +152,19 @@
 </main>
 
 <!-- word card -->
+<input id="bookBackupFile" type="file" accept="application/json,.json" aria-label="选择生词本备份" hidden>
+<dialog class="modal" id="bookImportDialog" aria-labelledby="bookImportTitle">
+  <div class="modal-body">
+    <h2 id="bookImportTitle">恢复生词本</h2>
+    <p id="bookImportSummary"></p>
+    <p>将备份合并到这个浏览器的生词本。同一词义已有记录会保留，不会改变画像中的认识 / 不认识标记。</p>
+    <p id="bookImportError" role="alert"></p>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="bookImportConfirm" type="button">确认合并</button>
+      <button class="btn btn-ghost" id="bookImportCancel" type="button">取消</button>
+    </div>
+  </div>
+</dialog>
 <div class="word-card" id="wordCard" role="dialog" aria-label="单词" hidden></div>
 
 <!-- toast -->
@@ -185,6 +198,7 @@
 <script src="assets/api-events.js"></script>
 <script src="assets/learning.js"></script>
 <script src="assets/profile-sync.js"></script>
+<script src="assets/wordbook.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

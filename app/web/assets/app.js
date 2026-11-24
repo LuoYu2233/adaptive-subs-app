@@ -292,8 +292,9 @@
   // wordbook
   function renderBook() {
     const panel = $("#tab-book");
+    const tools = `<div class="panel-foot book-tools"><span>保存在这个浏览器中，请定期备份</span><button class="btn btn-ghost btn-sm" data-act="backup-book">备份 JSON</button><button class="btn btn-ghost btn-sm" data-act="import-book">恢复备份</button><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（Anki）</button></div>`;
     if (!S.book.length) {
-      panel.innerHTML = `<div class="empty"><div class="empty-title">生词本还是空的</div>点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存，之后可以一键回到原片段重听。</div>`;
+      panel.innerHTML = `<div class="empty"><div class="empty-title">生词本还是空的</div>点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存，之后可以一键回到原片段重听。</div>` + tools;
       return;
     }
     const items = S.book.map((b, i) => ({ b, i })).reverse();
@@ -309,7 +310,7 @@
           ${sameVideo ? `<button class="time-link" data-act="seekt" data-t="${b.t}">▶ 回到 ${fmtTime(b.t)} 重听</button>` : ""}
         </div>
       </div>`;
-    }).join("") + `<div class="panel-foot"><span>保存在这台设备的浏览器里</span><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（可导入 Anki）</button></div>`;
+    }).join("") + tools;
   }
 
   function markTerm(sentence, term) {
@@ -405,6 +406,7 @@
 
   function addToBook(entry) {
     if (bookKeys.has(entry.key)) return;
+    if (S.book.length >= AdaptiveWordbook.MAX_ENTRIES) { toast("生词本已满，请先备份并整理记录"); return; }
     S.book.push({ ...entry, vid: S.video.id, added: Date.now() });
     bookKeys = new Set(S.book.map((b) => b.key));
     if (!save()) {
@@ -424,16 +426,62 @@
     return { key, term: word, zh: "", kind: "word", lv: 0, sentence: c.text, t: c.s, hasNote: false };
   }
 
-  function exportCSV() {
-    const q = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
-    const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
-      S.book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
-    const blob = new Blob(["﻿" + rows.map((r) => r.map(q).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+  function saveBook(next) {
+    const previous = S.book;
+    S.book = next; bookKeys = new Set(next.map(b => b.key));
+    const ok = save();
+    if (!ok) { S.book = previous; bookKeys = new Set(previous.map(b => b.key)); }
+    renderAll(false);
+    return ok;
+  }
+  function downloadBook(contents, type, filename) {
+    const blob = new Blob([contents], { type });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "adaptive-subs-wordbook.csv";
+    a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  function exportCSV() {
+    const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
+      S.book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
+    downloadBook("\uFEFF" + rows.map(r => r.map(AdaptiveWordbook.csvCell).join(",")).join("\r\n"),
+      "text/csv;charset=utf-8", "adaptive-subs-wordbook.csv");
+  }
+  function exportBook() {
+    try {
+      const data = JSON.stringify(AdaptiveWordbook.backup(S.book), null, 2);
+      if (new Blob([data]).size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("备份超过 8 MB，请先分批整理记录");
+      downloadBook(data, "application/json;charset=utf-8", "adaptive-subs-wordbook.json");
+    } catch (e) { toast(`备份失败：${e.message}`); }
+  }
+  let pendingBookImport = null, bookImportSequence = 0;
+  async function previewBookImport(event) {
+    const file = event.target.files[0], sequence = ++bookImportSequence;
+    event.target.value = "";
+    pendingBookImport = null;
+    if (!file) return;
+    try {
+      if (file.size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("文件超过 8 MB");
+      const incoming = AdaptiveWordbook.parse(JSON.parse(await file.text()));
+      if (sequence !== bookImportSequence) return;
+      const merged = AdaptiveWordbook.merge(S.book, incoming), added = merged.length - S.book.length;
+      pendingBookImport = incoming;
+      $("#bookImportSummary").textContent = `备份含 ${incoming.length} 条记录，将新增 ${added} 条，保留 ${incoming.length - added} 条已有记录。`;
+      $("#bookImportError").textContent = "";
+      $("#bookImportDialog").showModal();
+    } catch (e) { if (sequence === bookImportSequence) toast(`无法读取生词本备份：${e.message}`); }
+  }
+  function importBook() {
+    if (!pendingBookImport) return;
+    try {
+      const merged = AdaptiveWordbook.merge(S.book, pendingBookImport), added = merged.length - S.book.length;
+      if (!saveBook(merged)) {
+        $("#bookImportError").textContent = "浏览器保存失败，原有生词本未改变。请检查存储空间后重试。";
+        return;
+      }
+      $("#bookImportDialog").close();
+      toast(`生词本已恢复，新增 ${added} 条记录`);
+    } catch (e) { $("#bookImportError").textContent = `恢复失败：${e.message}`; }
   }
 
   // --------------------------------------------------------------- toast ---
@@ -449,7 +497,10 @@
     hostFor(el);
     el.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button type="button">撤销</button>` : ""}`;
     el.hidden = false;
-    if (undo) $("button", el).onclick = () => { undo(); el.hidden = true; };
+    if (undo) $("button", el).onclick = async () => {
+      el.hidden = true; clearTimeout(toastTimer);
+      try { await undo(); } catch (e) { toast(`撤销失败：${e.message || "请重试"}`); }
+    };
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
   }
@@ -894,19 +945,28 @@
       closeCard(true);
     }
     else if (act === "unbook") {
-      const [removed] = S.book.splice(+b.dataset.i, 1);
-      bookKeys = new Set(S.book.map((x) => x.key));
-      save(); renderAll();
-      toast(`已从生词本删除：${removed.term}`, () => { S.book.push(removed); bookKeys = new Set(S.book.map((x) => x.key)); save(); renderAll(); });
+      const index = +b.dataset.i, removed = S.book[index];
+      if (!removed || !saveBook(S.book.filter((_, i) => i !== index))) return;
+      toast(`已从生词本删除：${removed.term}`, () => {
+        if (bookKeys.has(removed.key)) return;
+        const next = S.book.slice(); next.splice(Math.min(index, next.length), 0, removed);
+        saveBook(next);
+      });
     }
     else if (act === "replay") seekCue(+b.dataset.c);
     else if (act === "seek") seekCue(+b.dataset.c);
     else if (act === "seekt") seekTime(+b.dataset.t);
     else if (act === "export") exportCSV();
+    else if (act === "backup-book") exportBook();
+    else if (act === "import-book") $("#bookBackupFile").click();
     else if (act === "close") closeCard(true);
   }
 
   function bindUI() {
+    $("#bookBackupFile").addEventListener("change", previewBookImport);
+    $("#bookImportConfirm").addEventListener("click", importBook);
+    $("#bookImportCancel").addEventListener("click", () => $("#bookImportDialog").close());
+    $("#bookImportDialog").addEventListener("close", () => { pendingBookImport = null; });
     $("#density").addEventListener("click", async (e) => {
       const button = e.target.closest("[data-generation]");
       if (!button) return;
