@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import numpy as np
 import annotate as A
 from storage import write_json
+from usage_accounting import audio_seconds, audio_totals
 
 SR = 16000
 FRAME = 0.03                 # analysis frame, seconds
@@ -588,7 +589,7 @@ def reset_client():
 
 def usage_snapshot(usage: dict) -> dict:
     with _usage_lock:
-        return dict(usage)
+        return audio_totals(usage) if usage else {}
 
 
 def configured() -> bool:
@@ -647,10 +648,12 @@ def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
                     extra_body={"asr_options": {"language": language}},
                 )
         if usage is not None:
-            u = r.usage.model_dump() if getattr(r, "usage", None) else {}
+            seconds, estimated = audio_seconds(r, (b - a) / SR)
             with _usage_lock:
-                usage["asr_calls"] = usage.get("asr_calls", 0) + 1
-                usage["asr_seconds"] = usage.get("asr_seconds", 0) + (u.get("seconds") or (b - a) / SR)
+                previous = audio_totals(usage)
+                usage.update(asr_calls=previous["asr_calls"] + 1,
+                             asr_seconds=previous["asr_seconds"] + seconds,
+                             asr_estimated_calls=previous["asr_estimated_calls"] + int(estimated))
         choice = r.choices[0]
         text = choice.message.content
         if choice.finish_reason == "content_filter" or is_refusal(text):

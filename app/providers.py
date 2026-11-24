@@ -104,7 +104,9 @@ def chat_options(model_name: str, effort: str | None) -> dict:
 
 
 def cost_usd(provider: str, usage_total: dict, model_name: str | None = None, endpoint=None) -> float | None:
-    if ((model_name or model(provider)) != PROVIDERS[provider]["model"]
+    from usage_accounting import token_totals
+    usage_total = token_totals(usage_total)
+    if (usage_total["incomplete_calls"] or (model_name or model(provider)) != PROVIDERS[provider]["model"]
             or (endpoint or endpoint_id(base_url(provider))) != endpoint_id(default_base_url(provider))):
         return None  # Default-model prices must not be applied to a different model.
     pin, pcache, pout = PROVIDERS[provider]["price"]

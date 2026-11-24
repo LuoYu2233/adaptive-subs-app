@@ -1031,14 +1031,18 @@ def finalize(job: Job):
     tot = A.usage_total(job.usage)
     cost = P.cost_usd(job.provider, tot, job.model, job.endpoint_id)
     cost_label = f"≈ ${cost:.3f}（估算）" if cost is not None else "费用以服务商账单为准"
+    if tot["incomplete_calls"]:
+        cost_label = "用量记录不完整，费用以服务商账单为准"
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
           f"tokens: input {tot['input']:,} (cached {tot['cached_input']:,}), output {tot['output']:,} "
           f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} {cost_label}")
     if job.asr_usage:
-        sec = job.asr_usage.get("asr_seconds", 0)
-        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if job.asr_model == "mimo-v2.5-asr" and job.asr_endpoint_id == P.endpoint_id(P.default_base_url("mimo")) else ""
-        print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
-              f"{sec / 60:.1f} min billed{price_label}")
+        audio_usage = ASR.usage_snapshot(job.asr_usage)
+        sec = audio_usage["asr_seconds"]
+        estimated = audio_usage["asr_estimated_calls"] > 0
+        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if not estimated and job.asr_model == "mimo-v2.5-asr" and job.asr_endpoint_id == P.endpoint_id(P.default_base_url("mimo")) else ""
+        print(f"[{job.vid}] speech recognition: {audio_usage['asr_calls']} requests, "
+              f"{sec / 60:.1f} min recorded{price_label}" + ("（含本地音频时长估算，费用以账单为准）" if estimated else ""))
     job.seg = None                 # free the audio samples
     if incomplete:
         job.emit("fail", {"msg": "部分字幕处理失败；已生成的内容已保存，重试会复用成功的缓存。",

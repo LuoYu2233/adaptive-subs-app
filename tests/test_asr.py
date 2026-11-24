@@ -31,7 +31,7 @@ def test_audio_cache_reuses_only_identical_audio_and_model(pcm):
     assert asr.transcribe(pcm, 0, 1, **args) == "I went to the bank."
     assert asr.transcribe(pcm, 0, 1, **args) == "I went to the bank."
     assert service.chat.completions.create.call_count == 1
-    assert usage == {"asr_calls": 1, "asr_seconds": 1.0}
+    assert usage == {"asr_calls": 1, "asr_seconds": 1.0, "asr_estimated_calls": 1}
     asr.transcribe(pcm * 2, 0, 1, **args)
     asr.transcribe(pcm, 0, 1, **{**args, "model": "changed"})
     assert service.chat.completions.create.call_count == 3

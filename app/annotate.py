@@ -39,6 +39,7 @@ import time
 import srt
 from storage import atomic_write_bytes, write_json
 from result_validation import valid_result, utf8_json
+from usage_accounting import TOKEN_FIELDS as USAGE_FIELDS, token_record, token_totals
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -280,24 +281,16 @@ Reply with JSON only: {"items": [{"id": <line id>, "src": "first four words", "z
 
 
 _usage_lock = threading.Lock()
-USAGE_FIELDS = ("calls", "input", "cached_input", "output", "reasoning")
 
 
 def record_usage(resp, model: str, effort: str, label: str, sink: dict | None) -> None:
     """Token usage of one API call -> .cache/usage.jsonl, and summed into sink[label] if given.
     'output' includes 'reasoning' (gpt-5 models bill their hidden reasoning as output tokens)."""
-    u = getattr(resp, "usage", None)
-    if not u:
-        return
-    din, dout = getattr(u, "prompt_tokens_details", None), getattr(u, "completion_tokens_details", None)
-    cached = getattr(din, "cached_tokens", 0) or getattr(u, "prompt_cache_hit_tokens", 0) or 0   # DeepSeek: the latter
-    rec = {"calls": 1, "input": u.prompt_tokens or 0, "cached_input": cached,
-           "output": u.completion_tokens or 0, "reasoning": getattr(dout, "reasoning_tokens", 0) or 0}
+    rec = token_record(resp)
     with _usage_lock:
         if sink is not None:
-            acc = sink.setdefault(label, dict.fromkeys(USAGE_FIELDS, 0))
-            for k in USAGE_FIELDS:
-                acc[k] += rec[k]
+            acc = token_totals(sink.get(label, {}))
+            sink[label] = {k: acc[k] + rec[k] for k in USAGE_FIELDS}
         CACHE_DIR.mkdir(exist_ok=True)
         with open(CACHE_DIR / "usage.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": model, "effort": effort,
@@ -306,12 +299,13 @@ def record_usage(resp, model: str, effort: str, label: str, sink: dict | None) -
 
 def usage_total(sink: dict) -> dict:
     with _usage_lock:
-        return {k: sum(v.get(k, 0) for v in sink.values()) for k in USAGE_FIELDS}
+        records = [token_totals(v) for v in sink.values()]
+        return {k: sum(v[k] for v in records) for k in USAGE_FIELDS}
 
 
 def usage_snapshot(sink: dict) -> dict:
     with _usage_lock:
-        return {k: dict(v) for k, v in sink.items()}
+        return {k: token_totals(v) for k, v in sink.items()}
 
 
 class ModelResponseError(RuntimeError):
@@ -449,8 +443,15 @@ def _call_json(client, model, effort, system, payload, usage, cache_file, cancel
                 )
             try:
                 record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
-            except OSError:
-                print("用量日志写入失败；本次请求结果仍会保留")
+            except Exception:
+                if usage is not None:
+                    with _usage_lock:
+                        acc = token_totals(usage.get(label, {}))
+                        # The exception may have occurred before or after the counters
+                        # changed. Mark uncertainty without guessing another call count.
+                        acc["incomplete_calls"] = max(1, acc["incomplete_calls"])
+                        usage[label] = acc
+                print("用量记录失败；本次请求结果仍会保留，费用以服务商账单为准")
             text = (resp.choices[0].message.content or "").strip()
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)  # some models wrap JSON in a code fence
             data = validate_response(json.loads(text), system, payload)
@@ -765,6 +766,8 @@ def main():
         t = usage_total(RUN_USAGE)
         print(f"tokens: input {t['input']:,} (cached {t['cached_input']:,}), output {t['output']:,} "
               f"(of which reasoning {t['reasoning']:,}), {t['calls']} API calls")
+        if t["incomplete_calls"]:
+            print("部分请求未提供完整用量，以上不是完整账单。")
     print(f"wrote {out_json}")
 
 
