@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Adaptive Subs</title>
 <meta name="description" content="只给你不认识的词配中文的英语字幕：按词汇量实时调整，结合语境翻译。">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -56,6 +54,13 @@
 
 <main class="layout">
   <section class="main-col">
+    <div class="panel player-notice" id="playerNotice" role="status" hidden>
+      <p id="playerMessage"></p>
+      <div class="storage-actions">
+        <button class="btn btn-primary btn-sm" id="retryPlayer" type="button">重试播放</button>
+        <a class="btn btn-ghost btn-sm" id="openYouTube" target="_blank" rel="noopener">在 YouTube 打开 ↗</a>
+      </div>
+    </div>
     <div class="player-frame" id="playerFrame">
       <div id="yt"></div>
       <!-- subtitles are shown here (inside the video) unless "below the video" is chosen -->

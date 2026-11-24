@@ -95,6 +95,23 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+@pytest.mark.parametrize("path,policy", [
+    ("/", "strict-origin-when-cross-origin"), ("/player.html?v=abcdefghijk", "strict-origin-when-cross-origin"),
+    ("/profile", "no-referrer"), ("/setup", "no-referrer"), ("/api/health", "no-referrer"),
+])
+def test_referrer_policy_allows_only_player_origin_for_youtube(http_server, path, policy):
+    connection = http.client.HTTPConnection(*http_server.server_address, timeout=3)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        assert response.status == 200
+        assert response.getheader("Referrer-Policy") == policy
+        assert response.getheader("X-Frame-Options") == "DENY"
+        response.read()
+    finally:
+        connection.close()
+
+
 def test_task_corruption_keeps_status_and_profile_usable_and_recovery_is_protected(http_server, monkeypatch):
     monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
     raw = b"damaged task database"

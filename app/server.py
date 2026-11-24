@@ -1235,7 +1235,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")   # always serve the latest player files
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # YouTube requires a referring origin for embedded playback (player error 153).
+        player_page = STATIC_PAGES.get(urlparse(self.path).path) == "player.html"
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin" if player_page else "no-referrer")
         super().end_headers()
 
     def send_json(self, obj, code=200):

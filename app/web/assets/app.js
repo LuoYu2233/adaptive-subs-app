@@ -641,29 +641,74 @@
 
   // -------------------------------------------------------------- player ---
   let player = null, ready = false, pausedFor = -1;
+  let ytLoading = false, ytAttempt = 0, ytTimer = 0, ytScript = null;
+
+  function showPlayerNotice(message, retry = false) {
+    $("#playerNotice").hidden = !message;
+    $("#playerMessage").textContent = message;
+    $("#retryPlayer").hidden = !retry;
+    $("#openYouTube").hidden = !S.video;
+    if (S.video) $("#openYouTube").href = `https://www.youtube.com/watch?v=${encodeURIComponent(S.video.id)}`;
+  }
+  function playerFailed(attempt, message, retry = true) {
+    if (attempt !== ytAttempt) return;
+    ++ytAttempt;  // Late script / iframe callbacks cannot revive a failed attempt.
+    clearTimeout(ytTimer); ytLoading = false; ready = false;
+    showPlayerNotice(message + " 已有字幕仍可在下方查看。", retry);
+  }
 
   function loadYouTube() {
-    window.onYouTubeIframeAPIReady = () => {
-      player = new YT.Player("yt", {
-        videoId: S.video.id,
-        // fs: 0 hides YouTube's fullscreen button: it would fullscreen the bare video without our subtitles
-        playerVars: { cc_load_policy: 0, rel: 0, modestbranding: 1, playsinline: 1, fs: 0 },
-        events: {
-          // YouTube may switch its own captions on; keep only ours
-          onReady: (e) => {
-            ready = true;
-            e.target.unloadModule("captions");
-            // the viewer may have switched videos while the player was loading
-            if (S.video && e.target.getVideoData().video_id !== S.video.id) e.target.cueVideoById(S.video.id);
+    const attempt = ++ytAttempt;
+    ytLoading = true; ready = false; clearTimeout(ytTimer);
+    try { player?.destroy(); } catch { /* A failed iframe may no longer respond. */ }
+    player = null; ytScript?.remove(); ytScript = null;
+    $("#yt")?.remove();
+    const mount = document.createElement("div"); mount.id = "yt"; frame().prepend(mount);
+    showPlayerNotice("正在连接 YouTube 播放器，可以先查看已有字幕。");
+    ytTimer = setTimeout(() => playerFailed(attempt, "播放器连接超时，请检查网络后重试。"), 20000);
+    let created = false;
+    const create = () => {
+      if (attempt !== ytAttempt || created || !S.video) return;
+      created = true;
+      const active = () => attempt === ytAttempt;
+      const captionsOff = target => { try { target.unloadModule("captions"); } catch { /* Optional player module. */ } };
+      try {
+        player = new YT.Player("yt", {
+          videoId: S.video.id,
+          playerVars: { cc_load_policy: 0, rel: 0, playsinline: 1, fs: 0, origin: location.origin },
+          events: {
+            onReady: e => {
+              if (!active()) return;
+              player = e.target; ready = true; ytLoading = false; clearTimeout(ytTimer);
+              showPlayerNotice(""); captionsOff(e.target);
+              if (S.video && e.target.getVideoData().video_id !== S.video.id) e.target.cueVideoById(S.video.id);
+            },
+            onApiChange: e => { if (active()) captionsOff(e.target); },
+            onStateChange: e => {
+              if (active() && e.data === 1) { showPlayerNotice(""); captionsOff(e.target); }
+            },
+            onAutoplayBlocked: () => { if (active()) showPlayerNotice("浏览器暂停了自动播放，请点击视频内的播放按钮继续。"); },
+            onError: e => {
+              const messages = {
+                2: "视频地址无效，请选择另一个视频。", 5: "浏览器暂时无法播放这个视频，请重试或在 YouTube 打开。",
+                100: "视频已移除或设为私密，无法在这里播放。",
+                101: "视频作者不允许嵌入播放，请在 YouTube 打开。", 150: "视频作者不允许嵌入播放，请在 YouTube 打开。",
+                153: "YouTube 无法验证播放器来源，请刷新或在 YouTube 打开。",
+              };
+              playerFailed(attempt, messages[e.data] || "视频暂时无法播放，请检查网络或在 YouTube 打开。", ![2, 100, 101, 150].includes(e.data));
+            },
           },
-          onApiChange: (e) => e.target.unloadModule("captions"),
-          onStateChange: (e) => { if (e.data === YT.PlayerState.PLAYING) e.target.unloadModule("captions"); },
-        },
-      });
+        });
+      } catch { playerFailed(attempt, "播放器初始化失败，请重试。"); }
     };
-    const s = document.createElement("script");
-    s.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(s);
+    window.onYouTubeIframeAPIReady = create;
+    if (window.YT?.Player) create();
+    else {
+      ytScript = document.createElement("script");
+      ytScript.src = "https://www.youtube.com/iframe_api";
+      ytScript.onerror = () => playerFailed(attempt, "未能加载 YouTube 播放器，请检查网络后重试。");
+      document.head.appendChild(ytScript);
+    }
   }
 
   const isPlaying = () => !!(ready && player.getPlayerState && player.getPlayerState() === 1);
@@ -677,14 +722,14 @@
     return ans;
   }
 
-  let ytLoading = false;
   function ensurePlayer() {
     if (!S.video) return;
+    $("#openYouTube").href = `https://www.youtube.com/watch?v=${encodeURIComponent(S.video.id)}`;
     if (ready) {
-      if (player.getVideoData().video_id !== S.video.id) player.cueVideoById(S.video.id);
+      if (player.getVideoData().video_id !== S.video.id) { showPlayerNotice(""); player.cueVideoById(S.video.id); }
       return;
     }
-    if (!ytLoading) { ytLoading = true; loadYouTube(); }   // its onReady picks up S.video
+    if (!ytLoading) loadYouTube();   // its onReady picks up S.video
   }
 
   // while a video is generated live, tell the server where the viewer is, so it works there first
@@ -769,6 +814,8 @@
     hostFor($("#wordCard"));
     hostFor($("#toast"));
     const fs = isFs();
+    if (fs) frame().append($("#playerNotice"));
+    else frame().before($("#playerNotice"));
     $("#fsBtn span").textContent = fs ? "退出全屏" : "全屏";
     document.body.style.overflow = frame().classList.contains("pseudo-fs") ? "hidden" : "";
     placeSubs();
@@ -1036,6 +1083,7 @@
   }
 
   function bindUI() {
+    $("#retryPlayer").addEventListener("click", () => { if (S.video && !ytLoading) loadYouTube(); });
     $("#recoverStorage").addEventListener("click", recoverLocalStore);
     $("#downloadStorage").addEventListener("click", () => downloadStorageCopies(true));
     $("#downloadRecovery").addEventListener("click", () => downloadStorageCopies());
