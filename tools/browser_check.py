@@ -93,6 +93,47 @@ def main():
                     expect(page.locator("#toast")).to_contain_text("API key")
                     page.screenshot(path=str(output / "control-panel.png"), full_page=True)
 
+                    folder_mode = "unavailable"
+                    folder_path = str(home / "数据与学习 notes")
+                    def folder_response(route):
+                        if folder_mode == "success": return route.fulfill(json={"ok": True})
+                        if folder_mode == "bad": return route.fulfill(status=500, json={})
+                        return route.fulfill(status=501, json={"error": "当前没有桌面，可以复制路径后手动打开", "path": folder_path})
+                    page.route(base + "/api/open-folder", folder_response)
+                    page.locator('[data-folder="data"]').click()
+                    expect(page.locator("#folderDlg")).to_be_visible()
+                    expect(page.locator("#folderPath")).to_have_value(folder_path)
+                    context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+                    page.locator("#copyFolder").click()
+                    expect(page.locator("#folderMessage")).to_contain_text("路径已复制")
+                    assert page.evaluate("navigator.clipboard.readText()") == folder_path
+                    page.set_viewport_size({"width": 390, "height": 844})
+                    assert page.locator("#folderDlg").evaluate("element => element.getBoundingClientRect().left >= 0 && element.getBoundingClientRect().right <= innerWidth")
+                    page.screenshot(path=str(output / "folder-fallback-mobile.png"), animations="disabled")
+                    page.locator("#folderDlg [data-close]").click()
+                    page.set_viewport_size({"width": 1280, "height": 900})
+                    page.locator("#extHelp").click()
+                    page.locator('#extDlg [data-folder="extension"]').click()
+                    expect(page.locator("#folderDlg")).to_be_visible()
+                    page.evaluate("""() => {
+                        window.restoreClipboard = navigator.clipboard.writeText.bind(navigator.clipboard);
+                        navigator.clipboard.writeText = () => Promise.reject(new Error('Synthetic clipboard failure'));
+                    }""")
+                    page.locator("#copyFolder").click()
+                    expect(page.locator("#folderMessage")).to_contain_text("路径已选中")
+                    assert page.locator("#folderPath").evaluate("input => input.selectionStart === 0 && input.selectionEnd === input.value.length")
+                    page.evaluate("navigator.clipboard.writeText = window.restoreClipboard; delete window.restoreClipboard")
+                    page.locator("#folderDlg [data-close]").click()
+                    expect(page.locator("#extDlg")).to_be_visible()
+                    page.locator("#extDlg [data-close]").click()
+                    folder_mode = "success"
+                    page.locator('[data-folder="data"]').click()
+                    expect(page.locator("#toast")).to_contain_text("已请求系统打开文件夹")
+                    folder_mode = "bad"
+                    page.locator('[data-folder="data"]').click()
+                    expect(page.locator("#toast")).to_contain_text("系统未确认打开请求")
+                    page.unroute(base + "/api/open-folder")
+
                     # Never claim the process stopped when a quit request failed or it still responds.
                     quit_mode = "rejected"
                     quit_requests = []

@@ -95,6 +95,21 @@ def test_health_remains_public(http_server):
     assert status == 200 and json.loads(body)["ok"]
 
 
+def test_folder_open_is_protected_and_returns_a_copyable_path_when_unavailable(http_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "HOME", tmp_path / "new user folder")
+    open_folder = Mock(side_effect=S.FolderOpenError("当前没有桌面，可以复制路径后手动打开"))
+    monkeypatch.setattr(S, "open_folder", open_folder)
+    assert request(http_server, "POST", "/api/open-folder", '{"what":"data"}', {"Content-Type": "application/json"})[0] == 403
+    open_folder.assert_not_called()
+    assert request(http_server, "POST", "/api/open-folder", '{"what":"../outside"}', H)[0] == 400
+    status, raw = request(http_server, "POST", "/api/open-folder", '{"what":"data"}', H)
+    result = json.loads(raw)
+    assert status == 501 and "复制路径" in result["error"]
+    assert result["path"] == str(S.HOME / "data")
+    assert (S.HOME / "data").is_dir()
+    open_folder.assert_called_once_with(S.HOME / "data")
+
+
 def test_missing_word_library_preserves_profile_and_keeps_status_and_backup_available(http_server, monkeypatch):
     monkeypatch.setattr(S.LOCAL_ASR, "available", lambda: False)
     monkeypatch.setattr(S.PS, "base_known", Mock(side_effect=ImportError("synthetic missing wordfreq")))

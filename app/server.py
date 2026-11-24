@@ -47,6 +47,7 @@ import providers as P
 import video_catalog
 from instance_lock import InstanceLock, read_instance
 from runtime_readiness import Readiness, ComponentError
+from desktop_actions import open_folder, FolderOpenError
 from storage import atomic_write, write_json
 from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
 from version import VERSION
@@ -1542,14 +1543,20 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/explain":
             return self.explain(body)
         if path == "/api/open-folder":
-            folder = {"data": HOME / "data", "logs": applog.LOG_FILE.parent if applog.LOG_FILE else HOME,
-                      "extension": extension_dir()}.get(str(body.get("what")))
-            if not folder or not folder.exists():
-                return self.send_json({"error": "文件夹不存在"}, 404)
+            kind = str(body.get("what"))
+            folder = {"data": HOME / "data", "logs": applog.LOG_FILE.parent if applog.LOG_FILE else HOME / "logs",
+                      "extension": extension_dir()}.get(kind)
+            if folder is None:
+                return self.send_json({"error": "不支持这个文件夹"}, 400)
+            path = str(folder.absolute())
             try:
-                os.startfile(str(folder))          # Windows: open in File Explorer
-            except Exception as e:
-                return self.send_json({"error": short_err(e)}, 500)
+                if kind in ("data", "logs"):
+                    folder.mkdir(parents=True, exist_ok=True)
+                open_folder(folder)
+            except FolderOpenError as error:
+                return self.send_json({"error": str(error), "path": path}, 501)
+            except OSError:
+                return self.send_json({"error": "文件夹暂时无法打开，请检查路径和权限，或复制路径手动打开", "path": path}, 500)
             return self.send_json({"ok": True})
         if path == "/api/quit":
             print("  quit from the control panel")

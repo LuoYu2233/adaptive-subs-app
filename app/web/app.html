@@ -375,6 +375,17 @@
   </div>
 </dialog>
 
+<dialog id="folderDlg">
+  <h3>手动打开文件夹</h3>
+  <p id="folderMessage" role="status"></p>
+  <p><label for="folderPath">文件夹路径</label></p>
+  <input id="folderPath" readonly style="width:100%;box-sizing:border-box;padding:10px;font:13px var(--mono);border:1px solid var(--rule);border-radius:8px">
+  <div class="dlg-actions">
+    <button class="btn" type="button" id="copyFolder">复制路径</button>
+    <button class="btn primary" type="button" data-close>关闭</button>
+  </div>
+</dialog>
+
 <dialog id="quitDlg">
   <h3>退出 Adaptive Subs？</h3>
   <p>退出后浏览器插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
@@ -630,9 +641,19 @@
     }
     const f = e.target.closest("[data-folder]");
     if (f) {
-      const r = await fetch("/api/open-folder", { method: "POST", headers: H, body: JSON.stringify({ what: f.dataset.folder }) })
-        .then((x) => x.json()).catch(() => ({ error: "连不上程序" }));
-      toast(r.error ? `打不开：${r.error}` : "已在文件资源管理器中打开");
+      f.disabled = true;
+      const r = await fetch("/api/open-folder", { method: "POST", headers: H, body: JSON.stringify({ what: f.dataset.folder }), signal: AbortSignal.timeout(5000) })
+        .then(async response => {
+          const result = await response.json();
+          return response.ok && result.ok === true ? result : {error: result.error || "系统未确认打开请求，请稍后重试", path: result.path};
+        }).catch(() => ({ error: "未能确认打开结果，请稍后重试" }));
+      f.disabled = false;
+      if (disconnected) return;
+      if (r.error && typeof r.path === "string") {
+        $("#folderMessage").textContent = r.error;
+        $("#folderPath").value = r.path;
+        $("#folderDlg").showModal();
+      } else toast(r.error ? `打不开：${r.error}` : "已请求系统打开文件夹");
     }
     const c = e.target.closest("[data-close]");
     if (c) c.closest("dialog").close();
@@ -659,6 +680,15 @@
     finally { await refresh(); }
   };
   $("#extHelp").onclick = () => $("#extDlg").showModal();
+  $("#copyFolder").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("#folderPath").value);
+      $("#folderMessage").textContent = "路径已复制，可以在文件管理器中粘贴打开。";
+    } catch {
+      $("#folderPath").focus(); $("#folderPath").select();
+      $("#folderMessage").textContent = "自动复制未完成，路径已选中，请手动复制。";
+    }
+  };
   $("#copyUrl").onclick = async () => {
     try { await navigator.clipboard.writeText("chrome://extensions"); toast("已复制，粘贴到浏览器地址栏"); }
     catch { toast("复制失败，请手动输入 chrome://extensions"); }
