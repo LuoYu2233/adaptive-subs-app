@@ -1,4 +1,4 @@
-# 0.4.0-alpha.4 本地试用版
+# 0.4.0-alpha.5 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -7,6 +7,8 @@
 alpha.3 进一步修复画像文件损坏后可能被普通标记覆盖的问题，提供先保留原始文件再重建、导入备份的恢复流程。恢复副本位于用户目录 `recovery/`，完整备份或清理时请一并处理。
 
 alpha.4 隔离不同服务接口的模型缓存与断点，新增固定版本的本地语音模型安装校验，以及真实 CPU 识别检查工具。旧版未完成任务没有接口指纹，主动恢复时会重新生成注释和翻译，可能产生新的模型用量；已完成视频仍可直接读取。
+
+alpha.5 增加损坏任务库的控制台恢复入口，先保留副本再重建；首份进度无法保存时阻止生成开始。后台进度每秒合并保存一次，开始、取消和结束立即保存。异常断电可能丢失最近约一秒、尚未写入的进度；模型响应缓存仍独立保存，恢复时会尽量复用。
 
 ## 这一版的变化
 
@@ -40,7 +42,7 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.4-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.5-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。

@@ -157,3 +157,37 @@ def test_snapshot_store_handles_concurrent_writes_and_restart(tmp_path):
     assert len(reopened.recent()) == 12
     assert all(j["state"] == "interrupted" for j in reopened.recent())
     assert reopened.load("7")["payload"] == {"done": 7}
+
+
+def test_background_checkpoints_coalesce_and_force_preserves_latest_progress(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(S.time, "monotonic", lambda: clock[0])
+    save = Mock(wraps=S.TASK_STORE.save)
+    monkeypatch.setattr(S.TASK_STORE, "save", save)
+    job = S.Job("abcdefghijk")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(pool.map(lambda _: job.checkpoint(force=False), range(50)))
+    assert save.call_count == 1
+    job.finished = 50
+    job.checkpoint(force=False)
+    assert save.call_count == 1
+    clock[0] += S.CHECKPOINT_INTERVAL
+    job.checkpoint(force=False)
+    assert save.call_count == 2
+    job.finished = 51
+    job.checkpoint()  # Completion/cancellation explicitly flush even inside the interval.
+    assert save.call_count == 3
+    assert S.TASK_STORE.load(job.vid)["payload"]["done"] == 51
+
+
+def test_failed_background_checkpoints_back_off_but_forced_retry_is_immediate(monkeypatch):
+    monkeypatch.setattr(S.time, "monotonic", lambda: 100.0)
+    save = Mock(side_effect=OSError("disk full"))
+    monkeypatch.setattr(S.TASK_STORE, "save", save)
+    job = S.Job("abcdefghijk")
+    assert not job.checkpoint(force=False)
+    assert not job.checkpoint(force=False)
+    assert save.call_count == 1 and job.persistence_error
+    save.side_effect = None
+    assert job.checkpoint()
+    assert save.call_count == 2 and not job.persistence_error

@@ -64,6 +64,7 @@ SEG = 12               # lines per batch: small batches -> first annotations soo
 WORKERS = 12           # parallel LLM requests per video (spare capacity for jumps)
 URGENT_WINDOW = 90     # seconds ahead of the playhead handled with low effort (speed first)
 ASR_PER_JOB = 4        # speech-recognition requests in flight per video (the API also has a per-minute cap)
+CHECKPOINT_INTERVAL = 1.0  # seconds between background snapshots; explicit boundaries always flush
 NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
 CONFIG_LOCK = threading.RLock()
 
@@ -256,6 +257,7 @@ class Job:
         self._client = None
         self._client_lock = threading.Lock()
         self.checkpoint_lock = threading.Lock()
+        self.last_checkpoint_attempt = None
         self.persistence_error = False
         self.restored = None
         self.thread = None
@@ -271,8 +273,12 @@ class Job:
                 self._client = P.client(self.provider)
             return self._client
 
-    def checkpoint(self):
+    def checkpoint(self, *, force=True):
         with self.checkpoint_lock:
+            now = time.monotonic()
+            if not force and self.last_checkpoint_attempt is not None and now - self.last_checkpoint_attempt < CHECKPOINT_INTERVAL:
+                return not self.persistence_error
+            self.last_checkpoint_attempt = now
             with self.cond:
                 payload = {
                     "version": 1, "title": getattr(self, "title", "") or (self.sub or {}).get("title", self.vid),
@@ -554,7 +560,7 @@ def worker(job: Job):
             job.finished += 1
             done, total = job.finished, job.progress_total()
         job.emit("progress", {"done": done, "total": total, "failed": len(job.failed_tasks)})
-        job.checkpoint()
+        job.checkpoint(force=False)
 
 
 # ---------------------------------------------------- speech recognition ---
