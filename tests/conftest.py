@@ -16,6 +16,10 @@ def isolated_runtime(tmp_path, monkeypatch):
     for key in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "ANNOTATION_PROVIDER",
                 "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL"):
         monkeypatch.delenv(key, raising=False)
+    for key in ("OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "MIMO_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    server.ASR.reset_client()
     providers.reset_clients()
     yield
     providers.reset_clients()
+    server.ASR.reset_client()

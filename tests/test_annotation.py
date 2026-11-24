@@ -176,3 +176,13 @@ def test_explicit_skip_and_aligned_translation_are_valid():
     payload = [{"id": 0, "line": "The bank."}]
     assert A.validate_response({"items": [{"id": 0, "skip": True}]}, A.GLOSS_PROMPT, payload)
     assert A.validate_response({"items": [{"id": 0, "src": "The bank", "zh": "银行。"}]}, A.TRANSLATE_PROMPT, payload)
+
+
+def test_identical_model_names_on_different_services_do_not_share_cache():
+    expected = {"items": [{"id": 0, "notes": []}]}
+    a, b = fake_client(expected), fake_client(expected)
+    a.base_url, b.base_url = "https://first.example.invalid/v1", "https://second.example.invalid/v1"
+    for client in (a, a, b, b):
+        assert A.call_json(client, "same-model", "low", A.ANNOTATE_PROMPT, [{"id": 0}]) == expected
+    assert a.chat.completions.create.call_count == b.chat.completions.create.call_count == 1
+    assert len(list(A.CACHE_DIR.glob("*.json"))) == 2

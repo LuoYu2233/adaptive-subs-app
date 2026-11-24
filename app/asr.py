@@ -530,6 +530,7 @@ class RateLimiter:
 
 
 _client = None
+_client_config = None
 _client_lock = threading.Lock()
 _usage_lock = threading.Lock()
 _cache_locks = [threading.Lock() for _ in range(64)]
@@ -538,9 +539,10 @@ LIMIT = RateLimiter(float(os.environ.get("ASR_RPM", 90)))   # MiMo: 100 RPM per 
 
 
 def reset_client():
-    global _client
+    global _client, _client_config
     with _client_lock:
         _client = None
+        _client_config = None
 
 
 def usage_snapshot(usage: dict) -> dict:
@@ -553,13 +555,13 @@ def configured() -> bool:
 
 
 def client():
-    global _client
+    global _client, _client_config
     with _client_lock:
-        if _client is None:
+        config = (os.environ["MIMO_API_KEY"], os.environ.get("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1")
+        if _client is None or config != _client_config:
             from openai import OpenAI
-            _client = OpenAI(api_key=os.environ["MIMO_API_KEY"],
-                             base_url=os.environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-                             max_retries=0, timeout=40)
+            _client = OpenAI(api_key=config[0], base_url=config[1], max_retries=0, timeout=40)
+            _client_config = config
         return _client
 
 

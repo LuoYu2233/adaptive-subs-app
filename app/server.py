@@ -252,6 +252,7 @@ class Job:
         self.usage: dict = {}     # tokens per step (annotate / translate)
         self.provider = P.current()
         self.model = P.model(self.provider)
+        self.endpoint_id = P.endpoint_id(P.base_url(self.provider))
         self._client = None
         self._client_lock = threading.Lock()
         self.checkpoint_lock = threading.Lock()
@@ -262,6 +263,7 @@ class Job:
         self.asr_client = None
         self.asr_model = os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
         self.asr_language = os.environ.get("ASR_LANGUAGE", "auto")
+        self.asr_endpoint_id = P.endpoint_id(P.base_url("mimo"))
 
     def client(self):
         with self._client_lock:
@@ -277,6 +279,7 @@ class Job:
                     "sub": self.sub, "asr_url": self.asr_url,
                     "destination": "extension" if self.save_dir == EXT_DATA else "player",
                     "provider": self.provider, "model": self.model, "started": self.started,
+                    "endpoint_id": self.endpoint_id, "asr_endpoint_id": self.asr_endpoint_id,
                     "asr_model": self.asr_model, "asr_language": self.asr_language,
                     "asr_usage": ASR.usage_snapshot(self.asr_usage), "asr_stats": dict(self.asr_stats),
                     "done": self.finished, "total": self.total,
@@ -344,9 +347,9 @@ def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | Non
                     save_dir = EXT_DATA if old.get("destination") == "extension" else DATA
             job = Job(vid, sub, save_dir, asr_url)
             job.restored = old
-            if old and old.get("provider") == job.provider and old.get("model") == job.model:
+            if old and old.get("provider") == job.provider and old.get("model") == job.model and old.get("endpoint_id") == job.endpoint_id:
                 job.usage = old.get("usage", {})
-            if old and old.get("asr_model") == job.asr_model and old.get("asr_language") == job.asr_language:
+            if old and old.get("asr_model") == job.asr_model and old.get("asr_language") == job.asr_language and old.get("asr_endpoint_id") == job.asr_endpoint_id:
                 job.asr_usage = old.get("asr_usage", {})
             # Freeze the client while creating the job so settings changes cannot
             # replace the key/provider for a job already in progress.
@@ -425,7 +428,7 @@ def _run_job(job: Job):
             job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                               "source": sub["source"], "cues": job.cues})
             job.texts = [c["text"] for c in job.cues]
-            if old and old.get("provider") == job.provider and old.get("model") == job.model:
+            if old and old.get("provider") == job.provider and old.get("model") == job.model and old.get("endpoint_id") == job.endpoint_id:
                 old_texts = [c["text"] for c in old.get("cues", [])]
                 same = {i for i in range(min(len(old_texts), len(job.texts)))
                         if A.context_item(old_texts, i) == A.context_item(job.texts, i)}
@@ -942,14 +945,14 @@ def finalize(job: Job):
         job.state = "partial" if incomplete else "done"
     secs = time.time() - job.started
     tot = A.usage_total(job.usage)
-    cost = P.cost_usd(job.provider, tot, job.model)
+    cost = P.cost_usd(job.provider, tot, job.model, job.endpoint_id)
     cost_label = f"≈ ${cost:.3f}（估算）" if cost is not None else "费用以服务商账单为准"
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
           f"tokens: input {tot['input']:,} (cached {tot['cached_input']:,}), output {tot['output']:,} "
           f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} {cost_label}")
     if job.asr_usage:
         sec = job.asr_usage.get("asr_seconds", 0)
-        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if job.asr_model == "mimo-v2.5-asr" else ""
+        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if job.asr_model == "mimo-v2.5-asr" and job.asr_endpoint_id == P.endpoint_id(P.default_base_url("mimo")) else ""
         print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
               f"{sec / 60:.1f} min billed{price_label}")
     job.seg = None                 # free the audio samples

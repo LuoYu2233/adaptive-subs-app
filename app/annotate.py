@@ -386,7 +386,8 @@ def validate_level(value):
 
 def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None,
               cancelled=None) -> dict:
-    blob = json.dumps([model, effort, system, payload], ensure_ascii=False)
+    import providers
+    blob = json.dumps([2, providers.endpoint_id(getattr(client, "base_url", "")), model, effort, system, payload], ensure_ascii=False)
     digest = hashlib.sha256(blob.encode()).hexdigest()
     cache_file = CACHE_DIR / f"{digest[:24]}.json"
     # Coalesce simultaneous identical requests; the bounded lock table cannot grow with usage.

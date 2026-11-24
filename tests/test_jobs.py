@@ -80,6 +80,16 @@ def test_changed_model_does_not_mix_results(runtime, monkeypatch):
     assert sorted(runtime) == [("ann", [0, 1]), ("tr", [0, 1])]
 
 
+def test_changed_endpoint_does_not_mix_results_or_store_url_credentials(runtime, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://user:private-proxy-password@first.example.invalid/v1")
+    persisted_job()
+    assert "private-proxy-password" not in json.dumps(S.TASK_STORE.recent())
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://second.example.invalid/v1")
+    resumed = S.get_job("abcdefghijk", True)
+    finish(resumed)
+    assert sorted(runtime) == [("ann", [0, 1]), ("tr", [0, 1])]
+
+
 def test_cancel_waits_for_inflight_and_preserves_results(runtime, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     monkeypatch.setattr(S, "WORKERS", 1)
