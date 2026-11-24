@@ -1,4 +1,4 @@
-# 0.4.0-alpha.9 本地试用版
+# 0.4.0-alpha.10 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -17,6 +17,8 @@ alpha.7 增加生词本 JSON 备份与合并恢复，修复删除和撤销保存
 alpha.8 为大生词本增加搜索和分页，筛选下备份仍保留所有记录；修复快速切换插件词卡时旧查询可能改写新词卡标记对象的问题。语境查词严格校验模型返回值和缓存，传入完整有效原句，不再截掉第 400 字后的上下文。以上是数据与交互正确性改进，尚不代表真实模型的词义准确度已通过验收。
 
 alpha.9 增加播放器失败、超时和平台限制提示及主动重试，发送嵌入播放所需的来源信息；修复导出字幕把同一单词不同意思合并计数的问题。无效导出参数不会误启动生成，损坏结果或写入失败不会覆盖已有导出文件。
+
+alpha.10 可从已保存字幕恢复缺失或损坏的视频目录，修复损坏索引前保留副本到 `data/recovery/`；索引写入失败不会误报字幕生成失败。结果和模型缓存拒绝无效 Unicode、异常数值及过深 JSON。程序与插件检查服务身份，避免把其他本机服务认作 Adaptive Subs；启动时发现不同版本已运行会提示先退出，插件弹窗也显示版本不一致。服务识别不等同于身份认证。
 
 ## 这一版的变化
 
@@ -50,8 +52,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.9-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.9-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.10-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.10-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。

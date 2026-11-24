@@ -31,6 +31,7 @@ def check_extension(playwright, base, home, output):
         fail_mark = False
         fail_profile = False
         delay_lookup = False
+        mismatched_version = False
         pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
@@ -41,7 +42,12 @@ def check_extension(playwright, base, home, output):
 
         def route_request(route):
             url = route.request.url
+            if url == "http://127.0.0.1:1/api/health":
+                return route.fulfill(json={"ok": True})
             if url.startswith(base + "/"):
+                if mismatched_version and url.endswith("/api/health"):
+                    return route.fulfill(json={"ok": True, "app": "adaptive-subs", "version": "0.3.0", "ext": 2,
+                        "setup": "/setup", "profile": "/profile", "key": True, "provider_name": "模拟服务商"})
                 if delay_lookup and "/api/define?w=" in url:
                     if url.endswith("w=approved"):
                         return route.fulfill(json={"word": "approved", "zh": ""})
@@ -82,6 +88,7 @@ def check_extension(playwright, base, home, output):
             return route.abort()
 
         context.route("**/*", route_request)
+        assert worker.evaluate("() => health('http://127.0.0.1:1')") is None
         for site, url in (("youtube", "https://www.youtube.com/watch?v=zzzzzzzzzzz"),
                           ("bilibili", "https://www.bilibili.com/video/BV1234567890")):
             result = worker.evaluate("() => handle({type:'setprofile',payload:{reset_marks:true}})")
@@ -161,6 +168,13 @@ def check_extension(playwright, base, home, output):
         assert json.loads((home / "profile.json").read_text())["level"] == 5000
         popup.reload()
         expect(popup.locator("#levelValue")).to_contain_text("5,000")
+        mismatched_version = True
+        popup.reload()
+        expect(popup.locator("#status")).to_contain_text("与插件版本不同")
+        expect(popup.locator("#status")).to_contain_text("0.3.0")
+        mismatched_version = False
+        popup.reload()
+        expect(popup.locator("#status")).not_to_contain_text("与插件版本不同")
         popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)
         (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2))
         print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and separate meaning feedback.")

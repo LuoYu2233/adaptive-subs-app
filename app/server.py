@@ -1279,7 +1279,7 @@ class Handler(SimpleHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
             self.note_extension()
-            return self.send_json({"ok": True, "version": VERSION, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
+            return self.send_json({"ok": True, "app": "adaptive-subs", "version": VERSION, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
         if u.path.startswith("/api/") and not self.ext_ok():
@@ -1701,12 +1701,22 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
 
+def port_number(value):
+    try:
+        port = int(value)
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError):
+        pass
+    raise argparse.ArgumentTypeError("端口须为 1–65535 的整数")
+
+
 def main():
     HOME.mkdir(parents=True, exist_ok=True)
     A.load_dotenv(CONFIG)
     A.CACHE_DIR = HOME / ".cache"
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
+    ap.add_argument("--port", type=port_number, default=os.environ.get("PORT", "8765"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="open the player in the browser once the server is up")
     ap.add_argument("--app", action="store_true", help="packaged program: open the settings page if no key is set")
@@ -1721,7 +1731,7 @@ def main():
     def open_browser(port):
         if not want_browser:
             return
-        page = "player.html" if args.open else ("setup" if not P.has_key() else None)   # speech recognition is optional
+        page = "player.html" if args.open else "app"
         if page:
             import webbrowser
             threading.Timer(1.0, webbrowser.open, [f"http://{args.host}:{port}/{page}"]).start()
@@ -1729,13 +1739,18 @@ def main():
     # Port busy? If it's this server already running, just open it; if it's something else
     # (e.g. an old plain file server, which has no live features), move to the next free port.
     port, httpd = args.port, None
-    for candidate in range(args.port, args.port + 20):
+    last_port = min(args.port + 19, 65535)
+    for candidate in range(args.port, last_port + 1):
         try:
             httpd = Server((args.host, candidate), Handler)
             port = candidate
             break
         except OSError:
-            if is_live_server(args.host, candidate):
+            existing = probe_server(args.host, candidate)
+            if existing:
+                if existing["version"] != VERSION:
+                    raise RuntimeError(f"端口 {candidate} 上运行着 Adaptive Subs {existing['version']}，当前启动的是 {VERSION}。"
+                                       "请先退出已运行的程序，再启动当前版本，避免继续使用旧版或同时写入数据。")
                 print(f"Adaptive Subs is already running: http://{args.host}:{candidate}/player.html")
                 if args.gui:                       # second start: just show the running program's panel
                     return run_window(f"http://{args.host}:{candidate}/app", None)
@@ -1745,7 +1760,7 @@ def main():
                 return
             print(f"  port {candidate} is in use by another program, trying {candidate + 1}…")
     if httpd is None:
-        sys.exit(f"No free port between {args.port} and {args.port + 19}.")
+        sys.exit(f"No free port between {args.port} and {last_port}.")
 
     try:
         TASK_STORE.mark_interrupted()
@@ -1825,13 +1840,35 @@ def dark_mode() -> bool:
         return False
 
 
-def is_live_server(host: str, port: int) -> bool:
+def valid_health(value):
+    """Identify the product, including its legacy health shape; this is not authentication."""
+    return (isinstance(value, dict) and value.get("ok") is True
+            and value.get("app", "adaptive-subs") == "adaptive-subs"
+            and isinstance(value.get("version"), str)
+            and re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", value["version"]) is not None
+            and len(value["version"]) <= 80 and type(value.get("ext")) is int and value["ext"] >= 1
+            and value.get("setup") == "/setup" and value.get("profile") == "/profile")
+
+
+def probe_server(host: str, port: int):
     import urllib.request
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=1.5) as r:
-            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(f"http://{host}:{port}/api/health", timeout=1.5) as r:
+            raw = r.read(16385)
+            if r.status != 200 or len(raw) > 16384:
+                return None
+            value = json.loads(raw)
+            return value if valid_health(value) else None
     except Exception:
-        return False
+        return None
+
+
+def is_live_server(host: str, port: int) -> bool:
+    return probe_server(host, port) is not None
 
 
 if __name__ == "__main__":

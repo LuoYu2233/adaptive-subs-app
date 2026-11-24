@@ -13,9 +13,19 @@ let profileWrites = Promise.resolve();
 
 async function health(b) {
   try {
-    const r = await fetch(`${b}/api/health`, { signal: AbortSignal.timeout(1200), cache: "no-store" });
-    const j = await r.json();
-    return j && j.ok ? j : null;
+    // Session storage is a hint; discovery only accepts loopback addresses and product metadata.
+    const address = new URL(b);
+    if (address.protocol !== "http:" || address.hostname !== "127.0.0.1" || address.username || address.password
+        || address.pathname !== "/" || address.search || address.hash) return null;
+    const r = await fetch(`${address.origin}/api/health`, { signal: AbortSignal.timeout(1200), cache: "no-store", redirect: "error", credentials: "omit" });
+    if (!r.ok) return null;
+    const raw = await r.text();
+    if (raw.length > 16384) return null;
+    const j = JSON.parse(raw);
+    const valid = j && j.ok === true && (j.app === undefined || j.app === "adaptive-subs")
+      && typeof j.version === "string" && j.version.length <= 80 && /^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?$/.test(j.version)
+      && Number.isInteger(j.ext) && j.ext >= 1 && j.setup === "/setup" && j.profile === "/profile";
+    return valid ? j : null;
   } catch {
     return null;
   }
@@ -26,7 +36,7 @@ async function findServer(force) {
   if (base && lastHealth && !force && Date.now() - lastCheck < 30000) return { base, h: lastHealth };
   if (base) {
     const h = await health(base);
-    if (h) { lastHealth = h; lastCheck = Date.now(); return { base, h }; }
+    if (h) { base = new URL(base).origin; lastHealth = h; lastCheck = Date.now(); return { base, h }; }
   }
   for (const p of PORTS) {
     const b = `http://127.0.0.1:${p}`;
@@ -58,6 +68,7 @@ async function perform(msg) {
   if (!s) return { error: "noserver" };
   if (msg.type === "health") {
     return { ok: true, base: s.base, ext: !!s.h.ext, key: !!s.h.key, asr: !!s.h.asr, model: s.h.model,
+             version: s.h.version, versionMismatch: s.h.version !== chrome.runtime.getManifest().version_name,
              provider: s.h.provider_name || "", setup: s.h.setup ? s.base + s.h.setup : "",
              profile: s.h.profile ? s.base + s.h.profile : "" };
   }
