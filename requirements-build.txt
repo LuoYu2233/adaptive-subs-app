@@ -1,0 +1,3 @@
+# Native Windows builds only; validate the resulting program on Windows before release.
+-r requirements.txt
+pyinstaller==6.22.3

@@ -2,34 +2,54 @@
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
+import stat
 import sys
 import zipfile
 
 
-def verify(path):
+def verify(path, kind="source"):
+    if kind not in {"source", "windows"}:
+        raise ValueError("Unsupported package kind")
     with zipfile.ZipFile(path) as archive:
         members = archive.infolist()
         names = [m.filename for m in members]
-        if len(names) != len(set(names)) or len(names) > 10000 or sum(m.file_size for m in members) > 500_000_000:
+        limit = 500_000_000 if kind == "source" else 6_000_000_000
+        if len(names) != len({n.casefold() for n in names}) or len(names) > 10000 or sum(m.file_size for m in members) > limit:
             raise ValueError("Duplicate files or package too large")
-        for name in names:
+        for member in members:
+            name = member.filename
             p = PurePosixPath(name)
-            if p.is_absolute() or ".." in p.parts or "\\" in name:
+            if (not name or str(p) != name or p.is_absolute() or ".." in p.parts or "\\" in name
+                    or ":" in name or any(part.endswith((".", " ")) for part in p.parts)
+                    or any(re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?", part) for part in p.parts)
+                    or re.search(r'[<>"|?*\x00-\x1f]', name)
+                    or stat.S_IFMT(member.external_attr >> 16) not in {0, stat.S_IFREG}):
                 raise ValueError("Unsafe package path")
         manifests = [n for n in names if n.endswith("/RELEASE-MANIFEST.json")]
         if len(manifests) != 1:
             raise ValueError("Missing or duplicate release manifest")
         prefix = manifests[0].removesuffix("RELEASE-MANIFEST.json")
+        if prefix.count("/") != 1 or archive.getinfo(manifests[0]).file_size > 3_000_000:
+            raise ValueError("Invalid release manifest location or size")
         manifest = json.loads(archive.read(manifests[0]))
-        if manifest.get("format") != "adaptive-subs-source-release" or not isinstance(manifest.get("files"), dict):
+        if (not isinstance(manifest, dict) or manifest.get("format") != f"adaptive-subs-{kind}-release"
+                or not isinstance(manifest.get("files"), dict)):
             raise ValueError("Unsupported release manifest")
         expected = {prefix + n for n in manifest["files"]} | {manifests[0]}
         if set(names) != expected:
             raise ValueError("Package contains missing or unexpected files")
         for name, entry in manifest["files"].items():
-            value = archive.read(prefix + name)
-            if len(value) != entry["bytes"] or hashlib.sha256(value).hexdigest() != entry["sha256"]:
+            if (not isinstance(entry, dict) or type(entry.get("bytes")) is not int
+                    or entry["bytes"] < 0 or not isinstance(entry.get("sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", entry["sha256"])):
+                raise ValueError(f"Invalid file manifest entry: {name}")
+            with archive.open(prefix + name) as stream:
+                checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+            if archive.getinfo(prefix + name).file_size != entry["bytes"] or checksum != entry["sha256"]:
                 raise ValueError(f"Content verification failed: {name}")
+        if kind == "windows" and not {"程序/AdaptiveSubs.exe", "浏览器插件/manifest.json", "使用说明.txt"} <= manifest["files"].keys():
+            raise ValueError("Missing Windows package components")
         return manifest
 
 
