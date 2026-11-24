@@ -400,5 +400,35 @@ def test_connection_check_distinguishes_missing_model_and_asr(http_server, monke
     status, body = request(http_server, "POST", "/api/settings/test", "{}", H)
     result = json.loads(body)["results"]
     assert status == 200 and result["asr"] == "ok"
+    assert json.loads(body)["provider"] == "deepseek"
+    assert json.loads(body)["checked_models"]["asr"] == "mimo-v2.5-asr"
     assert "模型列表中没有" in result["deepseek"] and "模型列表中没有" in result["mimo"]
     service.chat.completions.create.assert_not_called()
+
+
+def test_settings_acknowledges_saved_snapshot_without_returning_keys(http_server, monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "CONFIG", tmp_path / "settings.env")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-old-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "before")
+    status, raw = request(http_server, "POST", "/api/settings", json.dumps({
+        "keys": {"deepseek": "synthetic-new-key-1234"}, "models": {"deepseek": "after"}}), H)
+    body = json.loads(raw)
+    assert status == 200 and body["ok"]
+    assert body["settings"] == json.loads(request(http_server, "GET", "/api/settings", headers=H)[1])
+    provider = next(p for p in body["settings"]["providers"] if p["id"] == "deepseek")
+    assert provider["model"] == "after" and provider["key_hint"].endswith("1234）")
+    assert b"synthetic-new-key" not in raw and b"synthetic-old-key" not in raw
+
+
+def test_settings_disk_failure_preserves_file_and_runtime_config(http_server, monkeypatch, tmp_path):
+    path = tmp_path / "settings.env"
+    original = b"DEEPSEEK_MODEL=before\n"
+    path.write_bytes(original)
+    monkeypatch.setattr(S, "CONFIG", path)
+    monkeypatch.setenv("DEEPSEEK_MODEL", "before")
+    monkeypatch.setattr(S, "atomic_write", Mock(side_effect=OSError("simulated full disk")))
+    reset = Mock()
+    monkeypatch.setattr(S.P, "reset_clients", reset)
+    status, _ = request(http_server, "POST", "/api/settings", json.dumps({"models": {"deepseek": "after"}}), H)
+    assert status == 507 and path.read_bytes() == original and S.P.model("deepseek") == "before"
+    reset.assert_not_called()

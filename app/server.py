@@ -1143,6 +1143,18 @@ def key_hint(name: str) -> str:
     return f"已填写（…{k[-4:]}）" if k else ""
 
 
+def settings_payload():
+    """Return one consistent, non-secret view of saved configuration."""
+    with CONFIG_LOCK:
+        return {
+            "provider": P.current(), "config_file": str(CONFIG),
+            "providers": [{"id": k, "name": v["name"], "model": P.model(k), "default_model": v["model"],
+                           "note": v["note"], "price": v["price"], "key_hint": key_hint(v["key"])}
+                          for k, v in P.PROVIDERS.items()],
+            "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
+        }
+
+
 def extension_dir() -> Path:
     """The browser extension folder: next to the program in the release zip, or in the source folder."""
     if FROZEN:
@@ -1362,12 +1374,7 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/settings":
             if not self.ext_ok():
                 return
-            return self.send_json({
-                "provider": P.current(), "config_file": str(CONFIG),
-                "providers": [{"id": k, "name": v["name"], "model": P.model(k), "default_model": v["model"], "note": v["note"], "price": v["price"],
-                               "key_hint": key_hint(v["key"])} for k, v in P.PROVIDERS.items()],
-                "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
-            })
+            return self.send_json(settings_payload())
         if u.path == "/api/open":
             return self.send_json({"error": "请更新播放器：开始处理需要 POST 请求"}, 405)
         if u.path == "/api/focus":
@@ -1716,10 +1723,12 @@ class Handler(SimpleHTTPRequestHandler):
                 updates[P.PROVIDERS[pid]["key"]] = val
             else:
                 return self.send_json({"error": f"{P.PROVIDERS[pid]['name']} 的 key 格式不对（不能有空格或中文）"}, 400)
-        save_config(updates)
+        with CONFIG_LOCK:
+            save_config(updates)
+            saved = settings_payload()
         print(f"  settings saved: annotation model = {P.model()}, keys: "
               + ", ".join(f"{k}={'yes' if P.has_key(k) else 'no'}" for k in P.PROVIDERS))
-        return self.send_json({"ok": True, "provider": P.current()})
+        return self.send_json({"ok": True, "provider": saved["provider"], "settings": saved})
 
     def test_settings(self):
         """Check selected services and model names without generating content."""
@@ -1746,7 +1755,8 @@ class Handler(SimpleHTTPRequestHandler):
                 out[pid] = "key 无效或权限不足" if code in (401, 403) else f"连接失败：{short_err(e)[:80]}"
                 if pid == "mimo":
                     out["asr"] = out[pid]
-        return self.send_json({"results": out, "models": available})
+        return self.send_json({"results": out, "models": available, "provider": selected,
+                               "checked_models": {**{pid: model for pid, (_, model) in checks.items()}, "asr": asr_model}})
 
     def stream(self, job: Job):
         self.send_response(200)

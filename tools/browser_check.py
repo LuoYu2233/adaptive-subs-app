@@ -196,6 +196,78 @@ def main():
                     page.remove_listener("request", on_request)
                     assert calls == [], f"Demo unexpectedly requested an API: {calls}"
 
+                    # Failure paths use the real settings page and protected local API.
+                    settings_mode = "load-error"
+                    settings_calls = {"save": 0, "check": 0}
+                    pending_checks = []
+                    def settings_response(route):
+                        if route.request.method == "GET":
+                            if settings_mode == "load-error": return route.fulfill(status=503, json={})
+                            return route.continue_()
+                        settings_calls["save"] += 1
+                        if settings_mode == "save-error": return route.fulfill(status=500, json={})
+                        if settings_mode == "lost-save":
+                            route.fetch()  # The real write succeeds, then its response is lost.
+                            return route.abort("failed")
+                        return route.continue_()
+                    def settings_check_response(route):
+                        settings_calls["check"] += 1
+                        if settings_mode == "check-error": return route.fulfill(status=502, json={})
+                        if settings_mode == "check-timeout":
+                            pending_checks.append(route)
+                            return
+                        if settings_mode == "check-success":
+                            return route.fulfill(json={"provider": "deepseek", "checked_models": {
+                                "deepseek": "confirmed-model", "asr": "confirmed-asr"},
+                                "results": {"deepseek": "ok", "asr": "ok"}})
+                        return route.continue_()
+                    page.route(base + "/api/settings", settings_response)
+                    page.route(base + "/api/settings/test", settings_check_response)
+                    page.goto(base + "/setup?app=1")
+                    expect(page.locator("#msg")).to_contain_text("读取设置失败")
+                    expect(page.locator("#save")).to_be_disabled()
+                    expect(page.locator("#reloadSettings")).to_be_enabled()
+                    settings_mode = "save-error"
+                    page.locator("#reloadSettings").click()
+                    expect(page.locator("#save")).to_be_enabled()
+                    page.locator("#model-deepseek").locator("..").locator("summary").click()
+                    page.locator("#model-deepseek").fill("persisted-after-lost-response")
+                    page.locator("#save").click()
+                    expect(page.locator("#msg")).to_contain_text("未确认设置是否保存")
+                    assert settings_calls == {"save": 1, "check": 0}
+                    expect(page.locator("#save")).to_be_enabled()
+                    settings_mode = "lost-save"
+                    page.locator("#save").click()
+                    expect(page.locator("#msg")).to_contain_text("没有自动重试")
+                    assert settings_calls == {"save": 2, "check": 0}
+                    page.locator("#reloadSettings").click()
+                    expect(page.locator("#model-deepseek")).to_have_value("persisted-after-lost-response")
+                    settings_mode = "check-error"
+                    page.locator("#save").click()
+                    expect(page.locator("#msg")).to_contain_text("设置已保存；后续检查未完成")
+                    assert settings_calls == {"save": 3, "check": 1}
+                    settings_mode = "check-timeout"
+                    page.evaluate("""() => {
+                        window.settingsOriginalTimer = window.setTimeout;
+                        window.setTimeout = (callback, delay, ...args) => settingsOriginalTimer(callback, delay === 40000 ? 50 : delay, ...args);
+                    }""")
+                    page.locator("#checkSaved").click()
+                    expect(page.locator("#msg")).to_contain_text("请求超时")
+                    expect(page.locator("#msg")).to_contain_text("已保存的设置保持不变")
+                    page.evaluate("window.setTimeout = window.settingsOriginalTimer; delete window.settingsOriginalTimer")
+                    for route in pending_checks: route.abort("failed")
+                    settings_mode = "check-success"
+                    page.locator("#checkSaved").click()
+                    expect(page.locator("#msg")).to_contain_text("实际生成能力和额度需以使用结果为准")
+                    expect(page.locator("#results")).to_contain_text("confirmed-model")
+                    assert settings_calls == {"save": 3, "check": 3}
+                    page.set_viewport_size({"width": 390, "height": 844})
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                    page.screenshot(path=str(output / "settings-recovered-mobile.png"), full_page=True)
+                    page.set_viewport_size({"width": 1280, "height": 900})
+                    page.unroute(base + "/api/settings", settings_response)
+                    page.unroute(base + "/api/settings/test", settings_check_response)
+
                     page.goto(base + "/setup?app=1")
                     expect(page.locator("#key-deepseek")).to_be_visible()
                     page.locator("#model-deepseek").locator("..").locator("summary").click()
