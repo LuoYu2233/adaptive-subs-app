@@ -376,7 +376,7 @@ def test_model_configuration_is_saved_and_returned(http_server, monkeypatch, tmp
     # Track environment mutations made by save_config so they are restored after this test.
     for key in ("DEEPSEEK_MODEL", "ASR_MODEL"):
         monkeypatch.setenv(key, "old")
-    status, body = request(http_server, "POST", "/api/settings", json.dumps({"models": {"deepseek": "custom-model"}, "asr_model": "custom-asr"}), H)
+    status, body = request(http_server, "POST", "/api/settings", json.dumps({"expected_rev": S.SETTINGS_REV, "models": {"deepseek": "custom-model"}, "asr_model": "custom-asr"}), H)
     assert status == 200 and json.loads(body)["ok"]
     assert S.P.model("deepseek") == "custom-model"
     settings = json.loads(request(http_server, "GET", "/api/settings", headers=H)[1])
@@ -411,7 +411,7 @@ def test_settings_acknowledges_saved_snapshot_without_returning_keys(http_server
     monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-old-key")
     monkeypatch.setenv("DEEPSEEK_MODEL", "before")
     status, raw = request(http_server, "POST", "/api/settings", json.dumps({
-        "keys": {"deepseek": "synthetic-new-key-1234"}, "models": {"deepseek": "after"}}), H)
+        "expected_rev": S.SETTINGS_REV, "keys": {"deepseek": "synthetic-new-key-1234"}, "models": {"deepseek": "after"}}), H)
     body = json.loads(raw)
     assert status == 200 and body["ok"]
     assert body["settings"] == json.loads(request(http_server, "GET", "/api/settings", headers=H)[1])
@@ -429,6 +429,54 @@ def test_settings_disk_failure_preserves_file_and_runtime_config(http_server, mo
     monkeypatch.setattr(S, "atomic_write", Mock(side_effect=OSError("simulated full disk")))
     reset = Mock()
     monkeypatch.setattr(S.P, "reset_clients", reset)
-    status, _ = request(http_server, "POST", "/api/settings", json.dumps({"models": {"deepseek": "after"}}), H)
+    before_rev = S.SETTINGS_REV
+    status, _ = request(http_server, "POST", "/api/settings", json.dumps({"expected_rev": before_rev, "models": {"deepseek": "after"}}), H)
     assert status == 507 and path.read_bytes() == original and S.P.model("deepseek") == "before"
+    assert S.SETTINGS_REV == before_rev
     reset.assert_not_called()
+
+
+def test_stale_settings_save_preserves_other_windows_changes(http_server, monkeypatch, tmp_path):
+    path = tmp_path / "settings.env"
+    monkeypatch.setattr(S, "CONFIG", path)
+    monkeypatch.setenv("DEEPSEEK_MODEL", "original-model")
+    monkeypatch.setenv("ANNOTATION_PROVIDER", "deepseek")
+    first = json.loads(request(http_server, "GET", "/api/settings", headers=H)[1])
+    stale = {"expected_rev": first["rev"], "provider": "mimo", "models": {p["id"]: p["model"] for p in first["providers"]}}
+    status, raw = request(http_server, "POST", "/api/settings", json.dumps({
+        "expected_rev": first["rev"], "models": {"deepseek": "new-model"}}), H)
+    assert status == 200
+    assert json.loads(raw)["settings"]["rev"] != first["rev"]
+    before = path.read_bytes()
+    status, raw = request(http_server, "POST", "/api/settings", json.dumps(stale), H)
+    assert status == 409 and json.loads(raw)["conflict"]
+    assert path.read_bytes() == before and S.P.model("deepseek") == "new-model" and S.P.current() == "deepseek"
+
+
+@pytest.mark.parametrize("revision", [None, "", "previous-process-token", "0" * 32, ["wrong-type"]])
+def test_settings_writes_require_current_edit_token(http_server, monkeypatch, revision):
+    save = Mock()
+    monkeypatch.setattr(S, "save_config", save)
+    status, raw = request(http_server, "POST", "/api/settings", json.dumps({
+        "expected_rev": revision, "models": {"deepseek": "new-model"}}), H)
+    assert status == 409 and json.loads(raw)["conflict"]
+    save.assert_not_called()
+
+
+def test_simultaneous_settings_writers_cannot_both_use_one_revision(http_server, monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    path = tmp_path / "settings.env"
+    monkeypatch.setattr(S, "CONFIG", path)
+    monkeypatch.setenv("DEEPSEEK_MODEL", "before")
+    token = S.SETTINGS_REV
+    barrier = threading.Barrier(2)
+    def save(model):
+        barrier.wait(timeout=3)
+        status, _ = request(http_server, "POST", "/api/settings", json.dumps({
+            "expected_rev": token, "models": {"deepseek": model}}), H)
+        return status, model
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, ["first-model", "second-model"]))
+    assert sorted(status for status, _ in results) == [200, 409]
+    winner = next(model for status, model in results if status == 200)
+    assert S.P.model("deepseek") == winner and f"DEEPSEEK_MODEL={winner}" in path.read_text()

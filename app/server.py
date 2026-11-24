@@ -73,6 +73,7 @@ ASR_PER_JOB = 4        # speech-recognition requests in flight per video (the AP
 CHECKPOINT_INTERVAL = 1.0  # seconds between background snapshots; explicit boundaries always flush
 NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
 CONFIG_LOCK = threading.RLock()
+SETTINGS_REV = uuid.uuid4().hex  # Opaque edit token, also changes when this process restarts.
 INSTANCE_ID = uuid.uuid4().hex
 INSTANCE_GUARD = None
 
@@ -1116,6 +1117,7 @@ def save_config(updates: dict):
 
 def _save_config(updates: dict):
     """Write settings into the config file, keeping every other line as it is."""
+    global SETTINGS_REV
     lines = CONFIG.read_text(encoding="utf-8").splitlines() if CONFIG.exists() else []
     out, seen = [], set()
     for ln in lines:
@@ -1136,6 +1138,7 @@ def _save_config(updates: dict):
             os.environ.pop(k, None)
     P.reset_clients()
     ASR.reset_client()
+    SETTINGS_REV = uuid.uuid4().hex
 
 
 def key_hint(name: str) -> str:
@@ -1147,7 +1150,7 @@ def settings_payload():
     """Return one consistent, non-secret view of saved configuration."""
     with CONFIG_LOCK:
         return {
-            "provider": P.current(), "config_file": str(CONFIG),
+            "provider": P.current(), "config_file": str(CONFIG), "rev": SETTINGS_REV,
             "providers": [{"id": k, "name": v["name"], "model": P.model(k), "default_model": v["model"],
                            "note": v["note"], "price": v["price"], "key_hint": key_hint(v["key"])}
                           for k, v in P.PROVIDERS.items()],
@@ -1724,6 +1727,8 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 return self.send_json({"error": f"{P.PROVIDERS[pid]['name']} 的 key 格式不对（不能有空格或中文）"}, 400)
         with CONFIG_LOCK:
+            if body.get("expected_rev") != SETTINGS_REV:
+                return self.send_json({"error": "设置已更新，请重新读取后再保存；当前修改尚未写入", "conflict": True}, 409)
             save_config(updates)
             saved = settings_payload()
         print(f"  settings saved: annotation model = {P.model()}, keys: "

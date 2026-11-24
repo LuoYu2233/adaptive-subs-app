@@ -120,11 +120,11 @@
   const TAGS = { deepseek: "推荐" };
   const ORDER = ["deepseek", "mimo", "openai"];
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let state = null, busy = false;
+  let state = null, busy = false, conflicted = false;
 
   function working(value) {
     busy = value;
-    $("#save").disabled = value || !state;
+    $("#save").disabled = value || !state || conflicted;
     $("#checkSaved").disabled = value || !state;
     $("#reloadSettings").disabled = value;
     document.querySelectorAll("#prov input, #asrBox input").forEach(el => { el.disabled = value || !state; });
@@ -139,7 +139,11 @@
       let value;
       try { value = await response.json(); }
       catch (error) { if (controller.signal.aborted) throw error; throw new Error("本地程序返回了无法读取的响应"); }
-      if (!response.ok) throw new Error(typeof value?.error === "string" ? value.error : `本地程序返回错误（${response.status}）`);
+      if (!response.ok) {
+        const error = new Error(typeof value?.error === "string" ? value.error : `本地程序返回错误（${response.status}）`);
+        error.conflict = response.status === 409 && value?.conflict === true;
+        throw error;
+      }
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("本地程序返回的格式不正确");
       if (value.error) throw new Error(String(value.error));
       return value;
@@ -152,6 +156,7 @@
 
   function render(value) {
     if (!value || !ORDER.includes(value.provider) || typeof value.config_file !== "string"
+        || typeof value.rev !== "string" || !/^[a-f0-9]{32}$/.test(value.rev)
         || !Array.isArray(value.providers) || value.providers.length !== ORDER.length
         || !ORDER.every(id => value.providers.filter(p => p?.id === id).length === 1)
         || !value.providers.every(p => ["name", "model", "default_model", "note", "key_hint"].every(k => typeof p[k] === "string"))
@@ -190,7 +195,7 @@
 
   async function load() {
     if (busy) return;
-    state = null; working(true);
+    state = null; conflicted = false; working(true);
     const msg = $("#msg");
     msg.className = ""; msg.textContent = "正在读取设置…";
     $("#results").innerHTML = "";
@@ -221,7 +226,7 @@
   }
 
   async function save() {
-    if (busy || !state) return;
+    if (busy || !state || conflicted) return;
     working(true);
     const msg = $("#msg");
     msg.className = ""; msg.textContent = "正在保存…";
@@ -232,7 +237,7 @@
       const keys = { mimo: $("#key-mimo-asr").value.trim() };
       const models = Object.fromEntries(ORDER.map(id => [id, $(`#model-${id}`).value.trim()]));
       for (const id of ["deepseek", "openai"]) keys[id] = $(`#key-${id}`).value.trim();
-      const response = await request("/api/settings", { provider, keys, models, asr_model: $("#model-asr").value.trim() });
+      const response = await request("/api/settings", { expected_rev: state.rev, provider, keys, models, asr_model: $("#model-asr").value.trim() });
       if (response.ok !== true) throw new Error("本地程序没有确认保存结果");
       saved = true;
       document.querySelectorAll('input[type="password"]').forEach(el => { el.value = ""; });
@@ -240,7 +245,9 @@
       await checkModels(true);
     } catch (error) {
       msg.className = "bad";
-      msg.textContent = saved ? `设置已保存；后续检查未完成：${error.message}。可以单独检查已保存的模型。`
+      conflicted = error.conflict === true;
+      msg.textContent = conflicted ? "设置已被其他窗口更新或程序已重启，当前修改没有写入。请重新读取设置后再修改；重新读取会清除当前填写。"
+        : saved ? `设置已保存；后续检查未完成：${error.message}。可以单独检查已保存的模型。`
         : `未确认设置是否保存：${error.message}。请重新读取设置后核对；没有自动重试。`;
     } finally { working(false); }
   }
