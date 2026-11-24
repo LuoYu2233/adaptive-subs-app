@@ -149,6 +149,15 @@ def main():
                         "video": {"id": "zzzzzzzzzzz", "title": "词义回归示例", "duration": 10}, "cues": cues}), encoding="utf-8")
                     (data / "index.json").write_text(json.dumps([{"id": "zzzzzzzzzzz", "title": "词义回归示例",
                                                                   "file": "zzzzzzzzzzz.json"}]), encoding="utf-8")
+                    # The library is recoverable from completed subtitles; reading never overwrites the broken index.
+                    original_index = (data / "index.json").read_bytes()
+                    for damaged_index in (b'{broken-library', b'[{"id":"old","title":"Old","file":"old.json"},"broken-row"]'):
+                        (data / "index.json").write_bytes(damaged_index)
+                        page.goto(base + "/player.html")
+                        expect(page.locator("#tab-transcript .tr-row")).to_have_count(2)
+                        expect(page.locator("#videoSelect")).to_contain_text("词义回归示例")
+                        assert (data / "index.json").read_bytes() == damaged_index
+                    (data / "index.json").write_bytes(original_index)
                     page.goto(base + "/player.html")
                     expect(page.locator("#tab-transcript .tr-row")).to_have_count(2)
                     page.locator("#introDialog").evaluate("element => { if (element.open) element.close(); }")

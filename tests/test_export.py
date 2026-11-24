@@ -94,3 +94,19 @@ def test_cli_export_and_empty_input_do_not_need_a_model(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["annotate.py", str(src)])
     with pytest.raises(SystemExit, match="字幕文件为空"): A.main()
     forbidden.assert_not_called()
+
+
+def test_cli_keeps_completed_result_when_catalog_write_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(A, "PROJECT", tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+    monkeypatch.setattr(A, "find_candidates", lambda texts: [[] for _ in texts])
+    monkeypatch.setattr(A, "run_batches", lambda *args, **kw: [])
+    monkeypatch.setattr(A, "translate_lines", lambda *args, **kw: {0: "原创测试句。"})
+    monkeypatch.setattr(A, "blend_word_levels", lambda cues: None)
+    monkeypatch.setattr(A, "update_index", Mock(side_effect=OSError("disk full")))
+    src = tmp_path / "abcdefghijk.en.srt"
+    src.write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal test sentence.\n")
+    monkeypatch.setattr(sys, "argv", ["annotate.py", str(src)])
+    A.main()
+    assert A.valid_result(json.loads((tmp_path / "abcdefghijk.json").read_text()))
+    assert "无需重新生成" in capsys.readouterr().err

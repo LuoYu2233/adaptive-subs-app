@@ -42,6 +42,7 @@ import asr as ASR
 import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
+import video_catalog
 from storage import atomic_write, write_json
 from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
 from version import VERSION
@@ -979,8 +980,13 @@ def finalize(job: Job):
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
     write_json(job.save_dir / f"{job.vid}.json", data)
+    catalog_warning = ""
     if job.save_dir == DATA and not incomplete:
-        A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
+        try:
+            A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
+        except (OSError, ValueError):
+            catalog_warning = "字幕已保存，视频目录暂时无法写入；本地播放器仍可从字幕文件读取视频。"
+            print(f"[{job.vid}] {catalog_warning}")
     with job.cond:
         if job.aborted:
             return
@@ -1002,7 +1008,7 @@ def finalize(job: Job):
         job.emit("fail", {"msg": "部分字幕处理失败；已生成的内容已保存，重试会复用成功的缓存。",
                           "retry": True, "partial": True, "missing": data["missing"]})
         return
-    job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"]})
+    job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"], "warning": catalog_warning})
 
 
 # ------------------------------------------------- browser extension API ---
@@ -1204,6 +1210,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def serve_static(self, path: str):
         """Only the page files are served: never the project folder (which holds .env with the keys)."""
+        if path == "/data/index.json":
+            bundled = video_catalog.read(BUNDLE_DATA) if (BUNDLE_DATA / "index.json").is_file() else []
+            local = video_catalog.read(DATA)
+            rows = {row["id"]: row for row in bundled + local}
+            return self.send_json(list(rows.values()))
         if path in STATIC_PAGES:
             f, base = WEB / STATIC_PAGES[path], WEB
         elif path.startswith("/assets/"):

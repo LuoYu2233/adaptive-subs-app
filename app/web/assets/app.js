@@ -1300,7 +1300,7 @@
       await loadIndex();
       renderVideoSelect();
       renderAll(false);
-      toast(`全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
+      toast(d.warning || `全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
     });
     on("fail", (d) => {
       src.close(); es = null;

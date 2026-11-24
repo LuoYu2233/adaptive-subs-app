@@ -173,6 +173,18 @@ def job(tmp_path):
     return j
 
 
+def test_failed_catalog_write_does_not_turn_saved_generation_into_failure(http_server, monkeypatch):
+    j = job(S.DATA)
+    j.ann[0], j.zh[0] = [], "河岸。"
+    monkeypatch.setattr(A, "update_index", Mock(side_effect=OSError("index write failed")))
+    S.finalize(j)
+    assert j.state == "done" and j.events[-1][0] == "done"
+    assert "目录" in j.events[-1][1]["warning"]
+    assert S.saved_result(S.DATA / "abcdefghijk.json") is not None
+    status, raw = request(http_server, "GET", "/data/index.json")
+    assert status == 200 and any(row["id"] == "abcdefghijk" for row in json.loads(raw))
+
+
 def test_failed_work_cannot_be_reported_complete(tmp_path, monkeypatch):
     j = job(tmp_path)
     j.tasks = [{"kind": "ann", "ids": [0]}]

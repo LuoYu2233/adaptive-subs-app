@@ -655,24 +655,9 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
-_index_lock = threading.Lock()
-
-
 def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
-    with _index_lock:
-        _update_index(data_dir, video_id, title, file)
-
-
-def _update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
-    idx_path = data_dir / "index.json"
-    try:
-        idx = json.loads(idx_path.read_text(encoding="utf-8"))
-        if not isinstance(idx, list) or (idx and not isinstance(idx[0], dict)):
-            idx = []
-    except (OSError, json.JSONDecodeError):
-        idx = []
-    idx = [v for v in idx if v.get("id") != video_id] + [{"id": video_id, "title": title, "file": file}]
-    write_json(idx_path, idx)
+    from video_catalog import update
+    update(data_dir, video_id, title, file)
 
 
 # -------------------------------------------------------------------- main ---
@@ -762,7 +747,10 @@ def main():
     }
     write_json(out_json, data)
     if not args.dry_run:
-        update_index(src.parent, video_id, data["video"]["title"], out_json.name)
+        try:
+            update_index(src.parent, video_id, data["video"]["title"], out_json.name)
+        except (OSError, ValueError):
+            print("字幕 JSON 已保存，视频目录暂时无法写入；无需重新生成。", file=sys.stderr)
 
     total = sum(len(c["notes"]) for c in cues)
     kinds = {k: sum(n["kind"] == k for c in cues for n in c["notes"]) for k in ("word", "phrase", "sense")}
