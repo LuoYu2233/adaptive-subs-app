@@ -37,6 +37,8 @@ def check_extension(playwright, base, home, output):
         profile_read_mode = None
         pending_profile_reads = []
         profile_posts = []
+        profile_write_mode = None
+        pending_profile_writes = []
         pending_lookup = []
         # A real media timeline crosses the page/content-script isolated-world boundary.
         sound = io.BytesIO()
@@ -52,6 +54,16 @@ def check_extension(playwright, base, home, output):
             if url.startswith(base + "/"):
                 if url.endswith("/api/profile") and route.request.method == "POST":
                     profile_posts.append(route.request.post_data_json)
+                    if profile_write_mode == "lost":
+                        response = route.fetch()
+                        assert response.status == 200
+                        assert json.loads((home / "profile.json").read_text())["level"] == route.request.post_data_json["level"]
+                        return route.abort("failed")
+                    if profile_write_mode == "malformed":
+                        return route.fulfill(json={"level": route.request.post_data_json["level"]})
+                    if profile_write_mode == "pending":
+                        pending_profile_writes.append(route)
+                        return
                 if url.endswith("/api/profile?summary=1") and profile_read_mode:
                     if profile_read_mode == "component":
                         return route.fulfill(status=503, json={"error": "测试英语词汇组件不可用", "component": True})
@@ -186,12 +198,60 @@ def check_extension(playwright, base, home, output):
         fail_profile = True
         popup.locator("#level").focus()
         popup.locator("#level").press("End")
-        expect(popup.locator("#saveStatus")).to_contain_text("画像未保存")
+        expect(popup.locator("#saveStatus")).to_contain_text("保存结果未确认")
         expect(popup.locator("#levelValue")).to_contain_text("4,500")
         fail_profile = False
         popup.locator("#level").press("Home")
         expect(popup.locator("#saveStatus")).to_contain_text("已保存到本机画像")
         assert json.loads((home / "profile.json").read_text())["level"] == 1500
+        saved_preferences = worker.evaluate("() => chrome.storage.local.get('settings')")
+        profile_write_mode = "malformed"
+        before = len(profile_posts)
+        popup.locator("#level").press("End")
+        expect(popup.locator("#saveStatus")).to_contain_text("保存结果未确认")
+        expect(popup.locator("#levelValue")).to_contain_text("1,500")
+        assert len(profile_posts) == before + 1
+        assert worker.evaluate("() => chrome.storage.local.get('settings')") == saved_preferences
+        profile_write_mode = "lost"
+        before = len(profile_posts)
+        popup.locator("#level").press("End")
+        expect(popup.locator("#saveStatus")).to_contain_text("当前词汇量与本次设置一致")
+        expect(popup.locator("#levelValue")).to_contain_text("15,000")
+        assert len(profile_posts) == before + 1  # The real saved write was not replayed.
+        assert json.loads((home / "profile.json").read_text())["level"] == 15000
+        # A lost write response followed by a failed read is uncertain, never a saved/unsaved claim.
+        profile_read_mode = "component"
+        before = len(profile_posts)
+        popup.locator("#level").press("Home")
+        expect(popup.locator("#saveStatus")).to_contain_text("保存结果尚未确认")
+        expect(popup.locator("#level")).to_be_disabled()
+        expect(popup.locator("#profileText")).to_contain_text("不会自动重发")
+        assert json.loads((home / "profile.json").read_text())["level"] == 1500
+        assert len(profile_posts) == before + 1
+        profile_read_mode = None
+        popup.locator("#retryProfile").click()
+        expect(popup.locator("#levelValue")).to_contain_text("1,500")
+        expect(popup.locator("#level")).to_be_enabled()
+        profile_write_mode = "pending"
+        worker.evaluate("""() => {
+            globalThis.originalWriteTimeout = AbortSignal.timeout;
+            AbortSignal.timeout = ms => originalWriteTimeout(ms === 10000 ? 500 : ms);
+        }""")
+        before = len(profile_posts)
+        popup.locator("#level").press("End")
+        expect(popup.locator("#level")).to_be_disabled()
+        popup.locator("#level").evaluate("e => { e.value = 0; e.dispatchEvent(new Event('input')); e.dispatchEvent(new Event('change')); }")
+        expect(popup.locator("#saveStatus")).to_contain_text("保存结果未确认")
+        expect(popup.locator("#level")).to_be_enabled()
+        expect(popup.locator("#levelValue")).to_contain_text("1,500")
+        assert len(profile_posts) == before + 1
+        worker.evaluate("AbortSignal.timeout = globalThis.originalWriteTimeout; delete globalThis.originalWriteTimeout")
+        for route in pending_profile_writes: route.abort("failed")
+        pending_profile_writes.clear()
+        profile_write_mode = None
+        popup.locator("#level").press("End")
+        expect(popup.locator("#saveStatus")).to_contain_text("已保存到本机画像")
+        assert json.loads((home / "profile.json").read_text())["level"] == 15000
         # Requests are queued in the service worker, including server discovery.
         result = worker.evaluate("() => Promise.all([2000, 6000, 5000].map(level => handle({type:'setprofile',payload:{level}})))")
         assert [r["level"] for r in result] == [2000, 6000, 5000]

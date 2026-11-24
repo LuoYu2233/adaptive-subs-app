@@ -15,7 +15,7 @@ function validProfile(p) {
 }
 
 const nearest = (x) => LEVELS.reduce((a, b) => (Math.abs(b - x) < Math.abs(a - x) ? b : a));
-let draftLevel = null, levelRequest = 0;
+let draftLevel = null, levelRequest = 0, savingLevel = false;
 const level = () => draftLevel ?? (prof ? prof.level : cfg.level);
 
 function render() {
@@ -24,7 +24,7 @@ function render() {
   const i = Math.max(0, LEVELS.indexOf(nearest(level())));
   $("#level").value = i;
   const editable = profileState === "ready" || profileState === "offline";
-  $("#level").disabled = !editable;
+  $("#level").disabled = !editable || savingLevel;
   $("#levelValue").textContent = editable ? `≈ ${level().toLocaleString("en-US")} 词`
     : profileState === "unavailable" ? "暂不可用" : "读取中…";
   $("#levelNote").textContent = profileState === "connecting" ? "正在确认本机画像连接…"
@@ -113,35 +113,63 @@ chrome.storage.local.get(["settings"], (r) => {
 $("#enabled").addEventListener("change", (e) => { cfg.enabled = e.target.checked; save(); });
 $("#hideNative").addEventListener("change", (e) => { cfg.hideNative = e.target.checked; save(); });
 $("#level").addEventListener("input", (e) => {
-  if (profileState !== "ready" && profileState !== "offline") return;
+  if (savingLevel || (profileState !== "ready" && profileState !== "offline")) return;
   draftLevel = LEVELS[+e.target.value];
   render();
 });
 $("#level").addEventListener("change", () => {
-  if (profileState !== "ready" && profileState !== "offline") return;
-  cfg.level = draftLevel ?? LEVELS[+$("#level").value];
+  if (savingLevel || (profileState !== "ready" && profileState !== "offline")) return;
+  const requestedLevel = draftLevel ?? LEVELS[+$("#level").value];
   if (!prof) {
+    cfg.level = requestedLevel;
     $("#saveStatus").textContent = "正在保存浏览器设置…";
     save(ok => { $("#saveStatus").textContent = ok ? "已保存在此浏览器；本机画像尚未连接" : "浏览器设置未保存，请重试"; });
     draftLevel = null;
     return;
   }
-  save();
   const request = ++levelRequest;
+  const previousRev = prof.rev;
+  savingLevel = true;
+  render();
   $("#saveStatus").textContent = "正在保存词汇量…";
+  const finish = (p, message, persistFallback) => {
+    if (request !== levelRequest) return;
+    savingLevel = false;
+    draftLevel = null;
+    prof = p;
+    if (p) {
+      profileState = "ready";
+      // A best-effort notification; clients also refresh profiles periodically.
+      chrome.storage.local.set({ profileRev: p.rev }, () => { void chrome.runtime.lastError; });
+    } else {
+      profileState = "unavailable";
+      profileError = "保存结果尚未确认，画像也暂时无法读取。请重新读取或打开画像页面核对，程序不会自动重发这次修改。";
+    }
+    if (persistFallback) { cfg.level = requestedLevel; save(); }
+    renderProfile(); render();
+    $("#saveStatus").textContent = message;
+  };
   // Send on release/change, before the popup can close. The service worker owns ordering.
-  chrome.runtime.sendMessage({ type: "setprofile", payload: { level: cfg.level } }, (result) => {
+  chrome.runtime.sendMessage({ type: "setprofile", payload: { level: requestedLevel } }, (result) => {
     const error = chrome.runtime.lastError;
     if (request !== levelRequest) return;
-    draftLevel = null;
-    if (error || !validProfile(result)) {
-      $("#saveStatus").textContent = `画像未保存：${result?.error || "连接失败，请重试"}`;
-      render();
+    if (!error && validProfile(result) && result.rev >= previousRev && result.level === requestedLevel) {
+      finish(result, "已保存到本机画像", true);
       return;
     }
-    prof = result; renderProfile(); render();
-    $("#saveStatus").textContent = "已保存到本机画像";
-    chrome.storage.local.set({ profileRev: result.rev });
+    $("#saveStatus").textContent = "保存响应未确认，正在重新读取画像核对…";
+    // A lost response may follow a successful write. Read once, without replaying the mutation.
+    chrome.runtime.sendMessage({ type: "profile", summary: true }, current => {
+      const failed = chrome.runtime.lastError;
+      if (request !== levelRequest) return;
+      if (failed || !validProfile(current) || current.rev < previousRev) {
+        finish(null, "保存结果尚未确认，请恢复画像连接后核对", false);
+        return;
+      }
+      const matches = current.level === requestedLevel;
+      finish(current, matches ? "已重新读取：当前词汇量与本次设置一致"
+        : "保存结果未确认；已重新读取当前词汇量，请核对后再调整", matches);
+    });
   });
 });
 document.querySelectorAll(".seg[data-key]").forEach((seg) => {

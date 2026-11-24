@@ -76,3 +76,25 @@ test('profile reads preserve server errors and never accept a failed HTTP respon
     assert.ok(w.calls.at(-1).options.signal instanceof AbortSignal);
   }
 });
+
+test('a timed out mark releases the serialized write queue without replaying it', async () => {
+  let posts = 0;
+  const w = worker((url, options) => {
+    if (url.endsWith('/api/health')) return response(product);
+    if (++posts === 1) return new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), {once:true});
+    });
+    return response({ok:true,level:6000});
+  });
+  w.context.AbortSignal = {timeout:ms => AbortSignal.timeout(ms === 10000 ? 20 : ms)};
+  const timer = setTimeout(() => {},1000); // Native abort timers do not keep Node alive.
+  try {
+    const results = await w.run("Promise.all([handle({type:'mark',payload:{key:'bank',state:'known'}}), handle({type:'setprofile',payload:{level:6000}})])");
+    assert.equal(results[0].uncertain,true);
+    assert.ok(results[0].error.includes('超时'));
+    assert.equal(results[1].level,6000);
+    assert.equal(posts,2);
+    assert.deepEqual(w.calls.filter(c => c.options.method === 'POST').map(c => JSON.parse(c.options.body)),
+      [{key:'bank',state:'known'}, {level:6000}]);
+  } finally {clearTimeout(timer);}
+});

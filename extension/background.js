@@ -97,6 +97,7 @@ async function perform(msg) {
         method: "POST",
         headers: { ...HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(msg.payload),
+        ...(msg.type === "explain" ? {} : { signal: AbortSignal.timeout(10000) }),
         });
         return await json(r);
       };
@@ -124,8 +125,13 @@ async function perform(msg) {
         body: JSON.stringify({ v: msg.id, t: Number(msg.t) || 0 }), cache: "no-store" });
       return { ok: true };
     }
-  } catch {
+  } catch (error) {
     lastHealth = null;               // server went away: look for it again next time
+    if (["profile", "mark", "setprofile"].includes(msg.type)) {
+      const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+      return { error: timedOut ? "请求超时，请检查本地程序" : "连接中断，请检查本地程序",
+        ...(msg.type === "profile" ? {} : { uncertain: true }) };
+    }
     return { error: "noserver" };
   }
   throw new Error("unknown message");
