@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date
@@ -36,7 +37,8 @@ import threading
 import time
 
 import srt
-from storage import write_json
+from storage import atomic_write_bytes, write_json
+from result_validation import valid_result
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -583,20 +585,63 @@ def unify_glosses(cues: list[dict]) -> None:
             n["zh"] = clean_zh(n["zh"])
 
 
+# ECMAScript whitespace matches shared/learning.js (Python's \s also includes extra controls).
+JS_SPACE = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
+def repetition_key(note):
+    """Use the browser's meaning grouping without needing its serialized hash identifier."""
+    if not note.get("zh") or note.get("local"):
+        return ("legacy", note["key"] if note["kind"] == "word" else f"{note['kind']}:{note['key']}")
+    gloss = unicodedata.normalize("NFKC", note["zh"])
+    gloss = re.sub("[" + re.escape(JS_SPACE + "，。；！？，、:：,.!?;（）()") + "]", "", gloss)
+    return ("context", note["key"].strip(JS_SPACE).lower(), gloss)
+
+
 def visible_notes(cues: list[dict], level: int, max_repeat: int = 2, per_line: int = 3) -> list[list[dict]]:
-    """Same rule as the web player: level filter, repeat cap, per-line cap (hardest first)."""
-    count: dict[str, int] = {}
+    """Filter by export threshold, with separate repetition counts for distinct meanings."""
+    count = {}
     out = []
     for c in cues:
         cand = sorted((n for n in c["notes"] if n["lv"] > level), key=lambda n: -n["lv"])
         keep = []
         for n in cand:
-            if len(keep) >= per_line or count.get(n["key"], 0) >= max_repeat:
+            key = repetition_key(n)
+            if len(keep) >= per_line or count.get(key, 0) >= max_repeat:
                 continue
-            count[n["key"]] = count.get(n["key"], 0) + 1
+            count[key] = count.get(key, 0) + 1
             keep.append(n)
         out.append(sorted(keep, key=lambda n: n["s"]))
     return out
+
+
+def export_srt(data: dict, destination: Path, level: int) -> int:
+    if type(level) is not int or not 1 <= level <= 100000:
+        raise ValueError("导出词汇量必须为 1 到 100000 的整数")
+    if not valid_result(data):
+        raise ValueError("字幕结果不完整或格式无效，请完成生成后再导出")
+    shown = visible_notes(data["cues"], level)
+    subs = []
+    for i, (cue, notes) in enumerate(zip(data["cues"], shown), 1):
+        text = cue["text"]
+        for note in sorted(notes, key=lambda n: n["e"], reverse=True):
+            text = text[:note["e"]] + f"({note['zh']})" + text[note["e"]:]
+        try:
+            subs.append(srt.Subtitle(i, srt.timedelta(seconds=cue["s"]), srt.timedelta(seconds=cue["e"]), text))
+        except OverflowError:
+            raise ValueError("字幕时间超出可导出范围") from None
+    atomic_write_bytes(destination, srt.compose(subs).encode("utf-8-sig"))
+    return sum(map(len, shown))
+
+
+def export_level(value):
+    try:
+        number = int(value)
+        if not 1 <= number <= 100000:
+            raise ValueError
+        return number
+    except ValueError:
+        raise argparse.ArgumentTypeError("导出词汇量必须为 1 到 100000 的整数") from None
 
 
 def load_dotenv(path: Path) -> None:
@@ -641,28 +686,26 @@ def main():
     ap.add_argument("--effort", default="medium",
                     help="reasoning effort for the annotation step (gpt-5 / o-series); translation uses low")
     ap.add_argument("--dry-run", action="store_true", help="frequency step only, no API calls")
-    ap.add_argument("--export-srt", type=int, metavar="LEVEL", help="write an .srt for one level from the JSON")
+    ap.add_argument("--export-srt", type=export_level, metavar="LEVEL", help="write an .srt for one level from the JSON")
     args = ap.parse_args()
 
     src = Path(args.srt_file)
     video_id = src.name.split(".")[0]
     out_json = src.with_name(f"{video_id}.json")
 
-    if args.export_srt:
-        data = json.loads(out_json.read_text(encoding="utf-8"))
-        shown = visible_notes(data["cues"], args.export_srt)
-        subs = []
-        for i, (c, notes) in enumerate(zip(data["cues"], shown), 1):
-            t = c["text"]
-            for n in sorted(notes, key=lambda n: n["e"], reverse=True):
-                t = t[:n["e"]] + f"({n['zh']})" + t[n["e"]:]
-            subs.append(srt.Subtitle(i, srt.timedelta(seconds=c["s"]), srt.timedelta(seconds=c["e"]), t))
+    if args.export_srt is not None:
         out = src.with_name(f"{video_id}.v{args.export_srt}.srt")
-        out.write_text(srt.compose(subs), encoding="utf-8-sig")
-        print(f"wrote {out} ({sum(map(len, shown))} annotations)")
+        try:
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+            count = export_srt(data, out, args.export_srt)
+        except (OSError, ValueError) as e:
+            sys.exit(f"导出失败，原有文件未改变：{e}")
+        print(f"wrote {out} ({count} annotations)")
         return
 
     raw = list(srt.parse(src.read_text(encoding="utf-8-sig")))
+    if not raw or not any(clean(c.content) for c in raw):
+        sys.exit("字幕文件为空，未开始生成")
     texts = [clean(c.content) for c in raw]
     print(f"{len(raw)} cues")
     cands = find_candidates(texts)
@@ -717,7 +760,7 @@ def main():
         "model": None if args.dry_run else args.model,
         "cues": cues,
     }
-    out_json.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    write_json(out_json, data)
     if not args.dry_run:
         update_index(src.parent, video_id, data["video"]["title"], out_json.name)
 

@@ -5,6 +5,16 @@ const path = require("node:path");
 const L = require("../shared/learning.js");
 const bank = { key: "bank", kind: "word", zh: "银行", lv: 5000 };
 const shore = { key: "bank", kind: "sense", zh: "河岸", lv: 5000 };
+const exportMeanings = require("./fixtures/export_meanings.json");
+for (const fixture of exportMeanings.cases) test(`browser/export agreement: ${fixture.name}`, () => {
+  const counts = new Map();
+  const actual = fixture.cues.map(ids => {
+    const selected = L.select(ids.map(id => exportMeanings.notes[id]), new Set(), new Set(), fixture.level,
+      { repeat: fixture.repeat, perLine: fixture.perLine }, counts);
+    return ids.filter((_, i) => selected.has(i));
+  });
+  assert.deepEqual(actual, fixture.expected);
+});
 
 test("learning one meaning does not hide another meaning of the same word", () => {
   const known = new Set([L.key(bank)]);

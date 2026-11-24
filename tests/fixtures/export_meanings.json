@@ -1,0 +1,24 @@
+{
+  "notes": {
+    "finance": {"key": "bank", "kind": "word", "zh": "银行", "lv": 5000, "s": 0},
+    "financePunctuation": {"key": " BANK ", "kind": "sense", "zh": "　银行。（）", "lv": 5000, "s": 0},
+    "shore": {"key": "bank", "kind": "word", "zh": "河岸", "lv": 5000, "s": 0},
+    "plane": {"key": "take off", "kind": "phrase", "zh": "起飞", "lv": 6000, "s": 8},
+    "remove": {"key": "take off", "kind": "phrase", "zh": "脱下", "lv": 6000, "s": 8},
+    "rare": {"key": "rarity", "kind": "word", "zh": "稀有", "lv": 10000, "s": 15},
+    "local": {"key": "bank", "kind": "word", "zh": "银行", "lv": 5000, "s": 0, "local": true}
+  },
+  "cases": [
+    {"name": "same lemma different meanings", "level": 3000, "repeat": 2, "perLine": 3,
+     "cues": [["finance"], ["finance"], ["shore"], ["shore"], ["finance"], ["shore"]],
+     "expected": [["finance"], ["finance"], ["shore"], ["shore"], [], []]},
+    {"name": "normalized gloss and lemma share repetition", "level": 3000, "repeat": 1, "perLine": 3,
+     "cues": [["finance"], ["financePunctuation"], ["shore"]], "expected": [["finance"], [], ["shore"]]},
+    {"name": "different phrase senses", "level": 3000, "repeat": 1, "perLine": 3,
+     "cues": [["plane"], ["remove"], ["plane"]], "expected": [["plane"], ["remove"], []]},
+    {"name": "local dictionary entry keeps legacy identity", "level": 3000, "repeat": 1, "perLine": 3,
+     "cues": [["local"], ["finance"], ["local"]], "expected": [["local"], ["finance"], []]},
+    {"name": "difficulty cap does not consume hidden repetitions", "level": 5000, "repeat": 1, "perLine": 1,
+     "cues": [["finance", "plane", "rare"], ["plane"], ["plane"]], "expected": [["rare"], ["plane"], []]}
+  ]
+}
