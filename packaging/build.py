@@ -90,15 +90,10 @@ def main():
             __import__(mod)
         except ImportError:
             sys.exit(f"缺少 {mod}：先运行 .venv/Scripts/python -m pip install pyinstaller av faster-whisper")
-    model = APP / "models" / "faster-whisper-base.en"
-    # local speech model, bundled (Hugging Face is often blocked in China). The release uses an int8 copy
-    # (76 MB instead of 145 MB, same results), made once with:
-    #   ct2-transformers-converter --model openai/whisper-base.en --output_dir models/faster-whisper-base.en
-    #       --quantization int8 --copy_files tokenizer.json preprocessor_config.json
-    # (needs: pip install ctranslate2 transformers torch). Without it, the fp16 copy is downloaded here.
-    if not (model / "model.bin").exists():
-        from huggingface_hub import snapshot_download
-        snapshot_download("Systran/faster-whisper-base.en", local_dir=str(model), allow_patterns=["*.bin", "*.json", "*.txt"])
+    # Pin and verify every model file; recognition itself never downloads missing components.
+    sys.path.insert(0, str(ROOT / "tools"))
+    from prepare_local_model import install
+    install()
     if not (APP / "data" / "ranks_en.txt").exists():
         from wordfreq import top_n_list
         (APP / "data" / "ranks_en.txt").write_text("\n".join(top_n_list("en", 100_000)), encoding="utf-8")

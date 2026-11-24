@@ -519,7 +519,7 @@
     $("#b3").textContent = p.error ? "恢复画像" : p.setup ? "打开" : "开始";
     $("#b3").className = p.setup ? "btn" : "btn primary";
     status(4, s.asr ? "ok" : "idle", (s.asr ? "小米 MiMo，没有英文字幕的视频也能用" : "没设置，只影响没有英文字幕的视频") +
-      (s.local_asr ? "；接口拒绝的句子由本机模型补上" : ""));
+      (s.local_asr ? "；接口未识别的句子可尝试本机识别" : ""));
     const todo = [!s.key, seen == null, !p.setup].filter(Boolean).length;
     $("#readyNote").textContent = todo ? `还有 ${todo} 项没完成` : "都准备好了";
 

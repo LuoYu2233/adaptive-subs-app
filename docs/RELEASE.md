@@ -1,10 +1,12 @@
-# 0.4.0-alpha.3 本地试用版
+# 0.4.0-alpha.4 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
 与 alpha.1 相比，alpha.2 增加日志容量控制与脱敏、Unicode 注释定位修复、损坏结果重试、更严格的模型响应校验、长字幕渲染优化和插件弹窗保存反馈。旧版源码包保留供回退。
 
 alpha.3 进一步修复画像文件损坏后可能被普通标记覆盖的问题，提供先保留原始文件再重建、导入备份的恢复流程。恢复副本位于用户目录 `recovery/`，完整备份或清理时请一并处理。
+
+alpha.4 隔离不同服务接口的模型缓存与断点，新增固定版本的本地语音模型安装校验，以及真实 CPU 识别检查工具。旧版未完成任务没有接口指纹，主动恢复时会重新生成注释和翻译，可能产生新的模型用量；已完成视频仍可直接读取。
 
 ## 这一版的变化
 
@@ -38,11 +40,24 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.3-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.4-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。
 制包工具只读取 Git 提交中的允许路径，拒绝被误跟踪的 key 配置、画像、任务数据库与缓存；不从工作目录收集用户数据。
+
+## 可选本地语音兜底
+
+源码包不含语音模型。主动安装会从 [Systran 的公开模型仓库](https://huggingface.co/Systran/faster-whisper-base.en) 下载约 148 MB 固定版本文件，并核对逐文件 SHA-256；不需要付费 API。安装工具不会覆盖已有但不同或损坏的模型目录，可指定新目录并通过 `LOCAL_ASR_MODEL_DIR` 使用。
+
+```sh
+python tools/prepare_local_model.py --install
+python tools/prepare_local_model.py                 # 再次校验，无下载
+# 已有离线文件：加 --install --source /path/to/model
+python tools/local_asr_check.py                    # 另需本机 eSpeak NG
+```
+
+识别时只读取完整本地模型，不补下载。真实组件检查使用三段原创合成英语和静音，保存参考文本、转写、逐词差异、耗时、音频摘要和环境信息到 `test-results/local-asr/check/`。该检查不代表真实视频、口音或噪声条件下的准确度验收，不纳入每小时离线单元测试。
 
 ## 升级与回退
 
@@ -57,7 +72,7 @@ python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.3-sou
 
 ## 已验证与未验证
 
-已验证：Linux / Python 3.12 依赖安装、离线回归、真实 Chromium 页面交互，以及实际插件在本地模拟的视频页面上的字幕、词义卡片、标记和失败回退。测试使用临时数据和模拟模型，没有付费生成。
+已验证：Linux / Python 3.12 依赖安装、离线回归、真实 Chromium 页面交互，以及实际插件在本地模拟的视频页面上的字幕、词义卡片、标记和失败回退。云端请求使用模拟模型；本地 Whisper 另做了真实 CPU 合成语音检查，没有付费生成。
 
 待验证：真实模型输出准确度、真实 B 站/YouTube 字幕接口与登录限制、长视频实际费用和延迟、Windows 安装与打包、自动升级及签名。
 程序代码、依赖、数据和图标各自的授权范围需要在正式商业发行前逐项核实；仓库注明图标和入场插画不属于 MIT 代码许可。
