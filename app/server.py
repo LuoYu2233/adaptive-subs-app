@@ -140,6 +140,28 @@ class FetchFailed(Exception):
     """YouTube did not answer in time (network trouble), as opposed to the video having no subtitles."""
 
 
+class VideoAccessError(Exception):
+    def __init__(self, code: str, message: str, retry: bool):
+        super().__init__(message)
+        self.code, self.retry = code, retry
+
+
+def video_access_error(error):
+    """Turn platform restrictions into useful messages, without exposing yt-dlp CLI instructions."""
+    text = str(error).lower()
+    if "not a bot" in text:
+        return VideoAccessError("platform_verification", "YouTube 要求验证访问身份，当前环境暂时无法匿名获取字幕。请稍后重试，或选择其他公开英语视频。", True)
+    if re.search(r"http(?: error| status)?[ :]+429\b", text) or "too many requests" in text:
+        return VideoAccessError("platform_rate_limit", "YouTube 暂时限制了请求频率。请稍后再试，连续重试可能延长限制。", True)
+    if any(term in text for term in ("private video", "members-only", "join this channel", "confirm your age", "age-restricted", "login required")):
+        return VideoAccessError("platform_login", "这个视频需要登录、年龄验证或会员权限，当前程序无法匿名获取字幕。请选择可公开访问的视频。", False)
+    if any(term in text for term in ("video unavailable", "has been removed", "not available in your country")):
+        return VideoAccessError("video_unavailable", "这个视频已不可用或在当前地区无法访问，请选择其他视频。", False)
+    if re.search(r"http(?: error| status)?[ :]+403\b", text):
+        return VideoAccessError("platform_denied", "YouTube 拒绝了当前字幕请求（HTTP 403）。请稍后重试，或选择其他公开英语视频。", True)
+    return None
+
+
 # A subtitle download normally takes well under a second, but YouTube's caption server now and then
 # accepts the connection and never answers. Give up on such a request quickly and ask again.
 NET_TIMEOUT = 10       # seconds without data before a request is abandoned
@@ -165,6 +187,9 @@ def with_retries(what: str, fn, on_retry=None, tries: int = NET_TRIES):
         try:
             return fn()
         except Exception as e:      # yt-dlp wraps timeouts in TransportError / DownloadError
+            access = video_access_error(e)
+            if access:
+                raise access from e  # Restrictions and rate limits must not trigger rapid automatic retries.
             if not is_network_error(e):
                 raise
             last = e
@@ -473,6 +498,11 @@ def _run_job(job: Job):
         if job.aborted:
             return
         finalize(job)
+    except VideoAccessError as e:
+        if job.state == "cancelling":
+            return
+        job.state = "error"
+        job.emit("fail", {"msg": str(e), "retry": e.retry, "code": e.code})
     except ASR.AudioError as e:
         if job.state == "cancelling":
             return
@@ -1543,6 +1573,8 @@ class Handler(SimpleHTTPRequestHandler):
         """English subtitles of a YouTube video for the extension, without generating glosses."""
         try:
             sub = fetch_subtitles(vid)
+        except VideoAccessError as error:
+            return self.send_json({"id": vid, "error": str(error), "retry": error.retry, "code": error.code})
         except NoSubtitles:
             return self.send_json({"id": vid, "nosubs": True, "error": "这个视频没有英文字幕"})
         except FetchFailed as e:

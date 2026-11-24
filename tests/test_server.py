@@ -49,6 +49,16 @@ def test_get_never_starts_paid_work(http_server, monkeypatch):
     start.assert_not_called()
 
 
+def test_extension_receives_platform_restriction_without_model_work(http_server, monkeypatch):
+    error = S.video_access_error(RuntimeError("Sign in to confirm you're not a bot"))
+    monkeypatch.setattr(S, "fetch_subtitles", Mock(side_effect=error))
+    status, raw = request(http_server, "POST", "/api/ext/open", json.dumps({
+        "id": "abcdefghijk", "source": "youtube", "subs_only": True}), H)
+    body = json.loads(raw)
+    assert status == 200 and body["code"] == "platform_verification" and body["retry"]
+    assert not S.JOBS and not body.get("nosubs")
+
+
 def test_foreign_origin_rejected_even_with_header(http_server):
     assert request(http_server, "POST", "/api/open", '{"url":"abcdefghijk"}', {**H, "Origin": "https://evil.example"})[0] == 403
 
