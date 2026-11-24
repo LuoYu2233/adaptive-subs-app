@@ -307,7 +307,7 @@
   }
 
   function setCues(cues) {
-    S.cues = cues.map((c) => ({ s: c.s, e: c.e, text: c.text, zh: c.zh || "", notes: c.notes || [] }));
+    S.cues = cues.map((c) => ({ s: c.s, e: c.e, text: c.text, zh: c.zh || "", notes: AdaptiveLearning.clientNotes(c.text, c.notes || []) }));
     computeVisible();
   }
 
@@ -337,7 +337,9 @@
           });
           S.dirty = true;
         } else if (type === "ann") {
-          for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = notes; S.annDone && S.annDone.add(+k); }
+          for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) {
+            S.cues[+k].notes = AdaptiveLearning.clientNotes(S.cues[+k].text, notes); S.annDone && S.annDone.add(+k);
+          }
         } else if (type === "zh") {
           for (const [k, z] of Object.entries(d)) if (S.cues[+k]) S.cues[+k].zh = z;
         } else if (type === "text") {           // speech recognition: a line's words arrived
@@ -393,7 +395,7 @@
       const s = m.index, e = s + m[0].length;
       if (c.notes.some((n) => n.s < e && s < n.e)) continue;
       const key = lemmaGuesses(m[0]).find((k) => PF.unknown.has(k) && defs[k]);
-      if (key) extra.push({ s, e, zh: defs[key], lv: 99999, kind: "word", key, local: true });
+      if (key) extra.push({ s, e, zh: defs[key], lv: 99999, kind: "word", key, local: true, offsets: "utf16" });
     }
     if (extra.length) c.notes = c.notes.concat(extra).sort((a, b) => a.s - b.s);
   }

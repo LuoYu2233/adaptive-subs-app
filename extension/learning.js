@@ -43,7 +43,19 @@
     return selected;
   }
   const label = k => k.startsWith("ctx:") ? k.slice(4, k.lastIndexOf(":")) : k.replace(/^(sense|phrase):/, "");
-  const api = { key, legacyKey, state, select, label };
+  function clientNotes(text, notes = []) {
+    // Persisted/server offsets are Python Unicode code points; JS slice() uses UTF-16 units.
+    const offsets = [0];
+    for (const point of text) offsets.push(offsets[offsets.length - 1] + point.length);
+    return notes.map(note => {
+      const limit = note.offsets === "utf16" ? text.length : offsets.length - 1;
+      if (!Number.isInteger(note.s) || !Number.isInteger(note.e) || note.s < 0 || note.e <= note.s || note.e > limit)
+        throw new Error("字幕注释位置无效，请重新生成");
+      return { ...note, s: note.offsets === "utf16" ? note.s : offsets[note.s],
+        e: note.offsets === "utf16" ? note.e : offsets[note.e], offsets: "utf16" };
+    });
+  }
+  const api = { key, legacyKey, state, select, label, clientNotes };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AdaptiveLearning = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

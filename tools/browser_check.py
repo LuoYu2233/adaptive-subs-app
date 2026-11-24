@@ -129,7 +129,7 @@ def main():
                     data = home / "data"
                     data.mkdir(exist_ok=True)
                     cues = []
-                    for i, (text, zh) in enumerate((("The bank approved my loan.", "银行"),
+                    for i, (text, zh) in enumerate((("😀 The bank approved my loan.", "银行"),
                                                     ("We walked along the river bank.", "河岸"))):
                         offset = text.index("bank")
                         cues.append({"s": i * 5, "e": i * 5 + 5, "text": text, "zh": "",

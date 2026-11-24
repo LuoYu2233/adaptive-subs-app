@@ -82,6 +82,7 @@ def check_extension(playwright, base, home, output):
             page.wait_for_function("document.querySelector('video').readyState >= 1")
             gloss = page.locator(".asubs-gz")
             expect(gloss).to_have_text("银行", timeout=20000)
+            expect(page.locator(".asubs-w")).to_have_text("bank")
             page.locator(".asubs-t").filter(has_text="bank").click()
             expect(page.locator(".asubs-card-zh")).to_contain_text("银行")
             fail_mark = True
