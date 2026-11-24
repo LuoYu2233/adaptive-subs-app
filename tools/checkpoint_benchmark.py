@@ -23,9 +23,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cues", type=int, default=6000)
     parser.add_argument("--updates", type=int, default=100)
+    parser.add_argument("--history", type=int, default=20)
     args = parser.parse_args()
-    if not 1 <= args.cues <= 50000 or not 1 <= args.updates <= 10000:
-        parser.error("cues must be 1–50000; updates must be 1–10000")
+    if not 1 <= args.cues <= 50000 or not 1 <= args.updates <= 10000 or not 1 <= args.history <= 100:
+        parser.error("cues must be 1–50000; updates must be 1–10000; history must be 1–100")
     report = {"timestamp": datetime.now(timezone.utc).isoformat(), "cues": args.cues,
               "updates": args.updates, "scope": "Synthetic burst of checkpoint writes; no model generation", "results": {}}
     with tempfile.TemporaryDirectory(prefix="asubs-checkpoint-bench-") as temp:
@@ -54,6 +55,18 @@ def main():
             persisted = S.TASK_STORE.load(job.vid)["payload"]["done"]
             assert persisted == args.updates
             report["results"][mode] = {"seconds": round(elapsed, 3), "writes": writes, "persisted_done": persisted}
+        payload = S.TASK_STORE.load(job.vid)["payload"]
+        history = TaskStore(Path(temp) / "history.sqlite3")
+        for i in range(args.history):
+            history.save(str(i), "done", payload)
+        report["history"] = {"records": args.history, "reads": {}}
+        for mode in ("full", "summary"):
+            timings = []
+            for _ in range(5):
+                start = time.monotonic()
+                rows = history.recent(args.history, summary=mode == "summary")
+                timings.append(round((time.monotonic() - start) * 1000, 1))
+            report["history"]["reads"][mode] = {"milliseconds": timings, "result_bytes": len(json.dumps(rows).encode())}
     output = ROOT / "test-results/checkpoint-coalescing.json"
     output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

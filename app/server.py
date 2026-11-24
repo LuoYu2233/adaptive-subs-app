@@ -1098,7 +1098,9 @@ def recent_videos(limit: int = 8) -> list:
             if f.name == "index.json":
                 continue
             try:
-                head = f.open(encoding="utf-8").read(600)
+                with f.open(encoding="utf-8") as stream:
+                    head = stream.read(600)
+                modified = f.stat().st_mtime
                 m = re.search(r'"title":"((?:[^"\\]|\\.)*)"', head) or re.search(r'"title":\s*"((?:[^"\\]|\\.)*)"', head)
                 if not m or '"video"' not in head:      # not a processed video (word lists, test bank ...)
                     continue
@@ -1111,7 +1113,7 @@ def recent_videos(limit: int = 8) -> list:
             url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
                    f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or kind == "youtube" else "")
             out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
-                        "mtime": f.stat().st_mtime})
+                        "mtime": modified})
     out.sort(key=lambda x: -x["mtime"])
     return out[:limit]
 
@@ -1130,7 +1132,7 @@ def app_status(port: int) -> dict:
     live_ids = {j.vid for j in jobs}
     task_issue = None
     try:
-        saved_tasks = TASK_STORE.recent()
+        saved_tasks = TASK_STORE.recent(summary=True)
     except TaskStoreCorrupt as error:
         saved_tasks = []
         task_issue = {"error": str(error), "recoverable": bool(error.fingerprint), "fingerprint": error.fingerprint}

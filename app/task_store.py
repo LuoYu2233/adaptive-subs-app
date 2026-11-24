@@ -29,6 +29,7 @@ class TaskStore:
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.RLock()
+        self._json_functions = True
 
     def _connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,12 +124,28 @@ class TaskStore:
             finally:
                 connection.close()
 
-    def recent(self, limit=20) -> list[dict]:
+    def recent(self, limit=20, *, summary=False) -> list[dict]:
         with self._lock:
             connection = self._connect()
             try:
-                rows = connection.execute("SELECT id, state, updated, payload FROM jobs ORDER BY updated DESC LIMIT ?",
-                                          (min(100, max(1, limit)),)).fetchall()
+                expression = "payload"
+                if summary and self._json_functions:
+                    # Validate the same top-level types as a full read before removing bulky fields.
+                    # Corrupt records fall through unchanged so _decode still reports the problem.
+                    fields = {"cues": "array", "ann": "object", "zh": "object", "usage": "object",
+                              "asr_usage": "object", "failed_tasks": "array"}
+                    invalid = " OR ".join(f"COALESCE(json_type(payload, '$.{key}'), '{kind}') != '{kind}'" for key, kind in fields.items())
+                    remove = ", ".join(f"'$.{key}'" for key in (*fields, "sub"))
+                    expression = f"CASE WHEN NOT json_valid(payload) THEN payload WHEN {invalid} THEN payload ELSE json_remove(payload, {remove}) END"
+                try:
+                    rows = connection.execute(f"SELECT id, state, updated, {expression} FROM jobs ORDER BY updated DESC LIMIT ?",
+                                              (min(100, max(1, limit)),)).fetchall()
+                except sqlite3.OperationalError as error:
+                    if expression == "payload" or "no such function: json_" not in str(error):
+                        raise
+                    self._json_functions = False  # Custom SQLite builds may omit JSON support.
+                    rows = connection.execute("SELECT id, state, updated, payload FROM jobs ORDER BY updated DESC LIMIT ?",
+                                              (min(100, max(1, limit)),)).fetchall()
                 return [{"id": row[0], **self._decode(*row[1:])} for row in rows]
             except sqlite3.Error as error:
                 self._raise_corrupt(error)
