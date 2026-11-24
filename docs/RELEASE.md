@@ -1,4 +1,4 @@
-# 0.4.0-alpha.5 本地试用版
+# 0.4.0-alpha.6 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -9,6 +9,8 @@ alpha.3 进一步修复画像文件损坏后可能被普通标记覆盖的问题
 alpha.4 隔离不同服务接口的模型缓存与断点，新增固定版本的本地语音模型安装校验，以及真实 CPU 识别检查工具。旧版未完成任务没有接口指纹，主动恢复时会重新生成注释和翻译，可能产生新的模型用量；已完成视频仍可直接读取。
 
 alpha.5 增加损坏任务库的控制台恢复入口，先保留副本再重建；首份进度无法保存时阻止生成开始。后台进度每秒合并保存一次，开始、取消和结束立即保存。异常断电可能丢失最近约一秒、尚未写入的进度；模型响应缓存仍独立保存，恢复时会尽量复用。
+
+alpha.6 改用精简任务摘要降低控制台读取开销，区分 YouTube 验证、限流和权限错误；修复音频提前断流后的无限等待，校验分段响应并限制缓冲区增长。语音识别上限为 3 小时，流式压缩音频文件上限为 384 MB，超限会明确报错；不同音频格式可能有不同文件大小。
 
 ## 这一版的变化
 
@@ -42,7 +44,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.5-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.6-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.6-source.zip
 ```
 
 源码包附有逐文件 SHA-256 清单、Git 提交号和外部 `.sha256` 校验文件；相同提交可得到相同源码 ZIP。校验检测损坏或意外修改，不能替代发布者签名。
@@ -77,6 +80,7 @@ python tools/local_asr_check.py                    # 另需本机 eSpeak NG
 已验证：Linux / Python 3.12 依赖安装、离线回归、真实 Chromium 页面交互，以及实际插件在本地模拟的视频页面上的字幕、词义卡片、标记和失败回退。云端请求使用模拟模型；本地 Whisper 另做了真实 CPU 合成语音检查，没有付费生成。
 
 待验证：真实模型输出准确度、真实 B 站/YouTube 字幕接口与登录限制、长视频实际费用和延迟、Windows 安装与打包、自动升级及签名。
+真实 YouTube 单次公共字幕获取已成功，但随后匿名访问受到平台身份验证限制，真实页面端到端检查未通过。可用 `python tools/live_youtube_check.py --video VIDEO_ID` 显式复查；该工具会联系真实平台，不包含在定时回归中。平台限制不会通过自动高频重试或读取浏览器登录信息来处理。
 程序代码、依赖、数据和图标各自的授权范围需要在正式商业发行前逐项核实；仓库注明图标和入场插画不属于 MIT 代码许可。
 
 具体测试记录与已知边界见 [工程记录](ENGINEERING_PROGRESS.md)。

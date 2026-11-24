@@ -18,6 +18,7 @@ import bisect
 import io
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -58,6 +59,7 @@ CHUNK = 1 << 20              # bytes per range request: stays inside the CDN's f
 FIRST_CHUNKS = 4             # the first ranges are smaller (256 KB ≈ 20 s of audio each): sound sooner
 DL_WORKERS = 8               # parallel connections
 CHUNK_TRIES = 4
+MAX_AUDIO_BYTES = 384 * 1024 * 1024  # compressed audio; prevents unbounded allocation from a bad header
 
 
 def audio_formats(url: str) -> tuple[dict, list[dict]]:
@@ -82,6 +84,8 @@ class ChunkedDownload:
     queue), so a decoder can read the file while it downloads."""
 
     def __init__(self, url: str, headers: dict, workers: int = DL_WORKERS, chunk: int = CHUNK):
+        if workers < 1 or chunk < 4:
+            raise ValueError("Invalid audio download concurrency or chunk size")
         self.url, self.headers, self.chunk = url, dict(headers or {}), chunk
         self.cond = threading.Condition()
         self.error: str | None = None
@@ -109,6 +113,7 @@ class ChunkedDownload:
     def _open(self, start: int | None = None, end: int | None = None, timeout: float = 15):
         import urllib.request
         h = dict(self.headers)
+        h["Accept-Encoding"] = "identity"  # Range offsets describe the audio file bytes.
         if start is not None:
             h["Range"] = f"bytes={start}-{end}"
         return urllib.request.urlopen(urllib.request.Request(self.url, headers=h), timeout=timeout)
@@ -116,14 +121,25 @@ class ChunkedDownload:
     def _probe(self) -> int:
         with self._open(0, 0) as r:
             cr = r.headers.get("Content-Range", "")
-            m = re.search(r"/(\d+)$", cr)
-            if r.status == 206 and m:
+            m = re.fullmatch(r"bytes 0-0/(\d+)", cr)
+            if r.status == 206:
+                if not m:
+                    raise AudioError("音频服务器返回了无效的分段范围")
                 self.ranged = True
-                return int(m.group(1))
-            self.ranged = False
-            size = int(r.headers.get("Content-Length") or 0)
-        if not size:
-            raise AudioError("音频服务器没有告诉文件大小")
+                size_text = m.group(1)
+            elif r.status == 200:
+                self.ranged = False
+                size_text = r.headers.get("Content-Length") or "0"
+            else:
+                raise AudioError("音频服务器未返回可读取的文件")
+        try:
+            size = int(size_text)
+        except (ValueError, TypeError):
+            raise AudioError("音频服务器没有提供有效文件大小") from None
+        if size <= 0:
+            raise AudioError("音频服务器没有提供有效文件大小")
+        if size > MAX_AUDIO_BYTES:
+            raise AudioError(f"音频文件超过 {MAX_AUDIO_BYTES // 1024 // 1024} MB，请选择较短或较小的视频")
         return size
 
     def _next(self) -> int | None:
@@ -145,7 +161,9 @@ class ChunkedDownload:
             for attempt in range(CHUNK_TRIES):
                 try:
                     with self._open(s, e) as r:
-                        data = r.read()
+                        if r.status != 206 or r.headers.get("Content-Range") != f"bytes {s}-{e}/{self.size}":
+                            raise AudioError("音频服务器返回的分段范围与请求不符")
+                        data = r.read(e - s + 2)  # At most the requested bytes plus one overflow sentinel.
                     if len(data) != e - s + 1:
                         raise IOError(f"short read {len(data)}/{e - s + 1}")
                     with self.cond:
@@ -170,18 +188,23 @@ class ChunkedDownload:
             with self._open(timeout=30) as r:
                 pos = 0
                 while not self.cancelled:
-                    data = r.read(65536)
+                    data = r.read(min(65536, self.size - pos + 1))
                     if not data:
+                        if pos != self.size:
+                            raise AudioError(f"音频下载提前结束（已收到 {pos}/{self.size} 字节），请重试")
+                        with self.cond:
+                            self.done[-1] = True  # Final chunk is complete only after a verified EOF.
+                            self.cond.notify_all()
                         break
+                    if pos + len(data) > self.size:
+                        raise AudioError("音频文件大小在下载期间变化，请重试")
                     with self.cond:
                         self.buf[pos:pos + len(data)] = data
                         pos += len(data)
                         self.received = pos
                         for i, st in enumerate(self.starts):
-                            if self._end(i) <= pos:
+                            if self._end(i) <= pos and self._end(i) < self.size:
                                 self.done[i] = True
-                        if pos >= self.size:
-                            self.done = [True] * len(self.done)
                         self.cond.notify_all()
         except Exception as ex:
             with self.cond:
@@ -193,6 +216,8 @@ class ChunkedDownload:
 
     def read_at(self, pos: int, n: int) -> bytes:
         """Up to n bytes from pos; waits for them to arrive. b"" only at the end of the file."""
+        if pos < 0:
+            raise ValueError("Audio read position cannot be negative")
         if pos >= self.size or n <= 0:
             return b""
         i = bisect.bisect_right(self.starts, pos) - 1
@@ -245,7 +270,12 @@ class _Reader(io.RawIOBase):
         return len(data)
 
     def seek(self, off, whence=io.SEEK_SET):
-        self.pos = off if whence == io.SEEK_SET else self.pos + off if whence == io.SEEK_CUR else self.dl.size + off
+        if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
+            raise ValueError("Invalid audio seek mode")
+        target = off if whence == io.SEEK_SET else self.pos + off if whence == io.SEEK_CUR else self.dl.size + off
+        if target < 0:
+            raise ValueError("Audio seek position cannot be negative")
+        self.pos = target
         return self.pos
 
     def tell(self):
@@ -420,13 +450,15 @@ def segment(pcm: np.ndarray) -> list[tuple[float, float]]:
     smooth = np.convolve(db, np.ones(w) / w, mode="same")
 
     def split(a: int, b: int):                       # long line: cut at its quietest moment
-        if (b - a) * FRAME <= MAX_LINE:
-            pieces.append((a, b))
-            return
-        lo, hi = a + int(1.5 / FRAME), b - int(1.5 / FRAME)
-        k = lo + int(np.argmin(smooth[lo:hi]))
-        split(a, k)
-        split(k, b)
+        pending = [(a, b)]
+        while pending:
+            lo_piece, hi_piece = pending.pop()
+            if (hi_piece - lo_piece) * FRAME <= MAX_LINE:
+                pieces.append((lo_piece, hi_piece))
+                continue
+            lo, hi = lo_piece + int(1.5 / FRAME), hi_piece - int(1.5 / FRAME)
+            k = lo + int(np.argmin(smooth[lo:hi]))
+            pending.extend(((k, hi_piece), (lo_piece, k)))
 
     for a, b in utts:
         split(a, b)
@@ -461,7 +493,14 @@ class StreamSegmenter:
     MAX_WINDOW = 240.0
 
     def __init__(self, duration: float = 0.0):
-        self.pcm = np.zeros(int((duration + 10) * SR) if duration else SR * 600, dtype=np.int16)
+        try:
+            duration = float(duration)
+            if not math.isfinite(duration) or not 0 <= duration <= MAX_HOURS * 3600:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError):
+            raise AudioError(f"音频时长无效或超过 {MAX_HOURS} 小时") from None
+        self.max_samples = int(MAX_HOURS * 3600 * SR)
+        self.pcm = np.zeros(min(self.max_samples, int((duration + 10) * SR) if duration else SR * 600), dtype=np.int16)
         self.n = 0                  # samples filled
         self.commit = 0.0           # seconds: everything before this is cut into released pieces
         self.next_cut = self.FIRST
@@ -473,8 +512,10 @@ class StreamSegmenter:
 
     def add(self, block: np.ndarray) -> list[tuple[float, float]]:
         with self.lock:
+            if self.n + len(block) > self.max_samples:
+                raise AudioError(f"实际音频超过 {MAX_HOURS} 小时，已停止识别")
             if self.n + len(block) > len(self.pcm):          # longer than expected: grow
-                bigger = np.zeros(max(len(self.pcm) * 2, self.n + len(block)), dtype=np.int16)
+                bigger = np.zeros(min(self.max_samples, max(len(self.pcm) * 2, self.n + len(block))), dtype=np.int16)
                 bigger[:self.n] = self.pcm[:self.n]
                 self.pcm = bigger
             self.pcm[self.n:self.n + len(block)] = block
