@@ -19,6 +19,7 @@ Phrases and common words in an uncommon sense are never hidden by the library, o
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -198,6 +199,8 @@ class Store:
             p = self.load()
             if "identity" in body:
                 ident = body.get("identity")
+                if ident is not None and not isinstance(ident, str):
+                    return "身份选项不对"
                 if ident not in IDENTITIES and ident not in (None, ""):
                     return "身份选项不对"
                 p["identity"] = ident or None
@@ -205,6 +208,8 @@ class Store:
                 p["field"] = str(body.get("field") or "").strip()[:40] or None
             if "exams" in body:
                 exams = {}
+                if not isinstance(body["exams"], dict):
+                    return "考试成绩格式不正确"
                 for k, v in (body.get("exams") or {}).items():
                     if k not in EXAMS or v in (None, ""):
                         continue
@@ -220,21 +225,39 @@ class Store:
             if "level" in body:
                 try:
                     p["level"] = min(LEVELS, key=lambda lv: abs(lv - int(body["level"])))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return "词汇量不是数字"
             if ("exams" in body or "identity" in body) and "level" not in body and not p.get("test"):
                 p.pop("level", None)      # no test yet: the level follows the exams / identity
-            if isinstance(body.get("test"), dict):
+            if "test" in body:
+                if not isinstance(body["test"], dict):
+                    return "测试结果格式不正确"
                 t = body["test"]
                 try:
                     est = int(t.get("est"))
-                except (TypeError, ValueError):
+                    if not 0 < est <= 100_000:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
                     return "测试结果不完整"
+                for name in ("known", "unknown"):
+                    xs = t.get(name, [])
+                    if not isinstance(xs, list) or len(xs) > 500 or any(not isinstance(x, str) for x in xs):
+                        return "测试词表格式不正确"
                 clean = lambda xs: sorted({str(x).lower() for x in (xs or []) if KEY_RE.fullmatch(str(x).lower())})[:500]
-                bands = [round(float(b), 3) for b in (t.get("bands") or [])][:20]
+                raw_bands = t.get("bands", [])
+                if not isinstance(raw_bands, list) or len(raw_bands) > 20:
+                    return "测试分段结果格式不正确"
+                try:
+                    bands = [round(float(b), 3) for b in raw_bands]
+                    if any(not math.isfinite(b) or not 0 <= b <= 1 for b in bands):
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    return "测试分段结果应在 0 到 1 之间"
                 p["test"] = {"est": est, "date": time.strftime("%Y-%m-%d"), "bands": bands,
                              "known": clean(t.get("known")), "unknown": clean(t.get("unknown"))}
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
+            if body.get("reset_marks"):
+                p["known"], p["unknown"] = [], []
             self._save(p)
             return None
 

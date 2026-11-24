@@ -71,7 +71,7 @@ def client():
 
 
 def key_missing_msg() -> str:
-    return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：在插件里点「打开设置」填写"
+    return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：请打开「程序设置」填写"
 
 
 def saved_result(path: Path) -> dict | None:
@@ -1317,8 +1317,6 @@ class Handler(SimpleHTTPRequestHandler):
                     job.focus = max(0.0, focus)
             return self.send_json({"ok": True})
         if path == "/api/profile":
-            if body.get("reset_marks"):
-                PROFILE.reset_marks()
             err = PROFILE.update(body)
             return self.send_json({"error": err}, 400) if err else self.send_json(PROFILE.payload())
         if path == "/api/explain":

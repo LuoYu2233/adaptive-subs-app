@@ -99,9 +99,10 @@ git clone https://github.com/LuoYu2233/adaptive-subs-app.git
 cd adaptive-subs-app
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m spacy download en_core_web_sm
 start.bat
 ```
+
+依赖文件包含固定版本的英语分析模型，无需另行下载。当前开发分支增加了任务恢复、取消、部分失败重试和离线回归检查；工程验证状态见 [改进记录](docs/ENGINEERING_PROGRESS.md)。
 
 目录结构、打包、重新生成数据和发布新版本的步骤见 **[开发说明](docs/开发说明.md)**。
 

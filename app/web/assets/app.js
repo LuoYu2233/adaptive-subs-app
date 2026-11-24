@@ -158,7 +158,7 @@
     const ci = S.cur;
     // inside the video, show the box only while a line is being spoken (not during silences),
     // or while a new video's subtitles are still being fetched (progress / error + retry)
-    const loading = !S.cues.length && !!S.statusMsg && !!S.video;
+    const loading = !S.cues.length && !!S.statusMsg;
     $("#overlaySubs").hidden = !(subsInside() && ((ci >= 0 && S.cues[ci] && !S.gap) || loading));
     if (ci >= 0 && S.cues[ci] && S.gap) {          // silence after a line: show nothing
       line.className = "line";
@@ -1105,6 +1105,7 @@
     }
     try { live = !!(await (await fetch("api/health", { cache: "no-store" })).json()).ok; } catch { live = false; }
     $("#urlForm").hidden = !live;
+    $("#settingsLink").hidden = !live;
     if (live) {
       await loadShared();
       // the profile page (another tab) may change it: reload when coming back
