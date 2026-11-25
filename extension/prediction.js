@@ -42,7 +42,23 @@
     return selected;
   }
 
-  const prediction = { preferences, markKey, classify, selectNotes };
+  // Saved subtitle offsets come from Python. Convert them once when notes enter a browser.
+  // The extension can pass notes through a second time when it receives the final cue list.
+  function clientNotes(text, notes = []) {
+    if (!notes.length) return [];
+    const offsets = [0];
+    for (const point of text) offsets.push(offsets[offsets.length - 1] + point.length);
+    const result = [];
+    for (const note of notes) {
+      if (!note || !Number.isInteger(note.s) || !Number.isInteger(note.e) || note.s < 0 || note.e <= note.s) continue;
+      const converted = note.offsets === "utf16";
+      if (note.e > (converted ? text.length : offsets.length - 1)) continue;
+      result.push(converted ? note : { ...note, s: offsets[note.s], e: offsets[note.e], offsets: "utf16" });
+    }
+    return result;
+  }
+
+  const prediction = { preferences, markKey, classify, selectNotes, clientNotes };
   if (typeof module === "object" && module.exports) module.exports = prediction;
   else globalThis.AdaptivePrediction = prediction;
 })();

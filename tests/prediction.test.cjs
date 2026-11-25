@@ -61,3 +61,18 @@ test("both shipped clients load the same predictor before their consuming script
   for (const { js } of scripts) assert.ok(js.includes("prediction.js") && js.indexOf("prediction.js") < js.indexOf("content.js"));
   assert.match(read("app/web/player.html"), /src="assets\/prediction\.js"[\s\S]+src="assets\/app\.js"/);
 });
+
+test("persisted code-point positions match browser slices, including repeated preparation and local marks", () => {
+  const { clientNotes } = require("../app/web/assets/prediction.js");
+  const text = "😀𝄞 e\u0301 bank and 🪙.";
+  const source = ["e\u0301","bank","🪙"].map(term => {
+    const at = text.indexOf(term), s = [...text.slice(0,at)].length;
+    return { s, e:s + [...term].length, key:term };
+  });
+  const local = {s:text.indexOf("and"),e:text.indexOf("and")+3,local:true,offsets:"utf16"};
+  const ready = clientNotes(text,[...source,local,{s:0,e:500}]);
+  assert.deepEqual(ready.map(({s,e})=>text.slice(s,e)),["e\u0301","bank","🪙","and"]);
+  assert.deepEqual(clientNotes(text, ready),ready);
+  assert.deepEqual(source.map(row=>row.offsets),[undefined,undefined,undefined]);
+  assert.equal(clientNotes("ASCII",[{s:0,e:5}])[0].e,5);
+});
