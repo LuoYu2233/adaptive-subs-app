@@ -34,6 +34,12 @@ function labelSpan(sentence, label) {
   const term = typeof label === "string" ? label : label?.text;
   const occurrence = typeof label === "string" ? undefined : label?.occurrence;
   check(typeof term === "string" && term.trim().length > 0, "生词标注需要原文");
+  if (typeof label === "object" && Object.hasOwn(label, "s")) {
+    const points = [...sentence], s = label.s, e = s + [...term].length;
+    check(occurrence === undefined && Number.isInteger(s) && s >= 0 && e <= points.length &&
+      points.slice(s, e).join("") === term, "生词位置与原文不符");
+    return { s, e };
+  }
   check(occurrence === undefined || Number.isSafeInteger(occurrence) && occurrence > 0, "出现次数须为正整数");
   // Use literal, whole-word matches so "bank" cannot label the beginning of "banker".
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

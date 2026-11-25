@@ -69,6 +69,16 @@ test("resolves repeated words by occurrence and phrases by their entire span", (
   assert.throws(score, /句中没有/);
 });
 
+test("validates explicit Unicode code-point spans from a labeling interface", () => {
+  const sheet = answered();
+  sheet.cues[0].unknown = [{ text: "shore", s: 7 }, { text: "drifts", s: 13 }];
+  assert.equal(evaluate(clip, sheet, profile, "normal").hits, 2);
+  sheet.cues[0].unknown = [{ text: "shore", s: 8 }];
+  assert.throws(() => evaluate(clip, sheet, profile, "normal"), /与原文不符/);
+  sheet.cues[0].unknown = [{ text: "shore", s: 7, occurrence: 1 }];
+  assert.throws(() => evaluate(clip, sheet, profile, "normal"), /与原文不符/);
+});
+
 test("rejects stale, partial and malformed inputs before scoring", () => {
   const sheet = answered();
   assert.throws(() => evaluate({ ...clip, status: "partial" }, sheet, profile, "normal"), /已完成/);
