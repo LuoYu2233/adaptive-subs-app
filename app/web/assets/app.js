@@ -10,11 +10,7 @@
   // How eagerly to gloss. Default "more": better a few known words glossed than unknown ones missed.
   //   factor: a note shows when its level > your vocabulary × factor
   //   perLine / repeat: max glosses per line / times the same word is glossed per video
-  const PREFS = {
-    more: { factor: 0.7, perLine: 4, repeat: 3 },
-    normal: { factor: 1.0, perLine: 3, repeat: 2 },
-    less: { factor: 1.3, perLine: 2, repeat: 1 },
-  };
+  const PREFS = AdaptivePrediction.preferences;
   const STORE_KEY = "adaptive-subs:v2";
   const KIND_LABEL = { word: "单词", phrase: "短语", sense: "熟词僻义" };
 

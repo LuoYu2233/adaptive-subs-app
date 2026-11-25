@@ -13,11 +13,7 @@
   window.__adaptiveSubs = true;
 
   const LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000];
-  const PREFS = {
-    more: { factor: 0.7, perLine: 4, repeat: 3 },
-    normal: { factor: 1.0, perLine: 3, repeat: 2 },
-    less: { factor: 1.3, perLine: 2, repeat: 1 },
-  };
+  const PREFS = AdaptivePrediction.preferences;
   const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom", cover: "on" };
   const GAP_GRACE = 0.5;     // a line stays this long after it ends, then the box disappears
   // Bilibili request signature ("WBI"): fixed shuffle of the two keys published by /nav

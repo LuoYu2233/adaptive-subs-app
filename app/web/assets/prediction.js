@@ -2,6 +2,12 @@
 (function () {
   "use strict";
 
+  const preferences = {
+    more: { factor: 0.7, perLine: 4, repeat: 3 },
+    normal: { factor: 1.0, perLine: 3, repeat: 2 },
+    less: { factor: 1.3, perLine: 2, repeat: 1 },
+  };
+
   function markKey(note) {
     return note.kind === "word" ? note.key : `${note.kind}:${note.key}`;
   }
@@ -36,7 +42,7 @@
     return selected;
   }
 
-  const prediction = { markKey, classify, selectNotes };
+  const prediction = { preferences, markKey, classify, selectNotes };
   if (typeof module === "object" && module.exports) module.exports = prediction;
   else globalThis.AdaptivePrediction = prediction;
 })();
