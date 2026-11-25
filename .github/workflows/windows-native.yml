@@ -1,0 +1,29 @@
+name: Windows native package
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'requirements.txt'
+      - 'app/main.py'
+      - 'tools/check_windows_package.ps1'
+      - '.github/workflows/windows-native.yml'
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install build dependencies and English model
+        run: python -m pip install -r requirements.txt pyinstaller https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+      - name: Build the distribution ZIP
+        run: python packaging/build.py
+      - name: Launch the extracted application
+        shell: pwsh
+        run: ./tools/check_windows_package.ps1

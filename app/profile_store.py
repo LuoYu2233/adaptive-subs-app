@@ -18,7 +18,11 @@ Phrases and common words in an uncommon sense are never hidden by the library, o
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
+import os
+import tempfile
 import re
 import threading
 import time
@@ -38,6 +42,87 @@ EXAMS = {   # id: (name, min, max)
 IDENTITIES = {"high": "高中生", "undergrad": "大学生", "grad": "研究生", "work": "已工作", "other": "其他"}
 KEY_RE = re.compile(r"[a-z][a-z' .:-]{0,79}")
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000]
+
+
+BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown"}
+
+
+class ProfileUnreadable(ValueError):
+    pass
+
+
+class RestoreConflict(ValueError):
+    pass
+
+
+def validate_fields(p):
+    if not isinstance(p, dict) or p.keys() - BACKUP_FIELDS:
+        raise ValueError("画像备份含不支持的字段")
+    identity, field = p.get("identity"), p.get("field")
+    if identity is not None and (not isinstance(identity, str) or identity not in IDENTITIES):
+        raise ValueError("画像身份无效")
+    if field is not None and (not isinstance(field, str) or len(field) > 40):
+        raise ValueError("专业或行业无效")
+    if field:
+        field.encode("utf-8")
+    exams = p.get("exams", {})
+    if not isinstance(exams, dict) or any(k not in EXAMS or type(v) not in (int, float) or
+            not EXAMS[k][1] <= v <= EXAMS[k][2] for k, v in exams.items()):
+        raise ValueError("考试成绩无效")
+    if "level" in p and (type(p["level"]) is not int or not 1 <= p["level"] <= 100000):
+        raise ValueError("词汇量无效")
+
+    def words(record, key):
+        values = record.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(w, str) or not KEY_RE.fullmatch(w) for w in values):
+            raise ValueError("词条标记无效")
+
+    words(p, "known")
+    words(p, "unknown")
+    test = p.get("test")
+    if test is None:
+        return
+    if not isinstance(test, dict) or test.keys() - {"est", "date", "known", "unknown", "bands"}:
+        raise ValueError("词汇测试字段无效")
+    if type(test.get("est")) is not int or not 1 <= test["est"] <= 100000:
+        raise ValueError("测试估计值无效")
+    try:
+        datetime.date.fromisoformat(test.get("date", ""))
+    except (TypeError, ValueError):
+        raise ValueError("测试日期无效") from None
+    bands = test.get("bands", [])
+    if not isinstance(bands, list) or len(bands) > 20 or any(type(b) not in (int, float) or not 0 <= b <= 1 for b in bands):
+        raise ValueError("测试分段结果无效")
+    words(test, "known")
+    words(test, "unknown")
+
+
+def backup_fields(backup):
+    if not isinstance(backup, dict) or set(backup) != {"format", "version", "profile"} or (
+            backup["format"] != "adaptive-subs-profile" or type(backup["version"]) is not int or backup["version"] != 1):
+        raise ValueError("请选择 Adaptive Subs 导出的画像备份")
+    validate_fields(backup["profile"])
+    return backup["profile"]
+
+
+def decode_profile(raw):
+    if raw is None:
+        return {}
+    try:
+        p = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(p, dict) or type(p.get("rev", 0)) is not int or p.get("rev", 0) < 0:
+            raise ValueError("invalid revision")
+        validate_fields({k: v for k, v in p.items() if k in BACKUP_FIELDS})
+        return p
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ProfileUnreadable("现有画像无法读取。请在画像页从备份恢复，原文件会保留。") from exc
+
+
+def restore_token(raw, fields):
+    # Bind confirmation to both the current on-disk bytes and the proposed replacement.
+    source = b"missing" if raw is None else hashlib.sha256(raw).digest()
+    fields_json = json.dumps(fields, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(source + fields_json).hexdigest()
 
 
 # ------------------------------------------------------ exams -> lists ---
@@ -146,21 +231,73 @@ class Store:
         self.lock = threading.Lock()
         self._cache = None        # (rev, payload) of the computed library
 
-    def load(self) -> dict:
+    def _read(self):
         try:
-            p = json.loads(self.path.read_text(encoding="utf-8"))
-            return p if isinstance(p, dict) else {}
-        except (OSError, ValueError):
-            return {}
+            return self.path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def load(self) -> dict:
+        return decode_profile(self._read())
 
     def _save(self, p: dict):
         p["rev"] = int(p.get("rev", 0)) + 1
         p["updated"] = int(time.time())
+        data = json.dumps(p, ensure_ascii=False, allow_nan=False, indent=1).encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        pending = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.path.parent, prefix=".profile-", suffix=".tmp", delete=False) as f:
+                pending = Path(f.name)
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            pending.replace(self.path)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
         self._cache = None
+
+    def export_backup(self):
+        with self.lock:
+            profile = self.load()
+            fields = {k: v for k, v in profile.items() if k in BACKUP_FIELDS}
+            return {"format": "adaptive-subs-profile", "version": 1, "profile": fields}
+
+    def preview_backup(self, backup):
+        fields = backup_fields(backup)
+        with self.lock:
+            raw = self._read()
+            return {"token": restore_token(raw, fields), "has_original": raw is not None,
+                    "known": len(fields.get("known", [])), "unknown": len(fields.get("unknown", [])),
+                    "level": fields.get("level"), "test_date": (fields.get("test") or {}).get("date")}
+
+    def restore_backup(self, backup, token):
+        fields = backup_fields(backup)
+        with self.lock:
+            raw = self._read()
+            if token != restore_token(raw, fields):
+                raise RestoreConflict("当前画像或选择的备份已改变，请重新预览后确认")
+            try:
+                rev = decode_profile(raw).get("rev", 0)
+            except ProfileUnreadable:
+                rev = 0
+            previous = None
+            if raw is not None:
+                directory = self.path.parent / "profile-backups"
+                directory.mkdir(exist_ok=True)
+                try:
+                    with tempfile.NamedTemporaryFile(dir=directory, prefix="profile-before-restore-", suffix=".json", delete=False) as f:
+                        previous = Path(f.name)
+                        f.write(raw)
+                        f.flush()
+                        os.fsync(f.fileno())
+                except OSError:
+                    if previous is not None:
+                        previous.unlink(missing_ok=True)
+                    raise
+            self._save({**fields, "rev": rev})
+            return {"ok": True, "previous": str(previous.relative_to(self.path.parent)) if previous else None}
 
     # -- what clients get --
     def payload(self) -> dict:
@@ -236,6 +373,15 @@ class Store:
                 p["test"] = {"est": est, "date": time.strftime("%Y-%m-%d"), "bands": bands,
                              "known": clean(t.get("known")), "unknown": clean(t.get("unknown"))}
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
+            if "reset_marks" in body:
+                if type(body["reset_marks"]) is not bool:
+                    return "清空标记需要明确确认"
+                if body["reset_marks"]:
+                    p["known"], p["unknown"] = [], []
+            try:
+                validate_fields({k: v for k, v in p.items() if k in BACKUP_FIELDS})
+            except ValueError as error:
+                return str(error)
             self._save(p)
             return None
 
@@ -255,9 +401,3 @@ class Store:
             p["known"], p["unknown"] = sorted(known), sorted(unknown)
             self._save(p)
             return None
-
-    def reset_marks(self):
-        with self.lock:
-            p = self.load()
-            p["known"], p["unknown"] = [], []
-            self._save(p)

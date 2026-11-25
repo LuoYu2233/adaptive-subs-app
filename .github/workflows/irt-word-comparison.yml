@@ -1,0 +1,23 @@
+name: Offline IRT comparison
+on:
+  pull_request:
+    paths:
+      - 'tools/compare_word_models.cjs'
+      - 'tools/evaluate_prediction.cjs'
+      - 'app/web/assets/prediction.js'
+      - 'tests/compare_word_models.test.cjs'
+      - '.github/workflows/irt-word-comparison.yml'
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/compare_word_models.test.cjs tests/evaluate_prediction.test.cjs

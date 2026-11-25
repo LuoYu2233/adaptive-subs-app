@@ -6,6 +6,8 @@
 # your learner profile and word marks (personal)
 profile.json
 profile.tmp
+.profile-*.tmp
+/profile-backups/
 
 # local Python environment and caches
 .venv/

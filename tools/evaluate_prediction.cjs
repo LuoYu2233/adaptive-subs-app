@@ -55,7 +55,7 @@ function labelSpan(sentence, label) {
 
 const spanKey = ({ s, e }) => `${s}:${e}`;
 
-function evaluate(result, labels, profile, preset) {
+function evaluate(result, labels, profile, preset, classifyNote) {
   const expected = prepare(result);
   check(labels?.version === 1 && labels.video === expected.video && labels.duration === expected.duration &&
     Array.isArray(labels.cues) && labels.cues.length === expected.cues.length, "标注与视频不匹配");
@@ -65,7 +65,7 @@ function evaluate(result, labels, profile, preset) {
   check(Object.hasOwn(preferences, preset), "注释档位须为 more、normal 或 less");
   const preference = preferences[preset];
   const known = new Set(profile.known), unknown = new Set(profile.unknown);
-  const state = note => classify(note, known, unknown, profile.level * preference.factor);
+  const state = classifyNote ?? (note => classify(note, known, unknown, profile.level * preference.factor));
   const repetitions = new Map();
   let hits = 0, extra = 0, noCandidate = 0, belowThresholdOrKnown = 0, displayLimit = 0;
 
@@ -120,7 +120,7 @@ function main(args) {
   }
 }
 
-module.exports = { prepare, evaluate };
+module.exports = { prepare, evaluate, labelSpan, spanKey, load };
 if (require.main === module) {
   try { main(process.argv.slice(2)); }
   catch (error) { console.error(error.message); process.exitCode = 1; }

@@ -24,7 +24,7 @@
   // ------------------------------------------------------------ steps 1–2 ---
   function renderForm() {
     const prof = (P && P.profile) || {};
-    identity = prof.identity || identity;
+    identity = prof.identity || null;
     $("#identity").innerHTML = IDENTITIES.map(([id, name]) =>
       `<button type="button" class="chip" data-id="${id}" aria-pressed="${identity === id}">${name}</button>`).join("");
     $("#field").value = prof.field || "";
@@ -328,16 +328,75 @@
     $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ------------------------------------------------------------------ boot ---
-  (async () => {
+  // Profile backup and restoration.
+  let pendingRestore = null, previewRequest = 0;
+  function cancelPreview() {
+    previewRequest++;
+    pendingRestore = null;
+    $("#backupPreview").hidden = true;
+    $("#backupFile").value = "";
+  }
+  $("#exportProfile").onclick = async () => {
+    const button = $("#exportProfile");
+    button.disabled = true;
+    try {
+      const data = await api("/api/profile/export");
+      if (data.format !== "adaptive-subs-profile" || data.version !== 1) throw new Error("备份响应不完整");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = "adaptive-subs-profile-" + new Date().toISOString().slice(0, 10) + ".json";
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+      $("#backupMessage").textContent = "已生成备份，请确认文件已下载。";
+    } catch (e) { $("#backupMessage").textContent = "导出失败：" + e.message; }
+    finally { button.disabled = false; }
+  };
+  $("#chooseBackup").onclick = () => $("#backupFile").click();
+  $("#cancelRestore").onclick = () => { cancelPreview(); $("#backupMessage").textContent = ""; };
+  $("#backupFile").onchange = async event => {
+    const file = event.target.files[0];
+    cancelPreview();
+    if (!file) return;
+    const request = previewRequest;
+    $("#backupMessage").textContent = "正在检查备份…";
+    try {
+      const backup = JSON.parse((await file.text()).replace(/^\uFEFF/, ""));
+      const result = await api("/api/profile/preview", { backup });
+      if (request !== previewRequest) return;
+      if (typeof result.token !== "string") throw new Error("预览响应不完整");
+      pendingRestore = { backup, token: result.token };
+      $("#restoreSummary").textContent = `将恢复认识 ${result.known} 条、不认识 ${result.unknown} 条`
+        + (result.test_date ? `，测试日期 ${result.test_date}` : "") + "。"
+        + (result.has_original ? "恢复前的本地原文件会保存在 profile-backups 文件夹。" : "当前没有已保存的画像文件。");
+      $("#backupPreview").hidden = false; $("#backupMessage").textContent = "";
+    } catch (e) { if (request === previewRequest) $("#backupMessage").textContent = "无法预览：" + e.message; }
+  };
+  $("#restoreProfile").onclick = async () => {
+    const request = pendingRestore;
+    if (!request) return;
+    cancelPreview();
+    $("#chooseBackup").disabled = true;
+    $("#backupMessage").textContent = "正在恢复…";
+    try {
+      const result = await api("/api/profile/restore", request);
+      if (!result.ok) throw new Error("恢复响应不完整");
+      $("#backupMessage").textContent = "已恢复画像。" + (result.previous ? "原文件副本：" + result.previous : "");
+      T = null;
+      await loadPage();
+    } catch (e) { $("#backupMessage").textContent = e.message + "。请核对当前画像并重新预览。"; }
+    finally { $("#chooseBackup").disabled = false; }
+  };
+
+  async function loadPage() {
+    for (const id of ["s1", "s2", "s3", "s4", "summary"]) $("#" + id).hidden = true;
     try {
       P = await api("/api/profile");
+      $("#profileLoadError").hidden = true;
+      for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = false;
+      renderForm(); renderSummary(); await renderTest();
     } catch (e) {
-      $("#msg1").className = "msg bad";
-      $("#msg1").textContent = "连不上本地程序：请确认 Adaptive Subs 的窗口还开着，然后刷新本页";
+      $("#profileLoadError").hidden = false;
+      $("#profileLoadError").textContent = "无法载入画像：" + e.message;
     }
-    renderForm();
-    renderSummary();
-    renderTest();
-  })();
+  }
+  loadPage();
 })();
