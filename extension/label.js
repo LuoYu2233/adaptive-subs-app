@@ -5,9 +5,12 @@ const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
 let busy = false, connected = false, oldDraft = false, releaseLock;
 
+function wordLists(p) {
+  return p && [p.known, p.unknown].every(words => Array.isArray(words) && words.every(w => typeof w === "string"));
+}
+
 function validProfile(p) {
-  return Number.isFinite(p?.level) && p.level > 0 &&
-    [p.known, p.unknown].every(words => Array.isArray(words) && words.every(w => typeof w === "string"));
+  return Number.isFinite(p?.level) && p.level > 0 && wordLists(p) && (p.marks === undefined || wordLists(p.marks));
 }
 
 function validDraft(value) {
@@ -141,6 +144,7 @@ byId("new").onclick = () => action(async () => {
   const p = await chrome.runtime.sendMessage({ type: "profile" });
   if (!validProfile(p)) throw new Error("无法读取观看前画像，请确认本地程序已运行后重试。");
   const profile = { level: p.level, known: p.known, unknown: p.unknown };
+  if (p.marks) profile.marks = { known: p.marks.known, unknown: p.marks.unknown };
   await writeDraft({ sheet: structuredClone(source), profile, index: 0 });
   enter();
 });

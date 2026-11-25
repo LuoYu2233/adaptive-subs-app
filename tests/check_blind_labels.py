@@ -31,7 +31,7 @@ def check():
             channel="chromium", headless=True,
             args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"])
         errors, unexpected = [], []
-        profile = {"known": [], "unknown": [], "level": 3000, "rev": 0, "marks": {"known": [], "unknown": []},
+        profile = {"known": ["home", "now"], "unknown": [], "level": 3000, "rev": 0, "marks": {"known": ["now"], "unknown": []},
                    "setup": False, "stats": {"known": 0}, "lists": []}
         audio = io.BytesIO()
         with wave.open(audio, "wb") as sound:
@@ -109,6 +109,7 @@ def check():
             expect(video.locator("html")).not_to_have_class(re.compile("asubs-labeling"))
 
             profile["level"] = 9000
+            profile["marks"]["known"].append("home")
             page = open_label()
             page.locator("#resume").click()
             expect(page.locator("#progress")).to_have_text("第 2 / 3 句")
@@ -127,7 +128,7 @@ def check():
             labels = json.loads((Path(temp) / "labels.json").read_text(encoding="utf-8"))
             assert [c["unknown"] for c in labels["cues"]] == [[{"s": 10, "text": "bank"}], [{"s": 5, "text": "from scratch"}], []]
             viewer = json.loads((Path(temp) / "viewer.json").read_text(encoding="utf-8"))
-            assert viewer == {"level": 3000, "known": [], "unknown": []}
+            assert viewer == {"level": 3000, "known": ["home", "now"], "unknown": [], "marks": {"known": ["now"], "unknown": []}}
             (Path(temp) / "video.json").write_text(json.dumps(fixture(ID)), encoding="utf-8")
             report = json.loads(subprocess.check_output(["node", str(ROOT / "tools/evaluate_prediction.cjs"), "score",
                 "video.json", "labels.json", "viewer.json", "normal"], cwd=temp))
