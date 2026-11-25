@@ -44,8 +44,6 @@ jobs:
         run: python -m pip install -r tools/viewing/requirements.txt
       - name: Run all Python module tests under native Windows
         run: python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p 'test_*.py'
-      - name: Measure, predict, capture feedback and score a future blind video using the extracted ZIP
-        run: python tools/check_integrated_trial.py build/word-difficulty-v1.json --archive release/AdaptiveSubs-Windows.zip
       - name: Build the offline trial materials using the same validated table
         shell: bash
         run: |
@@ -53,6 +51,8 @@ jobs:
           node tools/build_cat_pilot.cjs build/word-difficulty-v1.json build/word-pilot.html --expanded
           node tools/build_phrase_pilot.cjs build/phrase-pilot.html
           python tools/build_trial_materials.py build/word-pilot.html build/phrase-pilot.html build/word-difficulty-v1.json release/AdaptiveSubs-IRT-Materials.zip
+      - name: Measure, predict, capture feedback and score a future blind video using the extracted ZIP
+        run: python tools/check_integrated_trial.py build/word-difficulty-v1.json --archive release/AdaptiveSubs-Windows.zip --materials release/AdaptiveSubs-IRT-Materials.zip
       - uses: actions/upload-artifact@v4
         with:
           name: AdaptiveSubs-IRT-Materials

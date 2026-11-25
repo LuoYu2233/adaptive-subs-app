@@ -2,6 +2,7 @@
 import argparse
 import base64
 import io
+from hashlib import sha256
 import json
 import math
 import os
@@ -35,8 +36,59 @@ def save(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def trial(table, archive, analysis_python):
-    measured = measured_trial(table, expanded=True)
+def measure_from_archive(archive, table):
+    with tempfile.TemporaryDirectory() as temp, sync_playwright() as pw:
+        folder = Path(temp) / "试用 资料"
+        with ZipFile(archive) as z:
+            assert z.testzip() is None
+            z.extractall(folder)
+        digest = sha256((folder / "word-difficulty-v1.json").read_bytes()).hexdigest()
+        assert digest == sha256(table.read_bytes()).hexdigest()
+        guide = (folder / "先打开这里.html").as_uri()
+        browser = pw.chromium.launch()
+        try:
+            context = browser.new_context(offline=True, accept_downloads=True)
+            page = context.new_page()
+            unexpected = []
+            page.on("pageerror", lambda err: unexpected.append(str(err)))
+            page.on("request", lambda req: unexpected.append(req.url) if req.url.startswith(("http:", "https:")) else None)
+            page.goto(guide)
+            page.get_by_role("link", name="开始单词试测").click()
+            page.locator("#prior").fill("5000")
+            page.locator("#prior").press("Enter")
+            for i in range(40):
+                if not page.locator("#quiz").is_visible(): break
+                page.keyboard.press("0" if i % 3 == 0 else "1")
+            expect(page.locator("#done")).to_be_visible()
+            measured = {}
+            for item in ("parameters", "record"):
+                with page.expect_download() as export:
+                    page.locator("#" + item).click()
+                measured[item] = json.loads(Path(export.value.path()).read_bytes())
+            assert measured["record"]["itemBank"]["count"] == 800
+            assert measured["record"]["parameters"] == measured["parameters"]
+            assert measured["parameters"]["tableSha256"] == digest
+
+            page.goto(guide)
+            page.get_by_role("link", name="开始短语试测").click()
+            assert len(json.loads(page.locator("#data").text_content())["items"]) == 100
+            page.locator("#begin").click()
+            for i in range(8):
+                if not page.locator("#quiz").is_visible(): break
+                page.keyboard.press("0" if i % 2 else "3")
+            expect(page.locator("#complete")).to_be_focused()
+            with page.expect_download() as export:
+                page.locator("#record").click()
+            phrase = json.loads(Path(export.value.path()).read_bytes())
+            assert 6 <= len(phrase["responses"]) <= 8 and phrase["model"] == "3PL phrase CAT"
+            assert not unexpected, unexpected
+            return measured
+        finally:
+            browser.close()
+
+
+def trial(table, archive, analysis_python, materials=None):
+    measured = measure_from_archive(materials, table) if materials else measured_trial(table, expanded=True)
     with tempfile.TemporaryDirectory() as temp:
         folder = Path(temp)
         home = folder / "独立用户"
@@ -70,15 +122,10 @@ def trial(table, archive, analysis_python):
                     time.sleep(.25)
                 else: raise RuntimeError("Local server did not start")
                 try:
-                    capture(folder, ext, base, table, measured, training, blind)
+                    fit = capture(folder, ext, base, table, measured, training, blind, analysis_python)
                 except Exception:
                     print((folder / "server.log").read_text(encoding="utf-8", errors="replace")[-4000:])
                     raise
-                fitted = subprocess.check_output([analysis_python, str(ROOT / "tools/fit_viewing_feedback.py"),
-                    str(folder / "cat.json"), str(table), "--train", str(folder / "study.json")], cwd=folder)
-                fit = json.loads(fitted)
-                assert fit["training"]["included"] == 4 and fit["trainingSubtitleHashes"]
-                (folder / "fit.json").write_bytes(fitted)
                 save(folder / "clips.json", {"version": 1, "clips": [{"clip": "holdout", "domain": "科技", "packet": "blind.json"}]})
                 result = json.loads(subprocess.check_output(["node", str(ROOT / "tools/score_blind_feedback.cjs"),
                     "fit.json", str(table), "clips.json", "normal"], cwd=folder))
@@ -135,7 +182,7 @@ def reimport(folder, ext, base, table, blind, fit):
             ctx.close()
 
 
-def capture(folder, ext, base, table, measured, training, blind):
+def capture(folder, ext, base, table, measured, training, blind, analysis_python):
     save(folder / "cat.json", measured["record"])
     save(folder / "parameters.json", measured["parameters"])
     audio = io.BytesIO()
@@ -184,6 +231,10 @@ def capture(folder, ext, base, table, measured, training, blind):
             with study.expect_download() as f: study.locator("#export").click()
             f.value.save_as(folder / "study.json")
             assert len(json.loads((folder / "study.json").read_bytes())["exposures"]) == 4
+            subprocess.run([analysis_python, str(ROOT / "tools/fit_viewing_feedback.py"), str(folder / "cat.json"),
+                str(table), "--train", str(folder / "study.json"), "--output", str(folder / "fit.json")], check=True, cwd=folder)
+            fit = json.loads((folder / "fit.json").read_bytes())
+            assert fit["training"]["included"] == 4 and fit["trainingSubtitleHashes"] and fit["trainingMediaHashes"]
             video.goto("https://www.youtube.com/watch?v=" + blind)
             expect(video.locator(".asubs-t[data-n]")).to_have_count(4)
             label = ctx.new_page(); label.goto(origin + "/label.html?tab=" + str(tab))
@@ -197,6 +248,8 @@ def capture(folder, ext, base, table, measured, training, blind):
             assert packet["profile"]["marks"]["unknown"] == ["drift"]
             assert packet["labels"]["cues"][0]["unknown"] == [{"s":8,"text":"plume"}]
             assert not unexpected, unexpected
+            assert fit["trainingCutoff"] <= fit["frozenAt"] <= packet["labels"]["collection"]["startedAt"]
+            return fit
         finally:
             ctx.close()
 
@@ -205,6 +258,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("table", type=Path)
     p.add_argument("--archive", type=Path)
+    p.add_argument("--materials", type=Path)
     p.add_argument("--analysis-python", default=sys.executable)
     args = p.parse_args()
-    trial(args.table.resolve(), args.archive, args.analysis_python)
+    trial(args.table.resolve(), args.archive, args.analysis_python, args.materials)
