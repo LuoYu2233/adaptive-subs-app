@@ -1,5 +1,6 @@
 // Offline evaluation of annotations the shipped player actually displays.
 const fs = require("node:fs");
+const { createHash } = require("node:crypto");
 const LabelWindow = require("../extension/label-window.js");
 const { classify, preferences, selectNotes } = require("../app/web/assets/prediction.js");
 
@@ -123,6 +124,18 @@ function load(file) {
   return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
 }
 
+function unpackBlindPacket(packet) {
+  check(packet?.version === 1 && packet.kind === "blind-video-evaluation", "需要盲标导出的完整评分包");
+  const { video, labels, profile, subtitleSha256, mediaSha256 } = packet;
+  if (subtitleSha256 !== undefined) {
+    check(Array.isArray(video?.cues), "评分包缺少字幕");
+    const transcript = JSON.stringify(video.cues.map(c => [c.s, c.e, c.text]));
+    check(createHash("sha256").update(transcript).digest("hex") === subtitleSha256, "评分包的英文字幕与指纹不一致");
+  }
+  if (mediaSha256 !== undefined) check(typeof mediaSha256 === "string" && /^[a-f0-9]{64}$/.test(mediaSha256), "视频指纹无效");
+  return { video, labels, profile, mediaSha256, subtitleSha256 };
+}
+
 function main(args) {
   const [command, video, labels, profile, preset] = args;
   if (command === "prepare" && (args.length === 3 || args.length === 5)) {
@@ -130,8 +143,7 @@ function main(args) {
     const sheet = prepare(load(video), range);
     fs.writeFileSync(labels, JSON.stringify(sheet, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
   } else if (command === "score-bundle" && args.length === 3) {
-    const packet = load(video);
-    check(packet?.version === 1 && packet.kind === "blind-video-evaluation", "需要盲标导出的完整评分包");
+    const packet = unpackBlindPacket(load(video));
     console.log(JSON.stringify(evaluate(packet.video, packet.labels, packet.profile, labels), null, 2));
   } else if (command === "score" && args.length === 5) {
     console.log(JSON.stringify(evaluate(load(video), load(labels), load(profile), preset), null, 2));
@@ -140,7 +152,7 @@ function main(args) {
   }
 }
 
-module.exports = { prepare, evaluate, displayMetrics, labelSpan, spanKey, load };
+module.exports = { prepare, evaluate, displayMetrics, labelSpan, spanKey, load, unpackBlindPacket };
 if (require.main === module) {
   try { main(process.argv.slice(2)); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
