@@ -107,3 +107,22 @@ test("CLI supports UTF-8 BOM and preserves an existing label file", t => {
   assert.equal(scored.status, 0, scored.stderr);
   assert.equal(JSON.parse(scored.stdout).missed, 3);
 });
+
+test("a bounded clip keeps the source repeat history and uses the designated duration", () => {
+  const { seconds } = require("../extension/label-window.js");
+  assert.equal(seconds("1:02.25"),62.25);
+  for (const v of ["1:63","1e2","","1:5"]) assert.throws(()=>seconds(v));
+  const sheet = prepare(clip,{start:4,end:14});
+  assert.equal(sheet.version,2); assert.equal(sheet.duration,120);
+  assert.deepEqual(sheet.cues.map(c=>c.s),[5,10]);
+  sheet.cues.forEach(c=>c.unknown=["shore"]);
+  const scored = evaluate(clip,sheet,profile,"normal");
+  assert.equal(scored.durationSeconds,10); assert.equal(scored.evaluatedCues,2);
+  assert.equal(scored.hits,1); assert.equal(scored.missedByReason.displayLimit,1);
+  assert.deepEqual(scored.window,{start:4,end:14});
+  const extras = evaluate(clip,sheet,{...profile,unknown:["quiet"]},"normal");
+  assert.equal(extras.extraPerMinute,6);
+  for (const range of [{start:8,end:10},{start:6,end:7},{start:10,end:121},{start:2,end:1},null])
+    assert.throws(()=>prepare(clip,range),/片段/);
+  assert.throws(()=>evaluate(clip,{...sheet,version:1},profile,"normal"),/不匹配/);
+});
