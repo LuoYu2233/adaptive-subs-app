@@ -15,6 +15,8 @@ function blindReport(fit, table, tableSha256, entries, preset) {
       anchor.discrimination <= 0 || estimate.viewingDiscount < 0 || !estimate.domainBias ||
       typeof estimate.domainBias !== "object" || Array.isArray(estimate.domainBias) || !Object.values(estimate.domainBias).every(Number.isFinite))
     throw new Error("冻结模型的参数无效");
+  if (!Number.isSafeInteger(anchor.measuredAt) || anchor.measuredAt < 0 || anchor.measuredAt > fit.trainingCutoff)
+    throw new Error("严格前瞻评估需要含完成时间的原始试测记录");
   if (fit.trainingSubtitleHashes.length !== fit.trainingClips.length) throw new Error("训练记录缺少字幕指纹，无法核验独立留出片段");
   const usedClips = new Set(fit.trainingClips), usedHashes = new Set(fit.trainingSubtitleHashes);
   const videos = new Set();

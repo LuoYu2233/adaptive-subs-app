@@ -45,6 +45,17 @@ def parse_session(data, table, digest, field, prior):
     start, end = data.get("started"), data.get("ended")
     if not whole(start) or not whole(end) or end < start or not isinstance(data.get("exposures"), list):
         raise ValueError("需要已停止且带有效时间的观看记录")
+    policy = data.get("policy")
+    effective = prior.theta
+    if policy is not None:
+        if (not isinstance(policy, dict) or policy.get("source") not in ("CAT", "feedback")
+                or policy.get("anchorTheta") != prior.theta or policy.get("discrimination") != prior.slope
+                or not numeric(policy.get("effectiveTheta"))):
+            raise ValueError("观看时的判词参数与测量起点不符")
+        if policy["source"] == "feedback" and (not whole(policy.get("trainedThrough")) or
+                policy["trainedThrough"] > start or policy.get("domain") not in ("", data["domain"])):
+            raise ValueError("观看时的校准使用了后来的证据或不同领域")
+        effective = policy["effectiveTheta"]
     rows, positions = [], set()
     for idx, r in enumerate(data["exposures"], 1):
         if not isinstance(r, dict) or not all(whole(r.get(k)) for k in ("cue", "start", "end", "at")):
@@ -60,7 +71,7 @@ def parse_session(data, table, digest, field, prior):
         if not isinstance(item, dict) or not numeric(item.get(field)):
             raise ValueError(f"第 {idx} 条缺少配套难度")
         b = item[field]
-        expected = expit(prior.slope * (b - prior.theta))
+        expected = expit(prior.slope * (b - effective))
         if not math.isclose(expected, r["pUnknown"], abs_tol=1e-9, rel_tol=1e-9):
             raise ValueError(f"第 {idx} 条概率与导入的试测参数不一致")
         rows.append({**r, "b": b})
@@ -83,7 +94,12 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
     if (not isinstance(table, dict) or table.get("version") != 1 or table.get("scale") != "natural-log lemma rank"
             or not isinstance(table.get("words"), dict)):
         raise ValueError("难度表格式无效")
-    prior = anchor(load(record_file), digest, field)
+    record = load(record_file)
+    prior = anchor(record, digest, field)
+    timing = record.get("timing", {})
+    measured_at = timing.get("completedAt") if isinstance(timing, dict) else None
+    if measured_at is not None and (not whole(measured_at) or not whole(timing.get("startedAt")) or timing["startedAt"] > measured_at):
+        raise ValueError("测量记录的时间顺序无效")
 
     def parse(files):
         out = []
@@ -95,6 +111,8 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
         return sorted(out, key=lambda s: (s["started"], s["id"]))
 
     train, test = parse(train_files), parse(test_files)
+    if measured_at is not None and measured_at > train[0]["started"]:
+        raise ValueError("单词能力测量须在观看训练视频前完成")
     ordered = train + test
     if len({s["id"] for s in ordered}) != len(ordered) or len({s["clip"] for s in ordered}) != len(ordered):
         raise ValueError("存在重复会话或同一视频代号；请为留出集使用独立视频")
@@ -136,6 +154,6 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
             "trainingClips": [s["clip"] for s in train], "trainingSubtitleHashes": [s["subtitleHash"] for s in train if s["subtitleHash"]],
             "halfLifeDays": half_life, "iterations": iterations,
             "options": {"domainBias": domain_bias, "viewingDiscount": viewing_discount, "fitFeedback": fit_feedback},
-            "anchor": {"theta": prior.theta, "se": prior.se, "discrimination": prior.slope},
+            "anchor": {"theta": prior.theta, "se": prior.se, "discrimination": prior.slope, "measuredAt": measured_at},
             "estimate": parameters(x, domains), "training": score(x, training, prior),
             "heldOut": overall, "byClip": clips}
