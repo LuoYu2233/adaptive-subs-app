@@ -88,6 +88,7 @@ const WordCat = (() => {
         .sort((a, b) => b.info - a.info);
       const index = ranked[Math.floor(this.random() * Math.min(ranked.length, 5))].i;
       const item = this.remaining.splice(index, 1)[0];
+      if (item.contrastSet) this.remaining = this.remaining.filter(q => q.contrastSet !== item.contrastSet);
       this.current = { item, choices: shuffled([item.zh, ...item.distractors], this.random) };
       return this.current;
     }
@@ -111,7 +112,7 @@ const WordCat = (() => {
       }
       const parameters = { thetaByField, tableSha256: this.data.tableSha256, discrimination: slope };
       return { version: 1, model: "3PL word CAT", selectedBy: "b_initial", priorLevel: this.level, priorSD,
-        guessing: guess, stopReason: reason, fits, responses: [...this.history], parameters };
+        guessing: guess, stopReason: reason, ...(this.data.itemBank ? { itemBank: this.data.itemBank } : {}), fits, responses: [...this.history], parameters };
     }
   }
 
