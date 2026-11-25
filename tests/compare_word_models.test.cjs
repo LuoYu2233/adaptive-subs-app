@@ -77,3 +77,16 @@ test("invalid model settings, table values and unreviewed clips fail before repo
   table.words.easy.b_initial = NaN;
   assert.throws(()=>score({theta:1}),/难度/);
 });
+
+test("measured abilities are field-specific and can only be used with the table they came from", () => {
+  const {video,labels,profile,table} = setup();
+  const hash = "a".repeat(64);
+  const config = {tableSha256:hash,thetaByField:{b_initial:0.5,b_frequency:1.5},discrimination:2};
+  const run = (options, expectedHash) => compare(video,labels,profile,"normal",table,options,expectedHash);
+  const result = run(config,hash);
+  assert.equal(result.models.b_initial.theta,0.5); assert.equal(result.models.b_frequency.theta,1.5);
+  assert.equal(result.params.abilitySource,"measured theta per table field");
+  assert.throws(()=>run(config,"b".repeat(64)),/指纹/);
+  assert.throws(()=>run({...config,theta:1},hash),/同时提供/);
+  assert.throws(()=>run({...config,thetaByField:{b_initial:1}},hash),/同时提供/);
+});

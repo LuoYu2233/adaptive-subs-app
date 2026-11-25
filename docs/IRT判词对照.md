@@ -14,6 +14,8 @@ node tools/compare_word_models.cjs video.json labels.json profile.json word-diff
 
 旧画像只有词汇量时，程序在每张表上分别反求能力，使所有收录词的期望认识数之和等于画像词汇量。该步骤与字幕答案无关。如有同尺度的独立测量，可把含 theta 数值的 JSON 文件作为最后一个参数。可选数值字段还有 discrimination、domainBias、viewingDiscount。跨难度表使用同一 theta 时，应先确认两套量尺可比。
 
+单词能力试测页可直接导出 word-cat-parameters.json。将它放在命令末尾，评分器会核对原始难度表文件的 SHA-256 指纹，并分别应用 b_frequency 和 b_initial 对应的能力估计。请保留生成试测页时所用的同一份表。
+
 ## 怎样读结果
 
 - display 或 baseline 以最终实际显示的注释计数，含命中、多注、漏注、召回和每分钟多注，也包括候选提取阶段已经漏掉的词。
