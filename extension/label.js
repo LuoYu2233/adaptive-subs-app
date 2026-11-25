@@ -3,6 +3,7 @@ const byId = id => document.getElementById(id);
 const tell = text => { byId("notice").textContent = text; };
 const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
+let playbackIndices = [];
 let busy = false, connected = false, oldDraft = false, releaseLock;
 
 function wordLists(p) {
@@ -15,10 +16,14 @@ function validProfile(p) {
 
 function validDraft(value) {
   const sheet = value?.sheet;
-  if (!validProfile(value?.profile) || sheet?.version !== 1 || sheet.video !== source.video ||
-      sheet.duration !== source.duration || sheet.cues?.length !== source.cues.length ||
-      !Number.isInteger(value.index) || value.index < 0 || value.index >= source.cues.length) return false;
-  return source.cues.every(({ text, s, e }, i) => {
+  if (!validProfile(value?.profile) || !sheet || sheet.version !== (sheet.window === undefined ? 1 : 2) ||
+      sheet.video !== source.video || sheet.duration !== source.duration || !Array.isArray(sheet.cues) ||
+      !Number.isInteger(value.index) || value.index < 0 || value.index >= sheet.cues.length) return false;
+  let indices;
+  try { indices = LabelWindow.indices(source.cues, source.duration, sheet.window); } catch { return false; }
+  if (indices.length !== sheet.cues.length) return false;
+  return indices.every((original, i) => {
+    const { text, s, e } = source.cues[original];
     const row = sheet.cues[i];
     if (row?.s !== s || row.e !== e || row.text !== text) return false;
     if (row.unknown === null) return true;
@@ -43,7 +48,7 @@ function controls() {
 
 function addSpan(s, e) {
   if (busy || !connected) return;
-  const text = [...source.cues[index].text].slice(s, e).join("");
+  const text = [...draft.sheet.cues[index].text].slice(s, e).join("");
   const existing = chosen.findIndex(mark => mark.s === s && mark.text === text);
   if (existing >= 0) chosen.splice(existing, 1);
   else {
@@ -70,7 +75,7 @@ function render() {
   const confirmed = draft.sheet.cues.filter(c => Array.isArray(c.unknown)).length;
   byId("progress").textContent = `第 ${index + 1} / ${draft.sheet.cues.length} 句`;
   byId("saved").textContent = `已确认 ${confirmed} 句。导出会包含所有已确认的答案。`;
-  byId("confirm").textContent = index + 1 === source.cues.length ? "确认最后一句" : "确认并播放下句";
+  byId("confirm").textContent = index + 1 === draft.sheet.cues.length ? "确认最后一句" : "确认并播放下句";
   byId("phrase").setAttribute("aria-pressed", String(phrase));
   byId("hint").textContent = phrase ? (anchor ? "请选择短语的末词。" : "请选择短语的首词。")
     : "点词可标记或撤销。短语可以点首尾两个词，也可拖选原文后标记。";
@@ -112,7 +117,7 @@ function go(to, play) {
   chosen = [...(draft.sheet.cues[index].unknown || [])];
   phrase = false; anchor = null;
   render();
-  if (connected) port.postMessage({ type: "cue", index, play });
+  if (connected) port.postMessage({ type: "cue", index: playbackIndices[index], play });
 }
 
 async function writeDraft(next) {
@@ -133,6 +138,7 @@ async function action(fn) {
 }
 
 function enter() {
+  playbackIndices = LabelWindow.indices(source.cues, source.duration, draft.sheet.window);
   byId("start").hidden = true;
   byId("editor").hidden = false;
   tell("");
@@ -140,16 +146,21 @@ function enter() {
 }
 
 byId("new").onclick = () => action(async () => {
+  const start = byId("from").value.trim(), end = byId("until").value.trim();
+  const range = start || end ? { start: start ? LabelWindow.seconds(start) : 0, end: end ? LabelWindow.seconds(end) : source.duration } : undefined;
+  const indices = LabelWindow.indices(source.cues, source.duration, range);
   if (oldDraft && !window.confirm("开始新标注将替换这段视频在本浏览器中的旧草稿。继续吗？")) return;
   const p = await chrome.runtime.sendMessage({ type: "profile" });
   if (!validProfile(p)) throw new Error("无法读取观看前画像，请确认本地程序已运行后重试。");
   const profile = { level: p.level, known: p.known, unknown: p.unknown };
   if (p.marks) profile.marks = { known: p.marks.known, unknown: p.marks.unknown };
-  await writeDraft({ sheet: structuredClone(source), profile, index: 0 });
+  const sheet = { ...source, cues: indices.map(i => source.cues[i]) };
+  if (range) { sheet.version = 2; sheet.window = range; }
+  await writeDraft({ sheet, profile, index: 0 });
   enter();
 });
 byId("resume").onclick = () => { if (connected && !busy) enter(); };
-byId("replay").onclick = () => port.postMessage({ type: "cue", index, play: true });
+byId("replay").onclick = () => port.postMessage({ type: "cue", index: playbackIndices[index], play: true });
 byId("phrase").onclick = () => { phrase = !phrase; anchor = null; render(); };
 byId("selection").onmousedown = event => event.preventDefault();
 byId("selection").onclick = () => {
@@ -198,8 +209,12 @@ function download(name, data) {
   link.href = url; link.download = name; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
-byId("answers").onclick = () => download(draft.sheet.video + "-labels.json", draft.sheet);
-byId("viewer").onclick = () => download(draft.sheet.video + "-viewer-before.json", draft.profile);
+function downloadName() {
+  const range = draft.sheet.window;
+  return draft.sheet.video + (range ? `-${range.start}-${range.end}` : "");
+}
+byId("answers").onclick = () => download(downloadName() + "-labels.json", draft.sheet);
+byId("viewer").onclick = () => download(downloadName() + "-viewer-before.json", draft.profile);
 
 function disconnected() {
   connected = false; controls();
@@ -211,6 +226,7 @@ function disconnected() {
 async function openDraft(sheet, title) {
   source = sheet; key = "blindLabels:" + sheet.video;
   byId("title").textContent = title;
+  byId("duration").textContent = `原视频长 ${Math.floor(sheet.duration / 60)} 分 ${Math.floor(sheet.duration % 60)} 秒。`;
   await navigator.locks.request(key, { ifAvailable: true }, async lock => {
     if (!lock) { tell("此视频已在另一个窗口标注，请使用原窗口。"); port.disconnect(); disconnected(); return; }
     try {
@@ -220,7 +236,8 @@ async function openDraft(sheet, title) {
       if (validDraft(result[key])) {
         draft = result[key];
         byId("resume").hidden = false;
-        byId("draftStatus").textContent = "已找到与当前字幕吻合的草稿。";
+        const range = draft.sheet.window;
+        byId("draftStatus").textContent = range ? `已找到第 ${range.start} 至 ${range.end} 秒的草稿。` : "已找到整段视频的草稿。";
       } else if (oldDraft) {
         byId("draftStatus").textContent = "现有草稿和当前字幕不匹配。开始新标注会替换旧草稿。";
       }
