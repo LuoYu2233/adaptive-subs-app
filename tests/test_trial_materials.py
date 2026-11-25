@@ -42,7 +42,9 @@ class TrialMaterialsTests(unittest.TestCase):
             with ZipFile(out) as z:
                 self.assertIsNone(z.testzip())
                 self.assertCountEqual(z.namelist(),["先打开这里.html","单词能力试测.html","短语能力试测.html","word-difficulty-v1.json","来源与许可.txt"])
-                links = Links(); links.feed(z.read("先打开这里.html").decode("utf-8"))
+                guide = z.read("先打开这里.html").decode("utf-8")
+                self.assertIn("AdaptiveSubs-Calibration.exe",guide)
+                links = Links(); links.feed(guide)
                 for target in links.targets: self.assertIn(target,z.namelist())
                 self.assertEqual(z.read("word-difficulty-v1.json"),table.read_bytes())
                 self.assertIn("CC BY-SA 4.0",z.read("来源与许可.txt").decode("utf-8-sig"))
