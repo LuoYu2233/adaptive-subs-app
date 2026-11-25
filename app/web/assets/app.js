@@ -932,14 +932,17 @@
   // link can be opened: subtitles arrive in seconds, annotations stream in while you watch.
   let index = [];      // saved videos [{id, title, file}]
   let live = false;    // local server available
+  let navigation = 0, indexRead = 0;
   let es = null;       // EventSource of a video being generated
 
   async function loadIndex() {
+    const request = ++indexRead;
+    let rows;
     try {
       const r = await fetch("data/index.json", { cache: "no-store" });
-      index = r.ok ? await r.json() : [];
-    } catch { index = []; }
-    if (!Array.isArray(index)) index = [];
+      rows = r.ok ? await r.json() : [];
+    } catch { rows = []; }
+    if (request === indexRead) index = Array.isArray(rows) ? rows : [];
   }
 
   function resetVideo(video) {
@@ -972,7 +975,7 @@
     ensurePlayer();
   }
 
-  async function loadSaved(entry) {
+  async function loadSaved(entry, request = ++navigation) {
     let data;
     try {
       const response = await fetch("data/" + encodeURIComponent(entry.file), { cache: "no-store" });
@@ -980,12 +983,14 @@
       data = await response.json();
       if (data?.video?.id !== entry.id || !Array.isArray(data.cues)) throw new Error();
     } catch {
+      if (request !== navigation) return;
       // Leave the current player intact. A subsequent explicit open may regenerate the missing result.
       index = index.filter(row => row.id !== entry.id);
       renderVideoSelect();
       toast(`字幕文件 data/${entry.file} 无法载入，请重新打开视频`);
       return;
     }
+    if (request !== navigation) return;
     resetVideo(data.video);
     S.cues = data.cues.map(c => ({ ...c, notes: AdaptivePrediction.clientNotes(c.text, c.notes) }));
     afterVideoChange();
@@ -994,16 +999,19 @@
   async function openVideo(input) {
     const v = String(input || "").trim();
     if (!v) return;
+    const request = ++navigation;
     const saved = index.find((x) => x.id === v);
-    if (saved) return loadSaved(saved);
+    if (saved) return loadSaved(saved, request);
     if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
     let r;
     try { r = await (await fetch(`api/open?url=${encodeURIComponent(v)}`)).json(); }
-    catch { toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
+    catch { if (request === navigation) toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
+    if (request !== navigation) return;
     if (r.error) { toast(r.error); return; }
     if (r.cached) {
       await loadIndex();
-      return loadSaved(index.find((x) => x.id === r.id) || { id: r.id, file: r.file });
+      if (request !== navigation) return;
+      return loadSaved(index.find((x) => x.id === r.id) || { id: r.id, file: r.file }, request);
     }
     startLive(r.id);
   }
@@ -1040,7 +1048,9 @@
       src.close(); es = null;
       S.annDone = null;
       S.progress = { done: 1, total: 1, finished: true, seconds: d.seconds };
+      const completed = S.video;
       await loadIndex();
+      if (S.video !== completed) return;
       renderVideoSelect();
       renderAll(false);
       toast(`全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
