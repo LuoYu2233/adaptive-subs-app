@@ -74,3 +74,14 @@ test("builder reads real four-choice items, validates scales, and safely embeds 
   assert.equal((page.match(/<\/script>/g)||[]).length,3);
   assert.ok(!page.includes("@@MODEL@@"));
 });
+
+test("paired synthetic benchmark is reproducible and counts each learner once", () => {
+  const { simulate } = require("../tools/cat/benchmark.cjs");
+  const study = () => simulate(data, [80,150], 3, 110, 20261125);
+  const output = study();
+  assert.deepEqual(output, study());
+  assert.equal(output.overall.participants,6);
+  assert.equal(output.byLevel.length,2);
+  assert.equal(output.overall.pairedAt25,6);
+  assert.ok(output.overall.terminalRMSE >= 0 && Number.isFinite(output.overall.random25RMSE));
+});
