@@ -1,5 +1,6 @@
 """Load the unpacked extension in Chromium and score an exported session. No live platform or model."""
 import base64
+from hashlib import sha256
 import io
 import json
 import re
@@ -174,6 +175,7 @@ def check():
             with page.expect_download() as packet: page.locator("#bundle").click()
             bundle = json.loads(Path(packet.value.path()).read_bytes())
             assert bundle["kind"] == "blind-video-evaluation" and bundle["sourceVerifiedAtStart"]
+            assert bundle["mediaSha256"] == sha256(b'"yt:fresh000001"').hexdigest()
             assert bundle["labels"]["collection"]["startedAt"] <= bundle["labels"]["collection"]["completedAt"]
             assert "不能提示答案" not in json.dumps(bundle, ensure_ascii=False)
             assert "title" not in bundle["video"]["video"] and all("zh" not in c for c in bundle["video"]["cues"])
