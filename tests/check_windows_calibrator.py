@@ -16,6 +16,7 @@ import windows_calibrator as ui
 
 def packaged(exe, record, table, study, output):
     from pywinauto import Desktop, keyboard
+    import win32clipboard
     desktop = Desktop(backend="win32")
     process = subprocess.Popen([str(exe)])
     main = desktop.window(title="Adaptive Subs · 观看反馈校准")
@@ -26,12 +27,24 @@ def packaged(exe, record, table, study, output):
             keyboard.send_keys(keys, pause=.12)
             dialog = desktop.window(title=title, class_name="#32770")
             dialog.wait("visible", timeout=10)
-            inputs = dialog.descendants(class_name="Edit")
-            # Standard shell file dialogs put the filename in edit control 1148 or 1001.
-            field = next((e for e in inputs if e.control_id() in (1148,1001)), inputs[0])
-            field.set_edit_text(str(path))
-            dialog.child_window(control_id=1).click()
-            dialog.wait_not("visible", timeout=10)
+            # Exercise the shell's filename editor as a user would. WM_SETTEXT on a
+            # child edit can leave the shell's selection pointing at the previous file.
+            dialog.set_focus()
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardText(str(path), win32clipboard.CF_UNICODETEXT)
+            finally:
+                win32clipboard.CloseClipboard()
+            keyboard.send_keys("%n^a^v", pause=.12)
+            keyboard.send_keys("{ENTER}", pause=.12)
+            try:
+                dialog.wait_not("visible", timeout=12)
+            except Exception:
+                print("Dialog controls:", ascii([(c.class_name(),c.control_id(),c.window_text()) for c in dialog.descendants()
+                      if c.class_name() in ("Edit","Button","Static")]))
+                print("Modal titles:", ascii([w.window_text() for w in desktop.windows(class_name="#32770")]))
+                raise
             main.set_focus()
         choose("{SPACE}", "选择完整测量记录", record)
         choose("{TAB}{SPACE}", "选择配套词难度表", table)
