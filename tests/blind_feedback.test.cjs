@@ -7,7 +7,7 @@ const {blindReport} = require("../tools/score_blind_feedback.cjs");
 
 const hash = "a".repeat(64), field = "b_initial";
 const fit = {version:1, field, tableSha256:hash, trainingCutoff:300, trainingClips:["training"], trainingSubtitleHashes:["b".repeat(64)],
-  anchor:{theta:3,discrimination:2},estimate:{theta:1,viewingDiscount:.1,domainBias:{"科技":.2}}};
+  anchor:{theta:3,discrimination:2,measuredAt:100},estimate:{theta:1,viewingDiscount:.1,domainBias:{"科技":.2}}};
 const table = {version:1,scale:"natural-log lemma rank",words:{orb:{b_initial:2,b_frequency:1}}};
 function entry(name, s=0) {
   const video = {video:{id:name,duration:10}, cues:[{s,e:s+2,text:"orb",notes:[{s:0,e:3,key:"orb",kind:"word",lv:100}]}]};

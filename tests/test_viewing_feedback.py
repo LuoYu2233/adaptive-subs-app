@@ -13,7 +13,7 @@ from scipy.special import expit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from viewing.model import Batch, DAY, Prior, fit, initial, likelihood, objective, parameters
-from viewing.study import report
+from viewing.study import parse_session, report
 
 
 def simulate(rng, index, words, digest, *, domain="科技", count=160):
@@ -78,6 +78,22 @@ class ViewingModelTests(unittest.TestCase):
         empty = Batch.build([], ["d"])
         x, _ = fit(empty, p)
         np.testing.assert_allclose(x, initial(p, ["d"]), atol=1e-12)
+
+    def test_later_policy_is_conditioned_on_actual_display_but_the_prior_remains_the_cat_anchor(self):
+        p = Prior(8.7, .3, 2)
+        words = {"reed": {"b_initial": 8}}
+        study = simulate(random.Random(12), 2, words, "a" * 64, count=3)
+        study["policy"] = {"source": "feedback", "anchorTheta": 8.7, "effectiveTheta": 7.5, "discrimination": 2,
+                           "trainedThrough": DAY, "domain": "科技"}
+        for row in study["exposures"]: row["pUnknown"] = float(expit(2 * (8 - 7.5)))
+        self.assertEqual(len(parse_session(study, words, "a" * 64, "b_initial", p)["rows"]), 3)
+        study["policy"]["trainedThrough"] = 10 * DAY
+        with self.assertRaisesRegex(ValueError, "后来"):
+            parse_session(study, words, "a" * 64, "b_initial", p)
+        study["policy"]["trainedThrough"] = DAY
+        study["policy"]["domain"] = "体育"
+        with self.assertRaisesRegex(ValueError, "领域"):
+            parse_session(study, words, "a" * 64, "b_initial", p)
 
     def test_frozen_future_videos_validation_and_paired_behavioral_scores(self):
         rng = random.Random(674)
