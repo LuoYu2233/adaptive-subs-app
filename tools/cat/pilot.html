@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>单词能力试测 · Adaptive Subs</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#f4f5f1;color:#202a23;font:17px/1.6 "Source Sans 3","Microsoft YaHei",system-ui,sans-serif}
+main{width:min(100% - 32px,42rem);margin:clamp(2rem,12vh,7rem) auto;padding:clamp(1.3rem,5vw,3rem);background:white;border:1px solid #c6cfc8;border-radius:12px}
+h1,h2{line-height:1.2;margin:.5em 0} h1{font-size:clamp(1.7rem,5vw,2.7rem)} #word{font-size:clamp(2rem,7vw,3.8rem);overflow-wrap:anywhere}
+label{display:block} button,input{font:inherit;border:1px solid #718177;border-radius:6px;padding:.55rem .85rem} button{cursor:pointer;background:white;color:#253e30}
+button:focus-visible,input:focus-visible{outline:3px solid #b98118;outline-offset:3px} button:hover{background:#edf4ee} .primary{background:#265d44;color:white}.primary:hover{background:#1d4935}
+#choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.65rem;margin:1.6rem 0 .8rem} #choices button{text-align:left;min-height:3.1rem}
+input{width:8rem;margin:.6rem .5rem .7rem 0} #outcome{font-variant-numeric:tabular-nums} button+button{margin-block:.16rem} [hidden]{display:none!important}
+</style>
+<main>
+<section id="start"><h1>单词能力试测</h1>
+<p>选择最接近的中文释义。拿不准可以选“不认识”。系统会按照你的回答调整难度，最多 40 题。答完后可以把结果保存在本机。</p>
+<label for="prior">起始词汇量估计</label>
+<input id="prior" type="number" min="1" step="1" required value="5000"><button id="begin" class="primary">开始试测</button>
+<p id="error" role="alert"></p>
+</section>
+<section id="quiz" hidden><p id="progress"></p><h2 id="word" lang="en" tabindex="-1"></h2>
+<div id="choices" aria-label="中文释义"></div><button id="skip">不认识</button></section>
+<section id="done" hidden><h1 tabindex="-1" id="complete">试测完成</h1><p id="outcome"></p><p id="precision"></p>
+<p>判词参数供离线对照使用。测量记录另含逐题作答，可以自行选择是否保存。</p>
+<button id="parameters" class="primary">导出判词参数</button> <button id="record">导出测量记录</button></section>
+</main>
+<script type="application/json" id="data">@@DATA@@</script>
+<script>@@MODEL@@</script><script>@@UI@@</script>
+</html>
