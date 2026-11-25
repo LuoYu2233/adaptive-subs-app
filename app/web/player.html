@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-player-mode="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -114,6 +114,10 @@
           <span class="level-value" id="levelValue">≈ 5,000 词</span>
           <button class="link-btn" id="levelTest" type="button">不确定？测一测</button>
         </div>
+        <div id="profileIssue" role="status" hidden>
+          <span id="profileMessage"></span>
+          <button class="link-btn" id="retryProfile" type="button">重新读取画像</button>
+        </div>
         <input type="range" id="levelRange" min="0" max="11" step="1" value="5">
         <div class="level-scale" aria-hidden="true"><span>1.5k</span><span>4k</span><span>8k</span><span>15k</span></div>
         <div class="density" id="density"></div>
@@ -216,6 +220,7 @@
 <script src="assets/profile-sync.js"></script>
 <script src="assets/wordbook.js"></script>
 <script src="assets/player-store.js"></script>
+<script src="assets/vocab-bank.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

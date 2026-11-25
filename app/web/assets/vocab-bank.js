@@ -41,5 +41,38 @@
     });
     return { bands, nonwords };
   }
-  return Object.freeze({ validate, MAX_BYTES });
+  async function read(url) {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000), cache: "no-store" });
+    if (!response.ok) throw new Error(`题库读取失败（HTTP ${response.status}）`);
+    const tooLarge = () => new Error("题库文件过大，请检查程序文件");
+    if (Number(response.headers.get("Content-Length")) > MAX_BYTES) {
+      await response.body?.cancel();
+      throw tooLarge();
+    }
+    if (!response.body) invalid();
+    const reader = response.body.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
+    let size = 0, raw = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_BYTES) throw tooLarge();
+        raw += decoder.decode(value, { stream: true });
+      }
+      return validate(JSON.parse(raw + decoder.decode()));
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally { reader.releaseLock(); }
+  }
+
+  function loader(url) {
+    let pending;
+    return () => {
+      if (!pending) pending = read(url).catch(error => { pending = null; throw error; });
+      return pending;
+    };
+  }
+  return Object.freeze({ validate, loader, MAX_BYTES });
 });

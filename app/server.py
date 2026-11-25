@@ -110,13 +110,13 @@ def key_missing_msg() -> str:
     return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：请打开「程序设置」填写"
 
 
-def saved_result(path: Path) -> dict | None:
+def saved_result(path: Path, expected_id: str | None = None) -> dict | None:
     """Only complete, well-formed results may short-circuit a generation request."""
     try:
         if path.stat().st_size > 32 * 1024 * 1024:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
-        if (valid_result(data)
+        if (valid_result(data) and (expected_id is None or data["video"]["id"] == expected_id)
                 and not (data.get("source") == "asr" and any(ASR.is_refusal(c["text"]) for c in data["cues"]))):
             return data
     except (OSError, ValueError, RecursionError):
@@ -1173,8 +1173,8 @@ def extension_dir() -> Path:
 @functools.lru_cache(maxsize=256)
 def recent_metadata(path: Path, stamp: tuple):
     """Cache only validated metadata; the file identity and change times invalidate it."""
-    data = saved_result(path)
-    if data is None or data["video"]["id"] != path.stem:
+    data = saved_result(path, path.stem)
+    if data is None:
         return None
     return {"id": path.stem, "title": (data["video"]["title"] or path.stem)[:2000]}
 
@@ -1297,16 +1297,21 @@ class Handler(SimpleHTTPRequestHandler):
         elif re.fullmatch(r"/data/[A-Za-z0-9_.-]+\.json", path):
             name = path.split("/")[-1]
             f, base = (DATA / name, DATA) if (DATA / name).exists() else (BUNDLE_DATA / name, BUNDLE_DATA)
-            if base == DATA and name != "index.json" and saved_result(f) is None:
-                return self.send_json({"error": "已保存字幕不完整或已损坏，可以重新处理", "retry": True}, 409)
         else:
             return self.send_error(404)
         try:
             f = f.resolve()
             f.relative_to(base.resolve())
+            if path.startswith("/data/") and base == DATA:
+                result = saved_result(f, Path(path).stem)
+                if result is None:
+                    return self.send_json({"error": "已保存字幕不完整、已损坏或与视频不匹配，可以重新处理", "retry": True}, 409)
+                return self.send_json(result)
             body = f.read_bytes()
         except (OSError, ValueError):
             return self.send_error(404)
+        if STATIC_PAGES.get(path) == "player.html":
+            body = body.replace(b'data-player-mode="auto"', b'data-player-mode="local"', 1)
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
@@ -1535,7 +1540,7 @@ class Handler(SimpleHTTPRequestHandler):
             vid = parse_video_id(body.get("url", "") if isinstance(body.get("url"), str) else "")
             if not vid:
                 return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
-            if saved_result(DATA / f"{vid}.json"):
+            if saved_result(DATA / f"{vid}.json", vid):
                 return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
             if not P.has_key():
                 return self.send_json({"error": key_missing_msg()}, 400)
@@ -1588,8 +1593,16 @@ class Handler(SimpleHTTPRequestHandler):
             threading.Timer(0.3, lambda: os._exit(0)).start()
             return self.send_json({"ok": True})
         if path == "/api/mark":
-            err = PROFILE.mark(body.get("key"), body.get("state"), body.get("detail"))
-            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, **PROFILE.payload()})
+            if "expected_state" in body and body["expected_state"] not in ("known", "unknown", "clear"):
+                return self.send_json({"error": "词义标记的原状态无效"}, 400)
+            try:
+                with PROFILE.lock:
+                    err = PROFILE.mark(body.get("key"), body.get("state"), body.get("detail"),
+                                       expected_state=body.get("expected_state"))
+                    result = {"error": err} if err else {"ok": True, **PROFILE.payload()}
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error), "conflict": True}, 409)
+            return self.send_json(result, 400 if err else 200)
         if path == "/api/settings":
             return self.save_settings(body)
         if path == "/api/settings/test":
@@ -1603,10 +1616,13 @@ class Handler(SimpleHTTPRequestHandler):
         if not (YT_ID_RE if youtube else EXT_ID_RE).fullmatch(vid):
             return self.send_json({"error": "bad id"}, 400)
         saved = (DATA if youtube else EXT_DATA) / f"{vid}.json"
-        if youtube and saved_result(saved) is None and saved_result(EXT_DATA / f"yt_{vid}_asr.json") is not None:
-            vid = f"yt_{vid}_asr"
-            saved = EXT_DATA / f"{vid}.json"
-        data = saved_result(saved)
+        data = saved_result(saved, vid)
+        if youtube and data is None:
+            asr_id = f"yt_{vid}_asr"
+            asr_file = EXT_DATA / f"{asr_id}.json"
+            data = saved_result(asr_file, asr_id)
+            if data is not None:
+                vid, saved = asr_id, asr_file
         if data is not None:       # Partial/corrupt results must remain retryable.
             tags = tag_only_lines(data)
             if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there

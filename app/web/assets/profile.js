@@ -259,25 +259,8 @@
   // so a harder band never scores above an easier one.
   const W = { 2: 1, 1: 0.3, 0: 0 };
   const PAGE = 12;
-  let bank = null, bankLoading = null, T = null;
-
-  async function loadBank() {
-    if (bank) return bank;
-    if (bankLoading) return bankLoading;
-    bankLoading = (async () => {
-      const r = await fetch("/data/vocab_test.json", { signal: AbortSignal.timeout(10000), cache: "no-store" });
-      if (!r.ok) throw new Error(`题库读取失败（HTTP ${r.status}）`);
-      if (Number(r.headers.get("Content-Length")) > AdaptiveVocabBank.MAX_BYTES) throw new Error("题库文件过大，请检查程序文件");
-      const raw = await r.text();
-      if (new TextEncoder().encode(raw).length > AdaptiveVocabBank.MAX_BYTES) throw new Error("题库文件过大，请检查程序文件");
-      const checked = AdaptiveVocabBank.validate(JSON.parse(raw));
-      checked.bands.forEach((b, i) => { b.i = i; });
-      bank = checked;
-      return bank;
-    })();
-    try { return await bankLoading; }
-    finally { bankLoading = null; }
-  }
+  let bank = null, T = null;
+  const loadBank = AdaptiveVocabBank.loader("/data/vocab_test.json");
   const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
 
   function takeWords(b, n) { return b.pool.splice(0, n).map((w) => ({ type: "word", band: b.i, word: w.word, data: w, ans: null })); }
@@ -288,7 +271,7 @@
   }
 
   function newTest() {
-    bank.bands.forEach((b) => { b.pool = shuffle(b.words); });
+    bank.bands.forEach((b, i) => { b.i = i; b.pool = shuffle(b.words); });
     const prior = (P && P.prior) || 3000;
     T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior, revision: P.rev };
     const items = [];
@@ -376,7 +359,7 @@
     const box = $("#test");
     if (!T) {
       box.innerHTML = '<p class="msg" role="status">正在加载词汇测试题库…</p>';
-      try { await loadBank(); } catch (e) {
+      try { bank = await loadBank(); } catch (e) {
         const message = e.name === "TimeoutError" || e.name === "AbortError" ? "题库读取超时，请重试"
           : e instanceof SyntaxError ? "题库不是有效的 JSON，请重新加载或修复程序文件" : e.message;
         box.innerHTML = `<p class="msg bad" role="status">${esc(message)}</p><button class="btn" type="button" data-act="reload-bank">重新加载题库</button>`;

@@ -617,6 +617,26 @@ def main():
                     assert response.value.status == 200
                     expect(page.locator("#tab-preview .wrow")).to_have_count(1)
                     expect(page.locator("#tab-preview .w-zh")).to_have_text("河岸")
+                    known_key = response.value.request.post_data_json["key"]
+                    page.locator("#toast button").click()
+                    expect(page.locator("#toast")).to_contain_text("已撤销")
+                    current_profile = json.loads((home / "profile.json").read_text())
+                    assert known_key in current_profile["unknown"]
+                    assert current_profile["mark_details"][known_key]["zh"] == "银行"
+                    # Another client changes this particular meaning after the next mark.
+                    row.locator("[data-act='know']").click()
+                    expect(page.locator("#toast")).to_contain_text("已标为认识")
+                    mark_headers = {"X-Adaptive-Subs": "1"}
+                    external = page.request.post(base + "/api/mark", headers=mark_headers,
+                                                 data={"key": known_key, "state": "clear"})
+                    assert external.ok
+                    with page.expect_response(lambda r: r.url.endswith("/api/mark") and r.status == 409):
+                        page.locator("#toast button").click()
+                    expect(page.locator("#toast")).to_contain_text("其他页面更新")
+                    after_undo = json.loads((home / "profile.json").read_text())
+                    assert known_key not in after_undo["known"] + after_undo["unknown"]
+                    row.locator("[data-act='know']").click()
+                    expect(page.locator("#toast")).to_contain_text("已标为认识")
                     page.locator(".tabs [data-tab='transcript']").click()
                     expect(page.locator(".tr-row").first).not_to_contain_text("银行")
                     expect(page.locator(".tr-row").nth(1)).to_contain_text("河岸")
@@ -782,8 +802,11 @@ def main():
                     check_vocab_bank(context, base, home, output)
                     check_profile(context, base, home, output)
                     check_profile_conflicts(context, base, home, output)
-                    from player_check import check_player
+                    from player_check import check_player, check_player_profile, check_static_test, check_video_switching
                     check_player(context, base, output)
+                    check_player_profile(context, base, output)
+                    check_static_test(context, base, output)
+                    check_video_switching(context, base, output)
                     browser.close()
                     from extension_check import check_extension
                     check_extension(p, base, home, output)

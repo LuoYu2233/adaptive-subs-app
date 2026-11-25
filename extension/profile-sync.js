@@ -1,8 +1,16 @@
 /* Shared profile writes: preserve intent order and reconcile optimistic UI with durable state. */
 (function (root) {
   "use strict";
-  const valid = p => p && Number.isInteger(p.rev) && Array.isArray(p.known) && Array.isArray(p.unknown)
-    && p.marks && Array.isArray(p.marks.known) && Array.isArray(p.marks.unknown);
+  const revision = n => Number.isSafeInteger(n) && n >= 0;
+  const keys = list => Array.isArray(list) && list.every(key => typeof key === "string" && key.length > 0);
+  const valid = p => p && revision(p.rev) && Number.isSafeInteger(p.level) && p.level > 0 && p.level <= 100000
+    && keys(p.known) && keys(p.unknown) && p.marks && keys(p.marks.known) && keys(p.marks.unknown);
+
+  function matches(profile, op) {
+    if (op.type === "level") return profile.level === op.level;
+    return profile.marks.known.includes(op.key) === (op.state === "known")
+      && profile.marks.unknown.includes(op.key) === (op.state === "unknown");
+  }
   function create({ read, write, apply }) {
     let confirmed = null, tail = Promise.resolve();
     const pending = [];
@@ -32,9 +40,15 @@
       pending.push(entry); publish();
       const result = tail.then(async () => {
         try {
-          const value = await write(entry.op);
-          // Older servers return only a revision after marking.
-          accept(valid(value) ? value : await read());
+          const before = confirmed.rev, value = await write(entry.op);
+          // Older servers acknowledge word marks with just {ok, rev}.
+          const receipt = entry.op.type === "mark" && value?.ok === true && revision(value.rev)
+            && Object.keys(value).every(key => key === "ok" || key === "rev");
+          const snapshot = receipt ? await read() : value;
+          if (!valid(snapshot) || snapshot.rev <= before || (receipt && snapshot.rev < value.rev)
+              || !matches(snapshot, entry.op)) throw new Error("本机画像未确认本次更改，请重新核对");
+          if (snapshot.rev >= confirmed.rev) confirmed = snapshot;
+          if (!matches(confirmed, entry.op)) throw new Error("画像已在其他页面更新，请重新核对");
         } catch (error) {
           // The server may have saved a write whose response was lost. Reconcile without replaying it.
           try { accept(await read()); } catch { /* keep last confirmed state */ }

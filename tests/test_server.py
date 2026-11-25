@@ -529,3 +529,39 @@ def test_old_speech_task_discloses_cache_reprocessing_before_resume(http_server,
     assert status == 200
     task = next(job for job in json.loads(raw)["jobs"] if job["id"] == "yt_abcdefghijk_asr")
     assert task["cache_update"] is warning
+
+
+def test_misfiled_subtitles_never_open_as_the_selected_video(http_server, monkeypatch):
+    path = S.DATA / "abcdefghijk.json"
+    original = json.dumps({"video": {"id": "zzzzzzzzzzz", "title": "Different video", "duration": 5},
+                           "cues": [{"s": 0, "e": 5, "text": "Another video.", "notes": []}]}).encode()
+    path.write_bytes(original)
+    get_job = Mock()
+    monkeypatch.setattr(S, "get_job", get_job)
+    monkeypatch.setattr(S.P, "has_key", lambda: False)
+    code, raw = request(http_server, "GET", "/data/abcdefghijk.json")
+    assert code == 409 and json.loads(raw)["retry"] is True
+    for endpoint, payload in (("/api/open", {"url": "abcdefghijk"}),
+                              ("/api/ext/open", {"id": "abcdefghijk", "source": "youtube"})):
+        code, raw = request(http_server, "POST", endpoint, json.dumps(payload), H)
+        assert code == 400 and "API key" in json.loads(raw)["error"]
+    assert path.read_bytes() == original
+    get_job.assert_not_called()
+
+
+def test_conditional_mark_only_compares_that_meaning_and_preserves_newer_edits(http_server, monkeypatch):
+    monkeypatch.setattr(S.PS, "base_known", lambda *_: (set(), {}))
+    def mark(key, state, expected):
+        return request(http_server, "POST", "/api/mark",
+                       json.dumps({"key": key, "state": state, "expected_state": expected}), H)
+
+    assert mark("bank", "unknown", "clear")[0] == 200
+    assert mark("bank", "known", "unknown")[0] == 200
+    assert mark("river", "unknown", "clear")[0] == 200
+    assert mark("bank", "unknown", "known")[0] == 200
+    before = S.PROFILE.path.read_bytes()
+    code, raw = mark("bank", "clear", "known")
+    assert code == 409 and json.loads(raw)["conflict"] is True
+    for invalid in [None, True, "", []]:
+        assert mark("bank", "clear", invalid)[0] == 400
+    assert S.PROFILE.path.read_bytes() == before

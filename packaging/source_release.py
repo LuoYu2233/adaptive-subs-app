@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_FILES = {"README.md", "LICENSE", ".env.example", ".gitignore", ".gitattributes", "start.bat"}
+ROOT_FILES = {"README.md", "LICENSE", ".env.example", ".gitignore", ".gitattributes", "pytest.ini", "start.bat"}
 FOLDERS = {"app", "extension", "shared", "packaging", "tools", "tests", "docs", ".github"}
 MANIFEST = "RELEASE-MANIFEST.json"
 

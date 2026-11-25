@@ -29,6 +29,7 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
     (tmp_path / "app/version.py").write_text('VERSION = "0.4.0-alpha.1"\nEXTENSION_VERSION = "0.4.0.1"\n')
     (tmp_path / "extension/manifest.json").write_text(json.dumps({"version": "0.4.0.1", "version_name": "0.4.0-alpha.1"}))
     (tmp_path / "README.md").write_text("test source")
+    (tmp_path / "pytest.ini").write_text("[pytest]\npythonpath = app\n")
     (tmp_path / ".gitignore").write_text(".env\nprofile.json\nrelease/\n")
     git("add", ".")
     git("-c", "user.name=Release Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
@@ -38,6 +39,7 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
     before = path.read_bytes()
     assert BUILD.build(tmp_path)[1] == checksum and path.read_bytes() == before
     manifest = VERIFY.verify(path)
+    assert "pytest.ini" in manifest["files"]
     assert manifest["commit"] == commit
     assert ".env" not in manifest["files"] and "profile.json" not in manifest["files"]
     with zipfile.ZipFile(path) as archive:

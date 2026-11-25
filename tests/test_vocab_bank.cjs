@@ -41,3 +41,27 @@ test('duplicate choices and the reserved unsure button cannot appear as answer o
     const bad=copy();mutate(bad.bands[0].words[0]);assert.throws(() => validate(bad),/题库/);
   }
 });
+
+test('streaming bank load enforces the byte limit without Content-Length and retries a failed read', async t => {
+  const {loader} = require('../app/web/assets/vocab-bank.js');
+  let reads = 0, canceled = false;
+  t.mock.method(globalThis, 'fetch', async () => {
+    reads++;
+    if (reads === 1) return new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(16384)); },
+      cancel() { canceled = true; },
+    }));
+    if (reads === 2) return new Response(new Uint8Array([0xff, 0xfe]));
+    return new Response(JSON.stringify(original));
+  });
+  const load = loader('data/vocab_test.json');
+  const first = load();
+  assert.equal(first, load());
+  await assert.rejects(first, /题库文件过大/);
+  assert.equal(canceled, true); assert.equal(reads, 1);
+  await assert.rejects(load());
+  const bank = await load();
+  assert.equal(bank.bands.length, 9);
+  assert.equal(await load(), bank);
+  assert.equal(reads, 3);
+});

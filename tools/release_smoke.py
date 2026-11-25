@@ -61,7 +61,8 @@ def main():
                 if health["version"] != manifest["version"] or health["key"]:
                     raise RuntimeError("Unexpected release version or credentials")
                 routes = ["/app", "/demo", "/profile", "/privacy", "/player.html", "/assets/app.js",
-                          "/assets/learning.js", "/assets/profile-sync.js", "/assets/wordbook.js", "/assets/player-store.js"]
+                          "/assets/learning.js", "/assets/profile-sync.js", "/assets/wordbook.js", "/assets/player-store.js",
+                          "/assets/vocab-bank.js", "/data/vocab_test.json"]
                 for route in routes:
                     with opener.open(base + route, timeout=5) as response:
                         if response.status != 200 or not response.read():

@@ -78,3 +78,48 @@ test("clients cannot mark before loading a profile and ship matching sync logic"
     assert.equal(fs.readFileSync(path.join(root, relative), "utf8"), source, "Run python tools/sync_assets.py");
   }
 });
+
+test("invalid acknowledgements cannot turn an unchanged profile into a successful mark", async () => {
+  const op = { type: "mark", key: "bank", state: "unknown" };
+  for (const reply of [null, {}, { ok: true }, { rev: 3 }, profile(0, "unknown"), profile(1, "known"),
+    { ...profile(2, "unknown"), level: 0 }, { ...profile(2, "unknown"), known: [null] }]) {
+    let posts = 0;
+    const sync = create({ read: async () => profile(0), apply: () => {}, write: async () => { posts++; return reply; } });
+    await sync.refresh();
+    await assert.rejects(sync.mutate(op));
+    assert.equal(posts, 1);
+  }
+});
+
+test("legacy mark receipts require a read at or after the receipt revision with the requested mark", async () => {
+  const op = { type: "mark", key: "bank", state: "unknown" };
+  for (const [snapshot, succeeds] of [[profile(2, "unknown"), true], [profile(3, "unknown"), true],
+    [profile(1, "unknown"), false], [profile(3, "known"), false]]) {
+    let reads = 0;
+    const sync = create({ read: async () => ++reads === 1 ? profile(0) : snapshot,
+      write: async () => ({ ok: true, rev: 2 }), apply: () => {} });
+    await sync.refresh();
+    if (succeeds) await sync.mutate(op);
+    else await assert.rejects(sync.mutate(op));
+  }
+});
+
+test("a newer refresh that supersedes an in-flight mark remains visible", async () => {
+  const delayed = deferred(); let reads = 0, view;
+  const sync = create({ read: async () => ++reads === 1 ? profile(0) : profile(2, "known"),
+    write: () => delayed.promise, apply: p => view = p });
+  await sync.refresh();
+  const mark = sync.mutate({ type: "mark", key: "bank", state: "unknown" });
+  await tick(); await sync.refresh();
+  delayed.resolve(profile(1, "unknown"));
+  await assert.rejects(mark);
+  assert.deepEqual(view.marks.known, ["bank"]); assert.equal(view.rev, 2);
+});
+
+test("level replies must confirm the requested value", async () => {
+  let view;
+  const sync = create({ read: async () => profile(0), write: async () => profile(1), apply: p => view = p });
+  await sync.refresh();
+  await assert.rejects(sync.mutate({ type: "level", level: 9000 }));
+  assert.equal(view.level, 4500);
+});

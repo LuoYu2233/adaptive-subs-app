@@ -26,6 +26,7 @@
   const playerStore = AdaptivePlayerStore.create();
   let storageIssue = null;
   const saved = loadStore();
+  let previewLevel = null, localLevel = saved.level || 5000;
   const S = {
     video: null,
     cues: [],
@@ -56,7 +57,7 @@
   const noteState = n => AdaptiveLearning.state(n, S.known, S.unknown, S.level * PREFS[S.pref].factor);
   // Opened from the local program: the profile (level + known-word library + marks) lives there,
   // shared with the Bilibili extension and the profile page. On GitHub Pages: this browser only.
-  let shared = null;
+  let shared = null, profileProblem = "", profileLoading = false;
   let bookKeys = new Set(S.book.map((b) => b.key));
 
   function loadStore() {
@@ -65,7 +66,11 @@
   }
   function applyLocalStore(value) {
     S.book = value.book || []; bookKeys = new Set(S.book.map(b => b.key));
-    if (!live) { S.known = new Set(value.known || []); S.unknown = new Set(value.unknown || []); }
+    if (live === false) {
+      S.known = new Set(value.known || []); S.unknown = new Set(value.unknown || []);
+      localLevel = value.level || 5000;
+      S.level = previewLevel ?? localLevel; S.test = value.test || null;
+    }
     storageIssue = null;
     renderStorageNotice(); renderAll(false);
   }
@@ -197,9 +202,9 @@
       line.className = "line";
       line.innerHTML = `<span class="placeholder">${esc(S.cues.length ? "▶ 播放视频，字幕会显示在这里" : S.statusMsg || "正在加载字幕…")}</span>`
         + (!S.cues.length && !S.video && live ? ' <a class="btn btn-primary" href="demo">先体验示例</a>' : "")
-        + (S.retryId && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">重试</button>` : "");
+        + ((S.retryId || S.retrySaved) && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">${S.retrySaved ? "重新读取字幕" : "重试"}</button>` : "");
       const rb = $(".retry-btn", line);
-      if (rb) rb.onclick = () => openVideo(S.retryId, true);
+      if (rb) rb.onclick = () => S.retrySaved ? loadSaved(S.retrySaved.entry, ++navigation, S.retrySaved.replayAt) : openVideo(S.retryId, true);
       zh.hidden = true;
       meta.textContent = S.cues.length ? `共 ${S.cues.length} 句` : "";
       return;
@@ -228,7 +233,11 @@
     if (S.retryId) html += '<button type="button" class="btn btn-primary" data-generation="retry">继续处理缺失字幕</button>';
     else if (es) html += '<button type="button" class="btn btn-ghost" data-generation="cancel">取消生成</button>';
     $("#density").innerHTML = html;
-    $("#levelValue").textContent = `≈ ${fmtNum(S.level)} 词`;
+    $("#profileIssue").hidden = !profileProblem;
+    $("#profileMessage").textContent = profileProblem;
+    $("#levelRange").disabled = live === null || (live && (!shared || !!profileProblem));
+    $("#levelValue").textContent = live === null || (live && !shared)
+      ? (profileProblem ? "画像暂不可用" : "读取中…") : `≈ ${fmtNum(S.level)} 词`;
     $("#levelRange").value = LEVELS.indexOf(nearestLevel(S.level));
     $("#levelRange").setAttribute("aria-valuetext", `${S.level} 词`);
   }
@@ -353,8 +362,13 @@
     $("#bookPrev").disabled = bookPage === 0;
     $("#bookNext").disabled = bookPage >= pages - 1;
     const items = matches.slice(bookPage * BOOK_PAGE_SIZE, (bookPage + 1) * BOOK_PAGE_SIZE);
+    const available = new Set(index.map(video => video.id));
     $("#bookList").innerHTML = items.length ? items.map(b => {
-      const sameVideo = S.video && b.vid === S.video.id;
+      const sameVideo = b.vid === S.video?.id;
+      const replay = sameVideo || available.has(b.vid)
+        ? `<button class="time-link" data-act="seekt" data-vid="${esc(b.vid)}" data-t="${b.t}">▶ ${sameVideo ? "回到" : "打开原视频"} ${fmtTime(b.t)} 重听</button>`
+        : /^[A-Za-z0-9_-]{11}$/.test(b.vid)
+          ? `<a class="time-link" href="https://www.youtube.com/watch?v=${b.vid}&amp;t=${Math.floor(b.t)}s" target="_blank" rel="noopener">在 YouTube 重听 ${fmtTime(b.t)} ↗</a>` : "";
       return `
       <div class="wrow">
         <div><div class="w-term">${esc(b.term)}</div>${b.zh ? `<div class="w-zh">${esc(b.zh)}</div>` : ""}</div>
@@ -362,7 +376,7 @@
         <div class="w-sent">${markTerm(b.sentence, b.term)}</div>
         <div class="w-meta">
           ${b.kind && b.kind !== "word" ? `<span class="tag tag-${b.kind}">${KIND_LABEL[b.kind]}</span>` : ""}
-          ${sameVideo ? `<button class="time-link" data-act="seekt" data-t="${b.t}">▶ 回到 ${fmtTime(b.t)} 重听</button>` : ""}
+          ${replay}
         </div>
       </div>`;
     }).join("") : `<div class="empty"><div class="empty-title">${query ? "没有匹配的记录" : "生词本还是空的"}</div>${query
@@ -396,25 +410,25 @@
     return AdaptiveLearning.label(key) + (note ? `（${note.zh}）` : "");
   };
   let markNotice = 0;
-  async function markKnown(key, silent) {
-    const notice = ++markNotice;
-    if (await pushMark(key, "known") && !silent && notice === markNotice)
-      toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => restore(key));
+  function explicitMark(key) {
+    if (live) return shared?.marks.known.includes(key) ? "known" : shared?.marks.unknown.includes(key) ? "unknown" : "clear";
+    return S.known.has(key) ? "known" : S.unknown.has(key) ? "unknown" : "clear";
   }
-  async function markUnknown(key) {
-    const notice = ++markNotice;
-    if (await pushMark(key, "unknown") && notice === markNotice)
-      toast(`以后总是提示：${shownKey(key)}`, () => restore(key));
-  }
-  async function restore(key) {
-    const notice = ++markNotice;
-    if (await pushMark(key, "clear") && notice === markNotice) toast(`已恢复：${shownKey(key)}`);
+  async function markWord(key, state) {
+    const notice = ++markNotice, before = explicitMark(key), label = shownKey(key);
+    const detail = shared?.mark_details?.[key];
+    if (!await pushMark(key, state, before) || notice !== markNotice) return;
+    const message = state === "known" ? `已标为认识：${label}，之后不再提示`
+      : state === "unknown" ? `以后总是提示：${label}` : `已恢复：${label}`;
+    toast(message, before === state ? null : async () => {
+      if (await pushMark(key, before, state, detail)) toast(`已撤销：${label}`);
+    });
   }
 
   // ------------------------------------------------- shared profile (local program) ---
   const API_H = { "X-Adaptive-Subs": "1", "Content-Type": "application/json" };
   async function profileRequest(path, body) {
-    const r = await fetch(path, { headers: API_H, cache: "no-store", ...(body ? { method: "POST", body: JSON.stringify(body) } : {}) });
+    const r = await fetch(path, { headers: API_H, cache: "no-store", signal: AbortSignal.timeout(10000), ...(body ? { method: "POST", body: JSON.stringify(body), keepalive: true } : {}) });
     const p = await r.json();
     if (!r.ok || p.error) throw new Error(p.error || `HTTP ${r.status}`);
     return p;
@@ -422,22 +436,38 @@
   const profileSync = AdaptiveProfileSync.create({
     read: () => profileRequest("api/profile"),
     write: op => op.type === "level" ? profileRequest("api/profile", { level: op.level })
-      : profileRequest("api/mark", { key: op.key, state: op.state, detail: op.detail }),
+      : profileRequest("api/mark", { key: op.key, state: op.state, detail: op.detail, expected_state: op.expectedState }),
     apply: p => {
       shared = p;
-      S.level = Number.isFinite(p.level) && p.level > 0 ? p.level : 3000;
+      S.level = previewLevel ?? p.level;
       S.known = new Set(p.known); S.unknown = new Set(p.unknown);
       renderAll(false);
     },
   });
   async function loadShared() {
-    try { await profileSync.refresh(); }
-    catch { if (!shared) toast("画像暂时无法读取，标记前请检查本地程序"); }
+    if (profileLoading) return;
+    profileLoading = true;
+    $("#retryProfile").disabled = true;
+    try { await profileSync.refresh(); profileProblem = ""; }
+    catch (e) {
+      profileProblem = e.name === "TimeoutError" ? "本机画像读取超时" : `本机画像读取失败：${e.message}`;
+    } finally {
+      profileLoading = false;
+      $("#retryProfile").disabled = false;
+      renderDensity();
+    }
   }
-  async function pushMark(key, state) {
+  async function pushMark(key, state, expectedState, detail) {
+    if (live === null || (live && (!shared || profileProblem))) {
+      toast("画像尚未读取，请先重新读取本机画像再标记");
+      return false;
+    }
     if (!live) {
       return !!(await persist(current => {
         const known = new Set(current.known || []), unknown = new Set(current.unknown || []);
+        const before = known.has(key) ? "known" : unknown.has(key) ? "unknown" : "clear";
+        if (expectedState !== undefined && expectedState !== before)
+          throw new AdaptivePlayerStore.StorageProblem("这个词的标记已在其他页面更新，请核对后再操作", "conflict");
         known.delete(key); unknown.delete(key);
         if (state === "known") known.add(key);
         if (state === "unknown") unknown.add(key);
@@ -445,23 +475,28 @@
       }));
     }
     try {
-      const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
-      await profileSync.mutate({ type: "mark", key, state, detail: note ? { term: note.key, zh: note.zh } : undefined });
+      if (!detail) {
+        const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
+        if (note) detail = { term: note.key, zh: note.zh };
+      }
+      await profileSync.mutate({ type: "mark", key, state, expectedState, detail });
       return true;
     } catch (e) {
       toast(`标记保存未确认：${e.message || "连接失败"}。已恢复到最近确认的记录，请重试。`);
       return false;
     }
   }
-  let levelTimer = 0;
-  function pushLevel() {
-    if (!live) return;
-    clearTimeout(levelTimer);
-    const level = S.level;
-    levelTimer = setTimeout(async () => {
+  async function commitLevel(event) {
+    if (event.target.disabled) return;
+    const level = LEVELS[+event.target.value];
+    previewLevel = null;
+    if (live) {
       try { await profileSync.mutate({ type: "level", level }); }
-      catch (e) { toast(`词汇量保存未确认：${e.message || "连接失败"}，请重试`); }
-    }, 400);
+      catch (error) { toast(`词汇量保存未确认：${error.message}，请重试`); }
+    } else if (!await save({ level })) {
+      S.level = previewLevel ?? localLevel;
+      renderAll(false);
+    }
   }
 
   async function addToBook(entry) {
@@ -472,8 +507,11 @@
       if (book.length >= AdaptiveWordbook.MAX_ENTRIES) throw new Error("生词本已满，请先备份并整理记录");
       added = true; return [...book, record];
     }) || !added) return;
-    if (entry.hasNote) pushMark(entry.mk || entry.key, "unknown");
-    renderAll(); toast(`已加入生词本：${entry.term}`);
+    if (entry.hasNote && !await pushMark(entry.mk || entry.key, "unknown", undefined, { term: entry.term, zh: entry.zh })) {
+      toast(`已加入生词本：${entry.term}。不熟悉标记尚未确认，可在词卡中核对。`);
+      return;
+    }
+    toast(`已加入生词本：${entry.term}`);
   }
   function bookEntryFromCue(ci, noteIdx, word) {
     const c = S.cues[ci];
@@ -640,7 +678,7 @@
   }
 
   // -------------------------------------------------------------- player ---
-  let player = null, ready = false, pausedFor = -1;
+  let player = null, playerVideoId = null, ready = false, pausedFor = -1, pendingSeek = null;
   let ytLoading = false, ytAttempt = 0, ytTimer = 0, ytScript = null;
 
   function showPlayerNotice(message, retry = false) {
@@ -673,15 +711,16 @@
       const active = () => attempt === ytAttempt;
       const captionsOff = target => { try { target.unloadModule("captions"); } catch { /* Optional player module. */ } };
       try {
+        playerVideoId = S.video.id;
         player = new YT.Player("yt", {
-          videoId: S.video.id,
+          videoId: playerVideoId,
           playerVars: { cc_load_policy: 0, rel: 0, playsinline: 1, fs: 0, origin: location.origin },
           events: {
             onReady: e => {
               if (!active()) return;
               player = e.target; ready = true; ytLoading = false; clearTimeout(ytTimer);
               showPlayerNotice(""); captionsOff(e.target);
-              if (S.video && e.target.getVideoData().video_id !== S.video.id) e.target.cueVideoById(S.video.id);
+              ensurePlayer();
             },
             onApiChange: e => { if (active()) captionsOff(e.target); },
             onStateChange: e => {
@@ -726,7 +765,12 @@
     if (!S.video) return;
     $("#openYouTube").href = `https://www.youtube.com/watch?v=${encodeURIComponent(S.video.id)}`;
     if (ready) {
-      if (player.getVideoData().video_id !== S.video.id) { showPlayerNotice(""); player.cueVideoById(S.video.id); }
+      // The iframe can still report A while a previous cue command is changing it to B.
+      if (playerVideoId !== S.video.id || player.getVideoData()?.video_id !== S.video.id) {
+        playerVideoId = S.video.id;
+        showPlayerNotice("");
+        player.cueVideoById(playerVideoId);
+      }
       return;
     }
     if (!ytLoading) loadYouTube();   // its onReady picks up S.video
@@ -747,7 +791,8 @@
 
   let lastIdx = -1;   // the line that was playing on the previous tick
   function tick() {
-    if (!ready || !player.getCurrentTime) return;
+    if (!ready || !player.getCurrentTime || player.getVideoData()?.video_id !== S.video?.id) return;
+    if (pendingSeek) { applySeek(); return; }
     const t = player.getCurrentTime();
     reportFocus(t);
     let i = cueAtOrBefore(t);
@@ -771,23 +816,27 @@
     }
   }
 
-  function seekCue(ci, play = true) {
-    if (!S.cues[ci]) return;
+  function seekPlayback(ci, time, play) {
     closeCard(false);
+    lastIdx = S.cur = ci;
     pausedFor = -1;
-    lastIdx = ci;
-    S.cur = ci;
-    S.gap = false;
+    S.gap = ci >= 0 && time > S.cues[ci].e + GAP_GRACE;
     renderStage();
     markActiveRow(true);
-    if (!ready) return;
-    player.seekTo(S.cues[ci].s + 0.01, true);
+    pendingSeek = { time, play };
+    applySeek();
+  }
+  function applySeek() {
+    if (!ready || player.getVideoData()?.video_id !== S.video?.id) return;
+    const { time, play } = pendingSeek;
+    pendingSeek = null;
+    player.seekTo(time, true);
     if (play) player.playVideo();
   }
-  function seekTime(t) {
-    const ci = cueAtOrBefore(t);
-    seekCue(ci >= 0 ? ci : 0);
+  function seekCue(ci, play = true) {
+    if (S.cues[ci]) seekPlayback(ci, S.cues[ci].s + 0.01, play);
   }
+  function replayBookTime(time) { seekPlayback(cueAtOrBefore(time), time, true); }
   const replay = () => seekCue(S.cur >= 0 ? S.cur : 0);
   const step = (d) => seekCue(Math.max(0, Math.min(S.cues.length - 1, (S.cur >= 0 ? S.cur : -1) + d)));
   function togglePlay() {
@@ -823,7 +872,8 @@
   }
 
   // ---------------------------------------------------- vocabulary test ---
-  let bank = null, T = null;
+  const loadBank = AdaptiveVocabBank.loader("data/vocab_test.json");
+  let bank = null, T = null, testOpening = false;
   const W = { 2: 1, 1: 0.3, 0: 0 };          // known / unsure / unknown
   const PAGE = 14;
   const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
@@ -848,31 +898,27 @@
 
   async function openTest() {
     if (IS_FILE) { showFileNotice(); return; }
-    if (shared) { if (isPlaying()) player.pauseVideo(); window.open("/profile", "_blank", "noopener"); return; }
+    if (live === null) return;
     if (isPlaying()) player.pauseVideo();
+    if (live) { window.open("/profile", "_blank", "noopener"); return; }
     const dlg = $("#testDialog");
-    if (!bank) {
-      try {
-        const r = await fetch("data/vocab_test.json");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        bank = await r.json();
-        if (!bank.bands || !bank.bands.length) throw new Error("empty word bank");
-      } catch (err) {
-        bank = null;
-        $("#testBody").innerHTML = `
-          <p class="eyebrow">词汇测试</p>
-          <h3>题库没有加载出来</h3>
-          <p class="muted">读取 <code>data/vocab_test.json</code> 失败（${esc(err.message || err)}）。
-          如果是部署到 GitHub Pages 的版本，请确认上传了 <code>site/data/</code> 里的 vocab_test.json；
-          如果是直接双击打开的本地文件，请先打开 Adaptive Subs 程序，再通过 <code>http://127.0.0.1:8765/player.html</code> 访问。</p>
-          <div class="modal-actions"><button class="btn btn-ghost" data-act="tclose">关闭</button><button class="btn btn-primary" data-act="tretry">重试</button></div>`;
-        if (!dlg.open) dlg.showModal();
-        return;
-      }
-    }
-    T = newTest();
-    renderTest();
+    if (testOpening) { if (!dlg.open) dlg.showModal(); return; }
+    testOpening = true;
+    $("#testBody").innerHTML = '<p role="status">正在加载词汇测试题库…</p><button class="btn btn-ghost" data-act="tclose">关闭</button>';
     if (!dlg.open) dlg.showModal();
+    try {
+      bank = await loadBank();
+      if (!dlg.open) return;
+      T = newTest();
+      renderTest();
+    } catch (error) {
+      if (!dlg.open) return;
+      const message = error.name === "TimeoutError" ? "题库读取超时" : error.message;
+      $("#testBody").innerHTML = `
+        <h3>题库没有加载出来</h3><p role="status">${esc(message)}</p>
+        <div class="modal-actions"><button class="btn btn-ghost" data-act="tclose">关闭</button>
+        <button class="btn btn-primary" data-act="tretry">重新加载题库</button></div>`;
+    } finally { testOpening = false; }
   }
 
   function newTest() {
@@ -884,7 +930,8 @@
       const at = 4 + Math.floor(Math.random() * (items.length - 3));
       items.splice(at, 0, { type: "non", word: nw, ans: null });
     });
-    return { items, page: 0, stage: "intro", checks: [], result: null };
+    return { items, page: 0, stage: "intro", checks: [], result: null,
+      baseline: { level: localLevel, test: S.test }, saving: false, saveMessage: "" };
   }
 
   function renderTest() {
@@ -956,9 +1003,9 @@
           ${r.checkTotal ? `<br>词义核对：答对 ${r.checkOk} / ${r.checkTotal} 题${r.checkOk < r.checkTotal ? "，答错的词频段已下调" : ""}。` : ""}
         </div>
         <div class="modal-actions">
-          <button class="btn btn-ghost" data-act="tagain">再测一次</button><span class="spacer"></span>
-          <button class="btn btn-primary" data-act="tapply" data-lv="${lv}">用这个结果设置字幕（≈ ${fmtNum(lv)} 词）</button>
-        </div>`;
+          <button class="btn btn-ghost" data-act="tagain" ${T.saving ? "disabled" : ""}>再测一次</button><span class="spacer"></span>
+          <button class="btn btn-primary" data-act="tapply" data-lv="${lv}" ${T.saving ? "disabled" : ""}>${T.saving ? "正在保存…" : T.conflict ? "用本次结果替换最新设置" : `用这个结果设置字幕（≈ ${fmtNum(lv)} 词）`}</button>
+        </div><p id="testSaveMessage" role="status">${esc(T.saveMessage)}</p>`;
     }
   }
 
@@ -1029,12 +1076,29 @@
     }
     else if (act === "tagain") { T = newTest(); T.stage = "words"; renderTest(); }
     else if (act === "tapply") {
-      S.level = +b.dataset.lv;
-      S.test = { est: T.result.est, date: new Date().toISOString().slice(0, 10) };
-      if (!await save({ level: S.level, test: S.test })) return;
-      renderAll(); pushLevel();
-      $("#testDialog").close();
-      toast(`已按测试结果设置：≈ ${fmtNum(S.level)} 词`);
+      const attempt = T, level = +b.dataset.lv;
+      if (attempt.saving) return;
+      attempt.saving = true;
+      renderTest();
+      try {
+        await playerStore.update(current => {
+          const before = attempt.baseline, latest = { level: current.level || 5000, test: current.test || null };
+          if (latest.level !== before.level || latest.test?.est !== before.test?.est || latest.test?.date !== before.test?.date) {
+            attempt.baseline = latest;
+            attempt.conflict = true;
+            throw new Error("其他页面已更新词汇量或测试记录。你的作答已保留，请确认是否替换最新设置。");
+          }
+          return { ...current, level, test: { est: attempt.result.est, date: new Date().toISOString().slice(0, 10) } };
+        });
+        refreshLocalStore();
+        if (T === attempt && dlg.open) {
+          dlg.close();
+          toast(`已按测试结果设置：≈ ${fmtNum(level)} 词`);
+        }
+      } catch (error) {
+        attempt.saveMessage = `本次结果尚未保存。${error.message}`;
+        if (T === attempt) { attempt.saving = false; renderTest(); }
+      }
     }
   }
 
@@ -1043,10 +1107,12 @@
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act, key = b.dataset.key;
-    if (act === "know") { closeCard(true); markKnown(key); }
-    else if (act === "unknown") { closeCard(true); markUnknown(key); }
-    else if (act === "restore") { closeCard(true); restore(key); }
+    if (act === "know" || act === "unknown" || act === "restore") {
+      closeCard(true);
+      markWord(key, act === "know" ? "known" : act === "restore" ? "clear" : "unknown");
+    }
     else if (act === "book") {
+      closeCard(true);
       const ci = +b.dataset.c;
       if (b.dataset.n != null || b.dataset.w) await addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
       else {
@@ -1054,7 +1120,6 @@
         const ni = S.cues[ci].notes.findIndex((n) => markKey(n) === key);
         await addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
       }
-      closeCard(true);
     }
     else if (act === "unbook") {
       let index, removed;
@@ -1071,7 +1136,16 @@
     }
     else if (act === "replay") seekCue(+b.dataset.c);
     else if (act === "seek") seekCue(+b.dataset.c);
-    else if (act === "seekt") seekTime(+b.dataset.t);
+    else if (act === "seekt") {
+      const id = b.dataset.vid, time = Number(b.dataset.t);
+      if (id === S.video?.id && !S.retrySaved && !S.retryId) {
+        ++navigation;
+        replayBookTime(time);
+      } else {
+        const entry = index.find(video => video.id === id);
+        if (entry) await loadSaved(entry, ++navigation, time);
+      }
+    }
     else if (act === "export") exportCSV();
     else if (act === "backup-book") exportBook();
     else if (act === "import-book") $("#bookBackupFile").click();
@@ -1089,6 +1163,7 @@
     $("#downloadRecovery").addEventListener("click", () => downloadStorageCopies());
     window.addEventListener("storage", event => { if (event.key === STORE_KEY || event.key === null) refreshLocalStore(); });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshLocalStore(); });
+    $("#retryProfile").addEventListener("click", loadShared);
     $("#bookBackupFile").addEventListener("change", previewBookImport);
     $("#bookImportConfirm").addEventListener("click", importBook);
     $("#bookImportCancel").addEventListener("click", () => $("#bookImportDialog").close());
@@ -1132,7 +1207,12 @@
     $("#tab-transcript").addEventListener("click", (e) => { const r = e.target.closest(".tr-row"); if (r) seekCue(+r.dataset.c); });
     ["wheel", "touchmove"].forEach((ev) => $("#tab-transcript").addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true }));
 
-    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save({ level: S.level }); renderAll(); pushLevel(); });
+    $("#levelRange").addEventListener("input", e => {
+      if (e.target.disabled) return;
+      previewLevel = S.level = LEVELS[+e.target.value];
+      renderAll(false);
+    });
+    $("#levelRange").addEventListener("change", commitLevel);
     $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save({ mode: S.mode }); renderAll(); } });
     $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save({ gloss: S.gloss }); renderAll(); } });
     $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save({ pref: S.pref }); renderAll(); } });
@@ -1184,16 +1264,22 @@
   // ------------------------------------------------------- video loading ---
   // Saved videos load from data/<id>.json. With the local server (server.py) running, any YouTube
   // link can be opened: subtitles arrive in seconds, annotations stream in while you watch.
+  let navigation = 0;  // Only the latest open request may replace the displayed video.
   let index = [];      // saved videos [{id, title, file}]
-  let live = false;    // local server available
+  let live = null;     // null until the server check completes
   let es = null;       // EventSource of a video being generated
 
-  async function loadIndex() {
+  async function loadIndex(request) {
     try {
-      const r = await fetch("data/index.json", { cache: "no-store" });
-      index = r.ok ? await r.json() : [];
-    } catch { index = []; }
-    if (!Array.isArray(index)) index = [];
+      const r = await fetch("data/index.json", { cache: "no-store", signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row.id !== "string"
+          || typeof row.file !== "string" || typeof row.title !== "string")) throw new Error("视频列表格式无效");
+      if (request === navigation) index = rows;
+    } catch (error) {
+      if (request === navigation) throw error;
+    }
   }
 
   function resetVideo(video) {
@@ -1206,7 +1292,7 @@
     S.annDone = null;
     S.progress = null;
     S.statusMsg = "";
-    S.retryId = null;
+    S.retryId = null; S.retrySaved = null; pendingSeek = null;
     lastIdx = -1; pausedFor = -1; lastFocusT = -1; lastSentFocus = -1;
   }
 
@@ -1226,44 +1312,57 @@
     ensurePlayer();
   }
 
-  async function loadSaved(entry) {
-    let data;
+  async function loadSaved(entry, request, replayAt = null) {
+    let data, rebuild = false;
     try {
-      const response = await fetch("data/" + entry.file, { cache: "no-store" });
+      const response = await fetch("data/" + entry.file, { cache: "no-store", signal: AbortSignal.timeout(15000) });
       data = await response.json();
-      if (!response.ok || data.error) throw new Error(data.error || "字幕读取失败");
+      if (request !== navigation) return;
+      rebuild = live && response.status === 409 && data?.retry === true;
+      if (!response.ok || data?.error) throw new Error(data?.error || `字幕读取失败（HTTP ${response.status}）`);
+      if (data?.video?.id !== entry.id || !Array.isArray(data.cues)) throw new Error("字幕文件与所选视频不匹配或格式无效");
       data.cues = data.cues.map(c => ({ ...c, notes: AdaptiveLearning.clientNotes(c.text, c.notes) }));
     }
     catch (e) {
+      if (request !== navigation) return;
       resetVideo({ id: entry.id, title: entry.title || entry.id });
-      S.statusMsg = e.message || "已保存字幕无法读取";
-      S.retryId = live ? entry.id : null;
+      S.statusMsg = e.name === "TimeoutError" ? "已保存字幕读取超时" : e.message || "已保存字幕无法读取";
+      if (rebuild) S.retryId = entry.id;
+      else S.retrySaved = { entry, replayAt };
       afterVideoChange(); toast(S.statusMsg); return;
     }
     resetVideo(data.video);
     S.cues = data.cues;
     afterVideoChange();
+    if (replayAt !== null) replayBookTime(replayAt);
   }
 
   async function openVideo(input, bypassIndex = false) {
     const v = String(input || "").trim();
     if (!v) return;
+    const request = ++navigation;
     const saved = index.find((x) => x.id === v);
-    if (saved && !bypassIndex) return loadSaved(saved);
+    if (saved && !bypassIndex) return loadSaved(saved, request);
     if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
-    let r;
-    try { r = await (await fetch("api/open", { method: "POST",
-      headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" }, body: JSON.stringify({ url: v }) })).json(); }
-    catch { toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
-    if (r.error) { toast(r.error); return; }
-    if (r.cached) {
-      await loadIndex();
-      return loadSaved(index.find((x) => x.id === r.id) || { id: r.id, file: r.file });
+    try {
+      const response = await fetch("api/open", { method: "POST", signal: AbortSignal.timeout(15000),
+        headers: API_H, body: JSON.stringify({ url: v }) });
+      const r = await response.json();
+      if (request !== navigation) return;
+      if (!response.ok || r?.error) throw new Error(r?.error || `打开视频失败（HTTP ${response.status}）`);
+      if (typeof r?.id !== "string" || !/^[A-Za-z0-9_-]{11}$/.test(r.id) || typeof r.cached !== "boolean")
+        throw new Error("本地程序未确认打开的视频，请重试");
+      if (r.cached) {
+        // The acknowledged video can still open if the catalog is temporarily unavailable.
+        await loadIndex(request).catch(() => {});
+        if (request === navigation) await loadSaved(index.find(x => x.id === r.id) || { id: r.id, file: r.id + ".json" }, request);
+      } else startLive(r.id, request);
+    } catch (error) {
+      if (request === navigation) toast(error.name === "TimeoutError" ? "打开请求超时，请在程序中核对处理进度" : error.message);
     }
-    startLive(r.id);
   }
 
-  function startLive(id) {
+  function startLive(id, request) {
     resetVideo({ id, title: "正在获取字幕…" });
     S.annDone = new Set();
     S.statusMsg = "正在获取英文字幕…";
@@ -1297,7 +1396,8 @@
       src.close(); es = null;
       S.annDone = null;
       S.progress = { done: 1, total: 1, finished: true, seconds: d.seconds };
-      await loadIndex();
+      await loadIndex(request).catch(() => {});
+      if (request !== navigation) return;
       renderVideoSelect();
       renderAll(false);
       toast(d.warning || `全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
@@ -1324,32 +1424,47 @@
     bindUI();
     renderStorageNotice(); renderActivePanel();
     renderControls();
+    renderDensity();
     renderStage();
     if (IS_FILE) {
       $("#line").innerHTML = `<span class="placeholder">请通过本地服务器打开：先打开 Adaptive Subs 程序</span>`;
       showFileNotice();
       return;
     }
-    try { live = !!(await (await fetch("api/health", { cache: "no-store" })).json()).ok; } catch { live = false; }
+    for (const id of ["openTest", "introTest", "levelTest"]) $("#" + id).disabled = true;
+    const mode = document.documentElement.dataset.playerMode;
+    if (mode === "local" || mode === "static") live = mode === "local";
+    else {
+      // Older builds and the raw web folder use discovery.
+      try { live = !!(await (await fetch("api/health", { cache: "no-store", signal: AbortSignal.timeout(10000) })).json()).ok; }
+      catch { live = false; }
+    }
+    for (const id of ["openTest", "introTest", "levelTest"]) $("#" + id).disabled = false;
+    renderDensity();
     $("#urlForm").hidden = !live;
     $("#settingsLink").hidden = !live;
     if (live) {
-      await loadShared();
+      loadShared();   // Reading the profile should never delay opening saved subtitles.
       // the profile page (another tab) may change it: reload when coming back
-      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && shared) loadShared(); });
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") loadShared(); });
     }
     // a local address without the live server = an old plain file server: say how to fix it
     // (on GitHub Pages there is never a server, so no hint there)
-    $("#liveHint").hidden = live || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
-    await loadIndex();
-    renderVideoSelect();
+    $("#liveHint").hidden = mode === "static" || live || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+    const initial = navigation;
+    let indexError;
+    try { await loadIndex(initial); } catch (error) { indexError = error; }
     setInterval(tick, 100);
-    const want = params.get("v");
-    if (want && (live || index.some((v) => v.id === want))) await openVideo(want);
-    else if (index.length) await loadSaved(index[0]);
-    else {
-      S.statusMsg = live ? "在上方粘贴一个 YouTube 链接开始" : "没有找到字幕数据（data/index.json）：先运行 annotate.py，或确认 data 文件夹已上传";
-      renderStage();
+    if (initial === navigation) {
+      renderVideoSelect();
+      const want = params.get("v");
+      if (want && (live || index.some(v => v.id === want))) await openVideo(want);
+      else if (index.length) await openVideo(index[0].id);
+      else {
+        S.statusMsg = indexError ? "已保存视频列表读取失败，请刷新页面重试"
+          : live ? "在上方粘贴一个 YouTube 链接开始" : "还没有已保存的视频";
+        renderStage();
+      }
     }
     if (!S.introSeen && !storageIssue) $("#introDialog").showModal();
   }

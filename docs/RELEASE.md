@@ -1,4 +1,4 @@
-# 0.4.0-alpha.20 本地试用版
+# 0.4.0-alpha.21 本地试用版
 
 本版用于验证新的学习体验与恢复能力。交付物为源码包，需要 Python 3.12 安装依赖；不包含 Windows 可执行程序，也没有自动部署到公开 Releases。
 
@@ -40,6 +40,12 @@ alpha.19 使用原句上下文还原注释词形，改善 `saw`（锯子/看见�
 
 alpha.20 修复词汇测试保存失败仍显示成功的问题，保留当前页面的作答，支持核对与主动重存；丢失响应时按实际保存的词表和分段结果核对，不自动重复写入。画像初次读取失败时禁止空表单覆盖已有成绩，恢复读取后继续编辑，备份仍可尝试下载。表单、测试和批量重置增加版本冲突保护，旧页面不能静默覆盖新数据；冲突时保留填写，重新读取后再操作。升级后请刷新所有画像页面；关闭页面仍会丢失未保存的测试作答。本版的普通逐词标记也会改变画像版本，可能使旧表单过期。
 
+alpha.21 改进播放器的词汇测试和学习记录保存。本机版的测试入口始终打开英语画像，静态版可以在浏览器内完成测试。两者都会检查题库，加载失败可重试。多个窗口同时修改词汇量时，静态测试会保留作答，并在替换最新设置前请求确认。
+
+词义标记在程序确认后显示成功。播放器撤销时会恢复这个词原先的状态，如果另一页面已修改该词，会提示重新核对。快速切换视频时只显示最后一次选择；读取已有字幕失败时，可以重读该文件。程序发现字幕文件与视频标识不符时，会提示重新处理。生词本可以跨视频回到收藏时的原句和时间点；本地缺少对应视频时，提供带时间点的 YouTube 链接。
+
+源码包现在包含测试所需的 `pytest.ini`，解压后可按下方命令直接运行离线回归。
+
 ## 这一版的变化
 
 - 不同语境的同词异义分别学习；播放器和插件共享筛选、重复提示与标记保存规则。
@@ -72,8 +78,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.20-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.20-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.21-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.21-source.zip
 python tools/instance_check.py           # 临时数据目录，验证重复启动、崩溃恢复和退出
 python tools/runtime_check.py            # 模拟组件缺失，再加载真实本地组件验证修复
 ```

@@ -421,7 +421,7 @@ class Store:
             self._save(p)
             return None
 
-    def mark(self, key: str, state: str, detail=None) -> str | None:
+    def mark(self, key: str, state: str, detail=None, *, expected_state=None) -> str | None:
         if not isinstance(key, str):
             return "bad mark"
         key = key.lower().strip()
@@ -434,6 +434,10 @@ class Store:
         with self.lock:
             p = self.load()
             known, unknown = set(p.get("known") or []), set(p.get("unknown") or [])
+            if expected_state is not None:
+                previous = "known" if key in known else "unknown" if key in unknown else "clear"
+                if expected_state != previous:
+                    raise ProfileConflict("这个词的标记已在其他页面更新，请核对后再操作")
             known.discard(key)
             unknown.discard(key)
             if state == "known":
