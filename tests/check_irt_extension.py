@@ -44,6 +44,8 @@ def check():
                 if url.startswith("chrome-extension://"): return r.continue_()
                 if url == BASE + "/api/health": return r.fulfill(json={"ok": True,"ext": 2,"profile": "/profile"})
                 if url.startswith(BASE + "/api/profile"): return r.fulfill(json=profile)
+                if url == BASE + "/api/mark":
+                    return r.fulfill(status=503, json={"error": "cannot save"})
                 if url == BASE + "/api/ext/open":
                     assert r.request.post_data_json["subs_only"]
                     return r.fulfill(json={"id": VID, "cached": True, "data": video})
@@ -81,6 +83,16 @@ def check():
             settings.locator("#toggle").click()
             expect(words).to_have_text(["house","fog"])
             settings.locator("#toggle").click()
+            page.reload()
+            expect(words).to_have_text(["orbit","fog"])
+            page.locator(".asubs-t[data-n='0']").click()
+            page.locator(".asubs-card [data-act=known]").click()
+            expect(page.locator(".asubs-pill")).to_contain_text("标记没保存")
+            expect(words).to_have_text(["orbit","fog"])
+            old_marks = profile.pop("marks")
+            page.reload()
+            expect(words).to_have_text(["fog"])
+            profile["marks"] = old_marks
             page.reload()
             expect(words).to_have_text(["orbit","fog"])
             tab_file.write_bytes(tab_file.read_bytes() + b" ")
