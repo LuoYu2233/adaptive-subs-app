@@ -1,0 +1,51 @@
+name: Windows integrated candidate
+on:
+  push:
+    branches: [validation/windows-integration]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: windows-2022
+    timeout-minutes: 50
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install desktop, model and test dependencies
+        run: python -m pip install -r requirements.txt pyinstaller playwright==1.65.2 wordfreq==3.1.1 spacy==3.8.18 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+      - run: python -m playwright install chromium
+      - name: Run tests and rebuild the full word table
+        shell: bash
+        run: |
+          set -e
+          node --test tests/*.test.cjs
+          python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p 'test_*.py'
+          python tools/build_word_difficulty.py
+          python tests/check_generated_word_table.py
+      - name: Run the six installed-browser and desktop-page scenarios
+        shell: bash
+        run: |
+          set -e
+          for check in check_cat_page check_blind_labels check_irt_extension check_viewing_study check_subtitle_spans check_profile_backup_page; do
+            python "tests/$check.py"
+          done
+      - name: Build and open the native application from the distributed ZIP
+        run: python packaging/build.py
+      - shell: pwsh
+        run: ./tools/check_windows_package.ps1
+      - name: Retain the verified candidate for seven days
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdaptiveSubs-Windows-candidate
+          path: release/AdaptiveSubs-Windows.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
