@@ -116,7 +116,8 @@
 
   <section id="summary" hidden></section>
 
-  <section id="s1">
+  <p id="profileLoadError" class="msg bad" role="status" hidden></p>
+  <section id="s1" hidden>
     <h2><span class="step">1</span>你现在是</h2>
     <p class="sub">没填考试成绩时，用它推测你学过哪些词表。</p>
     <div class="chips" id="identity"></div>
@@ -129,7 +130,7 @@
     </datalist>
   </section>
 
-  <section id="s2">
+  <section id="s2" hidden>
     <h2><span class="step">2</span>考过的英语考试</h2>
     <p class="sub">填你考过的（填最高的一次），没考过的空着。成绩决定哪些考试词表直接算作"已认识"。</p>
     <div class="exams" id="exams"></div>
@@ -139,7 +140,7 @@
     </div>
   </section>
 
-  <section id="s3">
+  <section id="s3" hidden>
     <h2><span class="step">3</span>词汇测试</h2>
     <div id="test"></div>
   </section>
@@ -148,6 +149,21 @@
     <h2>看视频时标记过的词</h2>
     <p class="sub">这些标记优先于画像和测试。点 × 恢复成按画像判断。</p>
     <div id="marks"></div>
+  </section>
+  <section id="backup">
+    <h2>备份与恢复</h2>
+    <p class="sub">备份包含考试成绩、词汇测试和手动标记。视频、API key 和浏览器生词本需分别保留。</p>
+    <div class="actions">
+      <button class="btn" id="exportProfile" type="button">下载画像备份</button>
+      <button class="btn" id="chooseBackup" type="button">选择备份文件</button>
+      <input type="file" id="backupFile" accept=".json,application/json" hidden>
+    </div>
+    <div id="backupPreview" hidden>
+      <p id="restoreSummary"></p>
+      <button class="btn primary" id="restoreProfile" type="button">确认恢复</button>
+      <button class="btn" id="cancelRestore" type="button">取消</button>
+    </div>
+    <p id="backupMessage" class="msg" role="status"></p>
   </section>
 </main>
 <script src="/assets/profile.js"></script>
