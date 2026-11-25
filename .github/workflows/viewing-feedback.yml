@@ -4,6 +4,7 @@ on:
     paths:
       - 'tools/viewing/**'
       - 'tools/fit_viewing_feedback.py'
+      - 'tools/benchmark_viewing_feedback.py'
       - 'tests/test_viewing_feedback.py'
       - '.github/workflows/viewing-feedback.yml'
 permissions:
