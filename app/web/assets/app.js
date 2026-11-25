@@ -1001,7 +1001,7 @@
   async function loadSaved(entry, request = ++navigation) {
     let data;
     try {
-      const response = await fetch("data/" + entry.file, { cache: "no-store" });
+      const response = await fetch("data/" + encodeURIComponent(entry.file), { cache: "no-store" });
       if (!response.ok) throw new Error();
       data = await response.json();
       if (data?.video?.id !== entry.id || !Array.isArray(data.cues)) throw new Error();
