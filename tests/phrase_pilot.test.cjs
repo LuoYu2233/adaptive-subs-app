@@ -10,7 +10,7 @@ const bank = assemble(text);
 test("100 distinct contextual items, balanced provisional levels and portable content fingerprint", () => {
   assert.equal(bank.items.length, 100);
   for (let level = 1; level <= 5; level++) assert.equal(bank.items.filter(i => i.level === level).length, 20);
-  assert.equal(assemble("\uFEFF" + text.replace(/\n/g, "\r\n")).bankSha256, bank.bankSha256);
+  assert.equal(assemble("\uFEFF" + text.replace(/\r?\n/g, "\r\n")).bankSha256, bank.bankSha256);
   assert.throws(() => assemble(text.replace("[look for]", "look for")), /第 2 行/);
   assert.throws(() => assemble(text.replace("\t寻找\t交还", "\t寻找\t寻找")), /选项/);
   const evil = structuredClone(bank); evil.items[0].before = "</script>";
