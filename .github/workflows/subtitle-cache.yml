@@ -1,0 +1,27 @@
+name: Subtitle result cache
+on:
+  pull_request:
+    paths:
+      - 'app/annotate.py'
+      - 'app/server.py'
+      - 'app/result_validation.py'
+      - 'app/storage.py'
+      - 'app/subtitle_store.py'
+      - 'tests/test_subtitle_store.py'
+      - '.github/workflows/subtitle-cache.yml'
+permissions:
+  contents: read
+jobs:
+  cache:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install srt numpy
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_subtitle_store.py -v

@@ -10,12 +10,18 @@ Never copies .env, .cache, raw subtitles or old per-level files.
 import hashlib
 import json
 import shutil
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent     # repository root
 WEB = ROOT / "app" / "web"                        # the player page and its assets
 VIDEOS = ROOT / "data"                            # videos you processed (from source: the repository root)
 SITE = ROOT / "site"
+
+sys.path.insert(0, str(ROOT / "app"))
+import video_catalog
+from storage import write_json
+from subtitle_store import snapshot
 
 SITE_README = """# Adaptive Subs Demo
 
@@ -45,10 +51,12 @@ def main():
         html = html.replace(f'assets/{name}"', f'assets/{name}?v={digest}"')
     (SITE / "index.html").write_text(html, encoding="utf-8")
 
-    index_file = VIDEOS / "index.json"     # absent in a fresh clone: no videos processed yet
-    index = json.loads(index_file.read_text(encoding="utf-8")) if index_file.exists() else []
-    for v in index:
-        shutil.copy(VIDEOS / v["file"], SITE / "data" / v["file"])
+    index = []
+    for row in video_catalog.read(VIDEOS):
+        cached = snapshot(VIDEOS / row["file"], row["id"])
+        if cached is not None:
+            write_json(SITE / "data" / row["file"], cached.data)
+            index.append(row)
     (SITE / "data" / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     shutil.copy(ROOT / "app" / "data" / "vocab_test.json", SITE / "data" / "vocab_test.json")
     (SITE / "README.md").write_text(SITE_README, encoding="utf-8")
