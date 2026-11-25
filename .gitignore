@@ -6,6 +6,7 @@
 # your learner profile and word marks (personal)
 profile.json
 profile.tmp
+.profile.json.lock
 .profile-*.tmp
 /profile-backups/
 

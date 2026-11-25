@@ -18,6 +18,7 @@ Phrases and common words in an uncommon sense are never hidden by the library, o
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import datetime
 import hashlib
 import json
@@ -231,6 +232,22 @@ class Store:
         self.lock = threading.Lock()
         self._cache = None        # (rev, payload) of the computed library
 
+    @contextmanager
+    def _writer(self):
+        # Keep the lock file in place: replacing or deleting it could give two writers different locks.
+        with self.lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.with_name("." + self.path.name + ".lock").open("a+b") as handle:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                # Closing the handle releases either OS lock, also after an exception or process exit.
+                yield
+
     def _read(self):
         try:
             return self.path.read_bytes()
@@ -274,7 +291,7 @@ class Store:
 
     def restore_backup(self, backup, token):
         fields = backup_fields(backup)
-        with self.lock:
+        with self._writer():
             raw = self._read()
             if token != restore_token(raw, fields):
                 raise RestoreConflict("当前画像或选择的备份已改变，请重新预览后确认")
@@ -332,7 +349,7 @@ class Store:
     # -- updates --
     def update(self, body: dict) -> str | None:
         """Profile fields from the setup page. Returns an error message or None."""
-        with self.lock:
+        with self._writer():
             p = self.load()
             if "identity" in body:
                 ident = body.get("identity")
@@ -389,7 +406,7 @@ class Store:
         key = str(key or "").lower().strip()
         if not KEY_RE.fullmatch(key) or state not in ("known", "unknown", "clear"):
             return "bad mark"
-        with self.lock:
+        with self._writer():
             p = self.load()
             known, unknown = set(p.get("known") or []), set(p.get("unknown") or [])
             known.discard(key)
