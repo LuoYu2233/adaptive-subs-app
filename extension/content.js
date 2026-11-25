@@ -1138,7 +1138,7 @@
       const bytes = new TextEncoder().encode(JSON.stringify(S.cues.map(c => [c.s, c.e, c.text])));
       crypto.subtle.digest("SHA-256", bytes).then(digest => {
         const subtitleSha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint, subtitleSha256 });
+        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint, subtitleSha256, policy: model.policy });
       }).then(r => {
         if (r.id) {
           study = { id: r.id, gen }; observedFrame = null;

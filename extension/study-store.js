@@ -20,9 +20,21 @@ const AdaptiveStudyStore = (() => {
       if (msg.type === "studyBegin") {
         if (!tab || control || !codeOK(msg.clip) || !codeOK(msg.domain) || !fieldOK(msg.field) ||
             ![msg.fingerprint, msg.subtitleSha256].every(h => typeof h === "string" && /^[a-f0-9]{64}$/.test(h))) fail("片段代号、领域或模型信息无效");
+        const p = msg.policy;
+        let policy;
+        if (p !== undefined) {
+          if (!["CAT", "feedback"].includes(p?.source) || ![p.anchorTheta, p.discrimination, p.effectiveTheta].every(Number.isFinite) ||
+              p.discrimination <= 0) fail("当前生词模型的测量参数无效");
+          policy = { source: p.source, anchorTheta: p.anchorTheta, discrimination: p.discrimination, effectiveTheta: p.effectiveTheta };
+          if (p.source === "feedback") {
+            if (!integer(p.trainedThrough) || p.trainedThrough > Date.now() || (p.domain !== "" && p.domain !== msg.domain))
+              fail("请使用匹配当前视频领域且在观看前生成的校准报告");
+            Object.assign(policy, { domain: p.domain, trainedThrough: p.trainedThrough });
+          }
+        }
         if (meta) fail("本机已有一组记录，请先导出并清除");
         const next = { version: 1, id: crypto.randomUUID(), clip: msg.clip, domain: msg.domain, field: msg.field,
-          fingerprint: msg.fingerprint, subtitleSha256: msg.subtitleSha256, started: Date.now(), recording: true, count: 0, cues: [],
+          fingerprint: msg.fingerprint, subtitleSha256: msg.subtitleSha256, ...(policy ? { policy } : {}), started: Date.now(), recording: true, count: 0, cues: [],
           tab: sender.tab.id, document: sender.documentId };
         await storage.set({ [META]: next });
         return summary(next);
@@ -52,7 +64,7 @@ const AdaptiveStudyStore = (() => {
         });
         if (exposures.length !== meta.count) fail("本机记录数量不一致");
         return { version: 1, kind: "word-viewing-study", id: meta.id, clip: meta.clip, domain: meta.domain,
-          tableSha256: meta.fingerprint, subtitleSha256: meta.subtitleSha256, field: meta.field, started: meta.started, ended: meta.ended,
+          tableSha256: meta.fingerprint, subtitleSha256: meta.subtitleSha256, field: meta.field, ...(meta.policy ? { policy: meta.policy } : {}), started: meta.started, ended: meta.ended,
           stopReason: meta.reason, exposures };
       }
       if (msg.type !== "studyObserve" || !owner) fail("只有发起记录的视频可以填写观看事件");
