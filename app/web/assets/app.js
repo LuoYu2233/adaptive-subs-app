@@ -997,8 +997,18 @@
 
   async function loadSaved(entry) {
     let data;
-    try { data = await (await fetch("data/" + entry.file, { cache: "no-store" })).json(); }
-    catch { toast(`字幕文件 data/${entry.file} 读取失败`); return; }
+    try {
+      const response = await fetch("data/" + entry.file, { cache: "no-store" });
+      if (!response.ok) throw new Error();
+      data = await response.json();
+      if (data?.video?.id !== entry.id || !Array.isArray(data.cues)) throw new Error();
+    } catch {
+      // Leave the current player intact. A subsequent explicit open may regenerate the missing result.
+      index = index.filter(row => row.id !== entry.id);
+      renderVideoSelect();
+      toast(`字幕文件 data/${entry.file} 无法载入，请重新打开视频`);
+      return;
+    }
     resetVideo(data.video);
     S.cues = data.cues;
     afterVideoChange();
