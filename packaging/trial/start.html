@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'">
+<title>生词预测试用 · Adaptive Subs</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f1;color:#202a23;font:17px/1.65 "Microsoft YaHei",system-ui,sans-serif}
+main{width:min(100% - 32px,44rem);margin:clamp(1.5rem,7vh,5rem) auto;padding:clamp(1.25rem,5vw,3rem);background:white;border:1px solid #cad3cc;border-radius:12px}
+h1,h2{line-height:1.25}h1{margin-top:0}h2{font-size:1.23rem;margin:1.8rem 0 .6rem}ol{padding-left:1.45rem}li{margin:.35rem 0}
+a{color:#235e42}a.primary{display:inline-block;background:#245c42;color:white;text-decoration:none;padding:.55rem .9rem;border-radius:5px;font-weight:600}a:focus-visible{outline:3px solid #95660f;outline-offset:3px}code{overflow-wrap:anywhere}footer{margin-top:2rem;font-size:.9rem}
+</style></head><body><main>
+<h1>生词预测试用</h1>
+<p>先把整个资料包解压到一个文件夹。单词和短语试测都可直接在 Chrome 或 Edge 离线完成。学习资料和导出结果保存在本机。</p>
+<h2>测量单词能力</h2><p>输入大致词汇量，从 @@WORDS@@ 道题中自适应抽题，最多做 40 道。完成后点「导出判词参数」。如要参与后续反馈校准，也请保存「测量记录」。</p>
+<a class="primary" href="单词能力试测.html">开始单词试测</a>
+<h2>让视频使用自己的结果</h2>
+<ol><li>打开配套 Windows 程序，在 Chrome 或 Edge 中加载分发包里的「浏览器插件」。</li>
+<li>从插件弹窗进入「IRT 判词试用」，依次选择本资料包里的 <code>word-difficulty-v1.json</code> 和刚导出的 <code>word-cat-parameters.json</code>。</li>
+<li>点「导入并启用」，打开已生成字幕的视频。点候选词可查看当前概率和提示阈值。回到同一设置页可暂停试用。</li></ol>
+<h2>用自己的观看记录更新判词</h2>
+<ol><li>在有完整英文字幕的视频里，从扩展弹窗打开「观看记录」，填入片段代号和领域。主动开始记录，观看后停止并导出；每段视频分别保存。</li>
+<li>解压配套的 Windows 观看校准工具，双击 <code>AdaptiveSubs-Calibration.exe</code>。选「完整测量记录」、本包词难度表和先前导出的观看记录，选择与观看时相同的量尺，生成校准报告。</li>
+<li>回到「IRT 判词试用」，再次选择原表和判词参数，展开观看校准设置，导入报告并启用。若要评估是否少漏词，先保存模型，再对一段新视频做逐句盲标。</li></ol>
+<h2>单独测量短语</h2><p>从 @@PHRASES@@ 道语境题中抽取 6 至 8 道，结果单独导出，可用于后续校准。视频中的单词判词使用上面的单词参数。</p>
+<a href="短语能力试测.html">开始短语试测</a>
+<footer><a href="来源与许可.txt">资料来源与许可</a></footer>
+</main></body></html>

@@ -1,0 +1,31 @@
+name: Offline trial material archive
+on:
+  pull_request:
+    paths:
+      - 'tools/build_trial_materials.py'
+      - 'packaging/trial/**'
+      - 'tests/test_trial_materials.py'
+      - '.github/workflows/trial-materials.yml'
+permissions:
+  contents: read
+jobs:
+  archive:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_trial_materials.py -v
+      - name: Build with a GBK default filesystem and text encoding
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/trial-materials-locales"
+          localedef --no-archive -i zh_CN -f GBK "$RUNNER_TEMP/trial-materials-locales/zh_CN.GBK"
+          export LOCPATH="$RUNNER_TEMP/trial-materials-locales" LC_ALL=zh_CN.GBK PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 PYTHONIOENCODING=utf-8
+          python -c "import locale; assert locale.getencoding().lower() == 'gbk'"
+          python tests/test_trial_materials.py -v
