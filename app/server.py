@@ -908,14 +908,19 @@ def app_status(port: int) -> dict:
                         "done": j.finished, "total": j.progress_total() if j.state == "running" else j.total,
                         "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started})
     running.sort(key=lambda x: -x["started"])
-    prof = PROFILE.payload()
+    try:
+        prof = PROFILE.payload()
+        summary = {k: prof[k] for k in ("setup", "level", "test", "lists")} | {
+            "known": prof["stats"]["known"], "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"]}
+    except (PS.ProfileUnreadable, OSError):
+        summary = {"setup": False, "level": None, "test": None, "lists": [], "known": 0, "marked": 0,
+                   "error": "画像暂时无法读取，请在画像页检查或从备份恢复"}
     return {
         "port": port, "uptime": int(time.time() - STARTED),
         "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
         "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
-        "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
-                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"]},
+        "profile": summary,
         "jobs": running, "recent": recent_videos(),
         "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
     }
@@ -984,13 +989,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
-        if u.path == "/api/profile":
-            if not self.ext_ok():
-                return
-            p = PROFILE.payload()
-            if q.get("summary"):        # cheap check the extension polls: has anything changed?
-                return self.send_json({k: p[k] for k in ("rev", "setup", "level", "prior", "test", "lists", "stats")})
-            return self.send_json(p)
+        if u.path in ("/api/profile", "/api/profile/export"):
+            if self.ext_ok():
+                self.profile_api(u.path, summary=bool(q.get("summary")))
+            return
         if u.path == "/api/status":
             if not self.ext_ok():
                 return
@@ -1062,12 +1064,38 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_json({"error": "forbidden"}, 403)
         return False
 
+    def profile_api(self, path, body=None, summary=False):
+        try:
+            if path == "/api/profile/export":
+                return self.send_json(PROFILE.export_backup())
+            if path == "/api/profile/preview":
+                return self.send_json(PROFILE.preview_backup(body.get("backup")))
+            if path == "/api/profile/restore":
+                return self.send_json(PROFILE.restore_backup(body.get("backup"), body.get("token")))
+            if path == "/api/mark":
+                err = PROFILE.mark(body.get("key"), body.get("state"))
+                return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
+            if body is not None:
+                err = PROFILE.update(body)
+                if err:
+                    return self.send_json({"error": err}, 400)
+            profile = PROFILE.payload()
+            if summary:
+                profile = {k: profile[k] for k in ("rev", "setup", "level", "prior", "test", "lists", "stats")}
+            return self.send_json(profile)
+        except (PS.RestoreConflict, PS.ProfileUnreadable) as e:
+            return self.send_json({"error": str(e)}, 409)
+        except (ValueError, TypeError, OverflowError):
+            return self.send_json({"error": "画像数据格式或数值无效"}, 400)
+        except OSError:
+            return self.send_json({"error": "无法读写画像文件，请检查磁盘空间和目录权限"}, 503)
+
     def read_body(self):
         try:
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(min(n, 8_000_000)).decode("utf-8"))
             return body if isinstance(body, dict) else None
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, RecursionError):
             return None
 
     def do_POST(self):
@@ -1075,18 +1103,22 @@ class Handler(SimpleHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
-                        "/api/open-folder", "/api/quit"):
+                        "/api/open-folder", "/api/quit", "/api/profile/preview", "/api/profile/restore"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
+        if path in ("/api/profile/preview", "/api/profile/restore"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                return self.send_json({"error": "无效的数据长度"}, 400)
+            if not 0 < length <= 8000000:
+                return self.send_json({"error": "备份请求数据需在 8 MB 以内"}, 413)
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
-        if path == "/api/profile":
-            if body.get("reset_marks"):
-                PROFILE.reset_marks()
-            err = PROFILE.update(body)
-            return self.send_json({"error": err}, 400) if err else self.send_json(PROFILE.payload())
+        if path in ("/api/profile", "/api/mark", "/api/profile/preview", "/api/profile/restore"):
+            return self.profile_api(path, body)
         if path == "/api/explain":
             return self.explain(body)
         if path == "/api/open-folder":
@@ -1103,9 +1135,6 @@ class Handler(SimpleHTTPRequestHandler):
             print("  quit from the control panel")
             threading.Timer(0.3, lambda: os._exit(0)).start()
             return self.send_json({"ok": True})
-        if path == "/api/mark":
-            err = PROFILE.mark(body.get("key"), body.get("state"))
-            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
         if path == "/api/settings":
             return self.save_settings(body)
         if path == "/api/settings/test":

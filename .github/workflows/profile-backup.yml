@@ -1,0 +1,42 @@
+name: Profile backup
+on:
+  pull_request:
+    paths:
+      - 'app/profile_store.py'
+      - 'app/server.py'
+      - 'app/web/profile.html'
+      - 'app/web/assets/profile.js'
+      - 'app/web/app.html'
+      - 'tests/test_profile_backup.py'
+      - 'tests/check_profile_backup_page.py'
+      - '.github/workflows/profile-backup.yml'
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install srt numpy playwright==1.65.2
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_profile_backup.py -v
+      - name: Check profile files with GBK as the default text encoding
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/profile-locales"
+          localedef --no-archive -i zh_CN -f GBK "$RUNNER_TEMP/profile-locales/zh_CN.GBK"
+          export LOCPATH="$RUNNER_TEMP/profile-locales" LC_ALL=zh_CN.GBK PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 PYTHONIOENCODING=utf-8
+          python -c "import locale; assert locale.getencoding().lower() == 'gbk', locale.getencoding()"
+          python -X warn_default_encoding -W error::EncodingWarning tests/test_profile_backup.py -v
+      - if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: python -m playwright install chromium
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/check_profile_backup_page.py
