@@ -4,6 +4,10 @@
      - talks to the local Adaptive Subs server (server.py on 127.0.0.1), which keeps the OpenAI key
        and generates the annotations. A web page may not call 127.0.0.1; the extension may. */
 "use strict";
+importScripts("study-store.js");
+chrome.tabs.onRemoved.addListener(id => AdaptiveStudyStore.expireTab(id));
+chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === "loading") AdaptiveStudyStore.expireTab(id); });
+chrome.runtime.onStartup.addListener(() => AdaptiveStudyStore.expireTab(null));
 
 const PORTS = Array.from({ length: 20 }, (_, i) => 8765 + i);   // server.py moves up if 8765 is busy
 const HEADERS = { "X-Adaptive-Subs": "1" };                     // server.py only accepts this from us
@@ -110,6 +114,7 @@ async function handle(msg) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  handle(msg).then(reply, (e) => reply({ error: String((e && e.message) || e) }));
+  const response = msg?.type?.startsWith("study") ? AdaptiveStudyStore.handle(msg, sender) : handle(msg);
+  response.then(reply, (e) => reply({ error: String((e && e.message) || e) }));
   return true;   // reply asynchronously
 });
