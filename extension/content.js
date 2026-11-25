@@ -427,12 +427,15 @@
     const legacy = r.marks == null;
     if (r.error || !wordList(r.known) || !wordList(r.unknown) ||
         !legacy && (!wordList(r.marks.known) || !wordList(r.marks.unknown))) {
-      PF.ok = false; computeVisible(); return;
+      PF.ok = false; computeVisible();
+      if (CARD.open) renderCard();
+      return;
     }
     const marks = legacy ? [] : [...r.marks.known.map(k => [k, "known"]), ...r.marks.unknown.map(k => [k, "unknown"])];
     Object.assign(PF, { ok: true, legacy, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
       marks: new Map(marks) });
     computeVisible();
+    if (CARD.open) renderCard();
   }
 
   async function checkProfile() {          // the profile page or the popup may have changed it
