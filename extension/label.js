@@ -3,7 +3,7 @@ const byId = id => document.getElementById(id);
 const tell = text => { byId("notice").textContent = text; };
 const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
-let playbackIndices = [], sourceNotes, sourceHash;
+let playbackIndices = [], sourceNotes, sourceHash, subtitleSha256;
 let busy = false, connected = false, oldDraft = false, releaseLock;
 
 function wordLists(p) {
@@ -230,7 +230,7 @@ byId("bundle").onclick = () => {
   const video = { video: { id: source.video, duration: source.duration },
     cues: source.cues.map(({ s, e, text }, i) => ({ s, e, text, notes: sourceNotes[i] })) };
   download(downloadName() + "-evaluation.json", { version: 1, kind: "blind-video-evaluation",
-    sourceVerifiedAtStart: draft.sourceHash === sourceHash, video, labels: draft.sheet, profile });
+    sourceVerifiedAtStart: draft.sourceHash === sourceHash, subtitleSha256, video, labels: draft.sheet, profile });
 };
 
 function disconnected() {
@@ -243,8 +243,12 @@ function disconnected() {
 async function openDraft(sheet, title, candidates) {
   if (!Array.isArray(candidates) || candidates.length !== sheet.cues.length) throw new Error("缺少与字幕对应的候选词");
   sourceNotes = candidates;
-  const bytes = new TextEncoder().encode(JSON.stringify([sheet, candidates]));
-  sourceHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+  const digest = async value => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
+  };
+  [sourceHash, subtitleSha256] = await Promise.all([digest([sheet, candidates]), digest(sheet.cues.map(c => [c.s, c.e, c.text]))]);
   source = sheet; key = "blindLabels:" + sheet.video;
   byId("title").textContent = title;
   byId("duration").textContent = `原视频长 ${Math.floor(sheet.duration / 60)} 分 ${Math.floor(sheet.duration % 60)} 秒。`;
