@@ -26,6 +26,15 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install srt numpy playwright==1.65.2
       - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_profile_backup.py -v
+      - name: Check profile files with GBK as the default text encoding
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/profile-locales"
+          localedef --no-archive -i zh_CN -f GBK "$RUNNER_TEMP/profile-locales/zh_CN.GBK"
+          export LOCPATH="$RUNNER_TEMP/profile-locales" LC_ALL=zh_CN.GBK PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 PYTHONIOENCODING=utf-8
+          python -c "import locale; assert locale.getencoding().lower() == 'gbk', locale.getencoding()"
+          python -X warn_default_encoding -W error::EncodingWarning tests/test_profile_backup.py -v
       - if: runner.os == 'Linux'
         run: python -m playwright install --with-deps chromium
       - if: runner.os == 'Windows'
