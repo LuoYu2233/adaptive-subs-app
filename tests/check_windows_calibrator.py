@@ -2,6 +2,7 @@
 from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,7 +14,44 @@ sys.path.insert(0, str(ROOT / "tools"))
 import windows_calibrator as ui
 
 
-def check():
+def packaged(exe, record, table, study, output):
+    from pywinauto import Desktop, keyboard
+    desktop = Desktop(backend="win32")
+    process = subprocess.Popen([str(exe)])
+    main = desktop.window(title="Adaptive Subs · 观看反馈校准")
+    try:
+        main.wait("visible", timeout=90)
+        main.set_focus()
+        def choose(keys, title, path):
+            keyboard.send_keys(keys, pause=.12)
+            dialog = desktop.window(title=title, class_name="#32770")
+            dialog.wait("visible", timeout=10)
+            inputs = dialog.descendants(class_name="Edit")
+            # Standard shell file dialogs put the filename in edit control 1148 or 1001.
+            field = next((e for e in inputs if e.control_id() in (1148,1001)), inputs[0])
+            field.set_edit_text(str(path))
+            dialog.child_window(control_id=1).click()
+            dialog.wait_not("visible", timeout=10)
+            main.set_focus()
+        choose("{SPACE}", "选择完整测量记录", record)
+        choose("{TAB}{SPACE}", "选择配套词难度表", table)
+        choose("{TAB}{SPACE}", "选择先前同一学习者的观看记录", study)
+        choose("{TAB}{TAB}{SPACE}", "保存观看校准报告", output)
+        deadline = time.monotonic() + 45
+        while not output.exists() and time.monotonic() < deadline:
+            time.sleep(.1)
+        result = json.loads(output.read_text(encoding="utf-8"))
+        assert result["training"]["included"] == 1 and result["trainingMediaHashes"] == ["b"*64]
+        assert "科技" in result["estimate"]["domainBias"] and result["frozenAt"] >= 20
+        main.close()
+        assert process.wait(timeout=25) == 0
+    finally:
+        if process.poll() is None:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+    print("Packaged EXE produced the UTF-8 report through all native file dialogs.")
+
+
+def check(exe=None):
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory) / "我的 观看资料"
         base.mkdir()
@@ -30,10 +68,12 @@ def check():
         study = save("观看.json", {"version":1,"kind":"word-viewing-study","id":"s1","clip":"c1","domain":"科技",
             "field":"b_initial","tableSha256":digest,"subtitleSha256":"a"*64,"mediaSha256":"b"*64,"started":10,"ended":20,
             "exposures":[{"cue":0,"start":0,"end":5,"word":"plume","at":15,"shown":False,"event":"lookup","pUnknown":.5}]})
+        output = base / "冻结参数.json"
+        if exe is not None:
+            return packaged(exe, record, table, study, output)
         root = tk.Tk()
         form = ui.Calibrator(root)
         root.update()
-        output = base / "冻结参数.json"
         try:
             with patch.object(ui.filedialog, "askopenfilename", side_effect=[str(record),str(table)]):
                 form.buttons["record"].invoke()
@@ -67,4 +107,4 @@ def check():
 
 
 if __name__ == "__main__":
-    check()
+    check(Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else None)

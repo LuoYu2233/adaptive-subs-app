@@ -41,6 +41,7 @@ class Calibrator(ttk.Frame):
         self.status = tk.StringVar(value="请先选择试测导出的 word-cat-record.json。")
         ttk.Label(self, textvariable=self.status, wraplength=490).grid(row=6, column=0, columnspan=2, sticky="w")
         root.protocol("WM_DELETE_WINDOW", self.close)
+        root.after_idle(self.buttons["record"].focus_set)
 
     def choose(self, key):
         if key == "train":
