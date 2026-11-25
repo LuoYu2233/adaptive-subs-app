@@ -36,9 +36,9 @@ const WordCat = (() => {
   }
 
   class Posterior {
-    constructor(mean) {
+    constructor(mean, standardDeviation = priorSD) {
       this.points = Array.from({length: 513}, (_, i) => mean + (i - 256) * 0.025);
-      this.weights = this.points.map(t => Math.exp(-0.5 * ((t - mean) / priorSD) ** 2));
+      this.weights = this.points.map(t => Math.exp(-0.5 * ((t - mean) / standardDeviation) ** 2));
       this.summarize();
     }
     summarize() {
@@ -115,6 +115,6 @@ const WordCat = (() => {
     }
   }
 
-  return { Session, Posterior, correctProbability, information, expectedVocabulary, priorMean };
+  return { Session, Posterior, correctProbability, information, expectedVocabulary, priorMean, shuffled };
 })();
 if (typeof module !== "undefined") module.exports = WordCat;

@@ -1,0 +1,20 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>短语能力试测 · Adaptive Subs</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f1;color:#202a23;font:17px/1.6 "Microsoft YaHei",system-ui,sans-serif}
+main{max-width:42rem;margin:clamp(1.2rem,10vh,6rem) auto;background:white;border:1px solid #c6cfc8;border-radius:12px;padding:clamp(1.25rem,5vw,3rem)}
+h1{line-height:1.2}#sentence{font:clamp(1.4rem,4vw,2rem)/1.5 Georgia,serif}mark{background:#e1eee3;color:#183c27;text-decoration:underline}
+button{font:inherit;color:#253e30;padding:.6rem .85rem;border:1px solid #718177;border-radius:6px;background:white;cursor:pointer}
+button:focus-visible,[tabindex]:focus-visible{outline:3px solid #986c12;outline-offset:3px}
+#choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;margin:1rem 0}
+#choices button{text-align:left}.primary{background:#265d44;color:white}[hidden]{display:none!important}
+@media(max-width:30rem){#choices{grid-template-columns:1fr}main{margin:1rem}}
+</style></head><body><main>
+<section id="start"><h1>短语能力试测</h1><p>阅读英文例句，选择标出短语在句中的意思。拿不准时可以选“不认识”。共 6 至 8 题，难度随作答调整。</p>
+<p>短语和单词分别测量。完成后可选择将这次短语记录保存在本机。</p><button class="primary" id="begin">开始短语试测</button></section>
+<section id="quiz" hidden><p id="progress"></p><p id="sentence" lang="en" tabindex="-1"></p>
+<div id="choices" aria-label="短语在本句中的释义"></div><button id="skip" aria-keyshortcuts="0">0 · 不认识</button></section>
+<section id="done" hidden><h1 tabindex="-1" id="complete">短语试测完成</h1><p id="score"></p><p id="uncertainty"></p>
+<p>本次只抽取少量语境题。题目难度采用初始分级，尚待真人作答校准。</p><button class="primary" id="record">导出短语测量记录</button></section>
+</main><script type="application/json" id="data">@@DATA@@</script><script>@@MODEL@@</script><script>@@PHRASE@@</script><script>@@UI@@</script></body></html>
