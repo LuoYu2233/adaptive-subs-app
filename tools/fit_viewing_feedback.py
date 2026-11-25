@@ -10,6 +10,28 @@ import time
 from viewing.study import report
 
 
+def frozen_report(record, table, field, train, holdout=(), *, output=None, **options):
+    if output and output.resolve() in {p.resolve() for p in [record, table, *train, *holdout]}:
+        raise ValueError("模型报告的输出路径不能覆盖测量、词表或观看记录")
+    result = report(record, table, field, train, holdout, **options)
+    result["frozenAt"] = time.time_ns() // 1_000_000
+    if result["frozenAt"] < result["trainingCutoff"]:
+        raise ValueError("训练记录来自未来，请核对设备时间")
+    payload = (json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8")
+    if output is not None:
+        fd, name = tempfile.mkstemp(dir=output.parent)
+        temp = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, output)
+        finally:
+            temp.unlink(missing_ok=True)
+    return payload
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("record", type=Path, help="CAT 导出的完整测量记录")
@@ -24,27 +46,11 @@ def main():
     parser.add_argument("--fixed-feedback", action="store_true")
     args = parser.parse_args()
     try:
-        if args.output and args.output.resolve() in {p.resolve() for p in [args.record, args.table, *args.train, *args.holdout]}:
-            raise ValueError("模型报告的输出路径不能覆盖测量、词表或观看记录")
-        result = report(args.record, args.table, args.field, args.train, args.holdout, half_life=args.half_life_days,
-                        domain_bias=not args.no_domain, viewing_discount=not args.no_discount, fit_feedback=not args.fixed_feedback)
-        result["frozenAt"] = time.time_ns() // 1_000_000
-        if result["frozenAt"] < result["trainingCutoff"]:
-            raise ValueError("训练记录来自未来，请核对设备时间")
-        payload = (json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8")
+        payload = frozen_report(args.record, args.table, args.field, args.train, args.holdout, output=args.output,
+                                half_life=args.half_life_days, domain_bias=not args.no_domain,
+                                viewing_discount=not args.no_discount, fit_feedback=not args.fixed_feedback)
         if args.output is None:
             sys.stdout.buffer.write(payload)
-        else:
-            fd, name = tempfile.mkstemp(dir=args.output.parent)
-            temp = Path(name)
-            try:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(payload)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temp, args.output)
-            finally:
-                temp.unlink(missing_ok=True)
     except (OSError, ValueError, TypeError, OverflowError) as e:
         parser.exit(2, f"{e}\n")
 
