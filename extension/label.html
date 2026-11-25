@@ -11,6 +11,11 @@
     <p id="title"></p>
     <section id="start" hidden>
       <p>在原视频中听一句，点出当时没能理解的词或短语。确认本句后，答案保存在这台电脑。</p>
+      <details><summary>选择标注时间段（默认全片）</summary>
+        <p id="duration"></p><p>输入秒数或 分:秒。只收录区间内完整的字幕句。</p>
+        <label>从 <input id="from" type="text" placeholder="0:00" size="7"></label>
+        <label>到 <input id="until" type="text" placeholder="视频结尾" size="7"></label>
+      </details>
       <p id="draftStatus"></p>
       <button id="resume" hidden>继续上次标注</button>
       <button id="new">开始新标注</button>
@@ -28,6 +33,7 @@
     </section>
     <p id="notice" role="status" aria-live="polite">正在连接视频页…</p>
   </main>
+  <script src="label-window.js"></script>
   <script src="label.js"></script>
 </body>
 </html>
