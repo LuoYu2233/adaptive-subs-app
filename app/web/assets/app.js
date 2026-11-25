@@ -977,7 +977,7 @@
     try { data = await (await fetch("data/" + entry.file, { cache: "no-store" })).json(); }
     catch { toast(`字幕文件 data/${entry.file} 读取失败`); return; }
     resetVideo(data.video);
-    S.cues = data.cues;
+    S.cues = data.cues.map(c => ({ ...c, notes: AdaptivePrediction.clientNotes(c.text, c.notes) }));
     afterVideoChange();
   }
 
@@ -1021,7 +1021,7 @@
       if (d.source === "auto") toast("这个视频没有人工字幕，用的是 YouTube 自动字幕，可能有错字或断句不准");
     });
     on("ann", (d) => {
-      for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = notes; S.annDone.add(+k); }
+      for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = AdaptivePrediction.clientNotes(S.cues[+k].text, notes); S.annDone.add(+k); }
       rerender();
     });
     on("zh", (d) => { for (const [k, z] of Object.entries(d)) if (S.cues[+k]) S.cues[+k].zh = z; rerender(); });

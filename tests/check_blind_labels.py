@@ -50,7 +50,15 @@ def check():
                 payload = route.request.post_data_json
                 assert payload.get("subs_only") or payload.get("probe")
                 video_id = payload["id"]
-                return route.fulfill(json={"cached": True, "id": video_id, "data": fixture(video_id)})
+                if video_id == "fresh000001" and payload.get("subs_only"):
+                    return route.fulfill(json={"cached": False, "running": True, "id": video_id})
+                data = fixture(video_id)
+                if video_id == "partial0001": data["status"] = "partial"
+                return route.fulfill(json={"cached": True, "id": video_id, "data": data})
+            if "/api/ext/events?" in url:
+                assert "fresh000001" in url
+                return route.fulfill(json={"events": [["meta", {"source": "manual", "cues": fixture("fresh000001")["cues"]}],
+                                                     ["done", {"seconds": 1}]], "next": 2})
             if url.startswith(("https://www.youtube.com/watch?", "https://www.bilibili.com/video/")):
                 return route.fulfill(content_type="text/html", body=f'<div id="movie_player"><div class="bpx-player-video-area"><div class="bpx-player-video-wrap"><video muted preload="auto" src="{wav}"></video></div></div></div>')
             if "/x/web-interface/view?" in url:
@@ -124,6 +132,13 @@ def check():
             report = json.loads(subprocess.check_output(["node", str(ROOT / "tools/evaluate_prediction.cjs"), "score",
                 "video.json", "labels.json", "viewer.json", "normal"], cwd=temp))
             assert (report["hits"], report["missedByReason"]["noCandidate"], report["extra"]) == (1, 1, 0)
+            # The detached old window remains available for export while a new window resumes editing.
+            video.goto("https://www.youtube.com/watch?v=" + ID)
+            expect(video.locator(".asubs-zh")).to_have_text("不能提示答案")
+            resumed = open_label()
+            resumed.locator("#resume").click()
+            expect(resumed.locator("#saved")).to_contain_text("已确认 3 句")
+            resumed.close()
             page.close()
 
             video.goto("https://www.bilibili.com/video/BV1234567890/")
@@ -134,6 +149,20 @@ def check():
             expect(video.locator(".asubs-zh")).to_be_hidden()
             video.evaluate("history.pushState({}, '', '?p=2')")
             expect(page.locator("#confirm")).to_be_disabled()
+            page.close()
+            video.goto("https://www.youtube.com/watch?v=fresh000001")
+            expect(video.locator(".asubs-pill")).to_contain_text("注释已全部生成")
+            page = open_label()
+            page.locator("#new").click()
+            expect(page.locator("#progress")).to_have_text("第 1 / 3 句")
+            page.close()
+            video.goto("https://www.youtube.com/watch?v=partial0001")
+            expect(video.locator(".asubs-zh")).to_have_text("不能提示答案")
+            blocked = context.new_page()
+            video.bring_to_front()
+            blocked.goto(extension + "/popup.html")
+            expect(blocked.locator("#labelVideo")).to_be_visible()
+            expect(blocked.locator("#labelVideo")).to_be_disabled()
             assert not errors, errors
             assert not unexpected, unexpected
             print("Passed: both video sites, blind playback, cutoff, resume, local snapshot, SPA changes and scored export.")

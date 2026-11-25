@@ -5,7 +5,8 @@ on:
     paths:
       - 'packaging/**'
       - 'requirements.txt'
-      - 'app/main.py'
+      - 'app/**'
+      - 'extension/**'
       - 'tools/check_windows_package.ps1'
       - '.github/workflows/windows-native.yml'
 permissions:
