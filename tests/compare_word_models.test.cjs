@@ -118,6 +118,20 @@ test("cohort weights events and time, pools AUC before scoring, and rejects dupl
   assert.equal(out.byLearner[1].models.b_frequency.probability.auc,null);
   assert.equal(out.byDomain[0].models.b_frequency.display.missed,0);
   assert.throws(()=>run([first,first]),/第 2 组.*重复/);
+  function windowSession(name, start, end) {
+    const subset = prepare(video,{start,end});
+    for (const row of subset.cues) row.unknown = labels.cues.find(original => original.text === row.text).unknown;
+    write(name,subset);
+    return {...first,labels:name};
+  }
+  const head = windowSession("前段",0,3), tail = windowSession("后段",3,7);
+  const paired = run([head,tail]);
+  assert.equal(paired.participants,1);
+  assert.equal(paired.videos,1);
+  assert.equal(paired.overall.durationSeconds,7);
+  assert.equal(paired.overall.models.b_frequency.probability.observations,3);
+  const overlap = windowSession("重叠",2,6);
+  assert.throws(()=>run([tail,overlap]),/第 2 组.*重叠/);
   assert.throws(()=>run([{...first,profile:""}]),/第 1 组.*路径/);
 });
 
