@@ -1,7 +1,8 @@
 "use strict";
 const el = id => document.getElementById(id);
 const tab = Number(new URLSearchParams(location.search).get("tab"));
-let draft = null, ready = false, busy = false;
+let draft = null, ready = false, busy = false, refreshing = 0, retryTimer;
+const openedAt = Date.now();
 async function message(msg) {
   const res = await chrome.runtime.sendMessage(msg);
   if (!res || res.error) throw new Error(res?.error || "无法读取本机记录");
@@ -12,6 +13,7 @@ async function toVideo(msg) {
   catch { return { error: "请在已加载完整字幕的视频页打开扩展，再进入观看记录。" }; }
 }
 function render() {
+  el("retry").hidden = !!draft || ready;
   el("form").hidden = !!draft || !ready;
   el("stop").hidden = !draft?.recording;
   el("export").hidden = el("clear").hidden = !draft || draft.recording;
@@ -21,9 +23,14 @@ function render() {
     ready ? "当前视频可开始记录。" : "请在已启用 IRT 试用、已载入完整字幕的视频上打开此页。";
 }
 async function refresh() {
-  draft = (await message({ type: "studyStatus" })).draft;
-  ready = !draft && !!(await toVideo({ type: "studyReady" }))?.ready;
-  render();
+  const call = ++refreshing;
+  clearTimeout(retryTimer);
+  const next = (await message({ type: "studyStatus" })).draft;
+  const available = !next && !!(await toVideo({ type: "studyReady" }))?.ready;
+  if (call !== refreshing) return;
+  draft = next; ready = available; render();
+  if (!next && !available && tab > 0 && Date.now() - openedAt < 15000)
+    retryTimer = setTimeout(() => refresh().catch(e => el("error").textContent = e.message), 900);
 }
 async function action(fn) {
   if (busy) return;
@@ -32,6 +39,8 @@ async function action(fn) {
   catch (e) { el("error").textContent = e.message; }
   finally { busy = false; render(); }
 }
+el("retry").onclick = () => action(refresh);
+window.addEventListener("focus", () => refresh().catch(e => el("error").textContent = e.message));
 el("form").onsubmit = e => {
   e.preventDefault();
   action(async () => {

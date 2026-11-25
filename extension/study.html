@@ -10,6 +10,7 @@ h1{margin:0}label{display:block;margin:.8rem 0 .2rem}input,button{font:inherit;m
 <p>试用 IRT 时，可自愿为当前视频记录哪些候选词实际出现在屏幕上、显示了哪些释义，以及你查词或标记的操作。记录只保存在此浏览器，可随时停止、导出或删除。</p>
 <p>导出文件含词元、字幕位置、显示状态、模型概率、时间、可识别相同字幕的内容指纹和下面的两个代号。请选择没有个人信息的代号。</p>
 <p id="status" role="status"></p><p id="error" role="alert"></p>
+<button id="retry" hidden>重新检查当前视频</button>
 <form id="form" hidden><label for="clip">片段代号（例如 clip01）</label><input id="clip" required maxlength="32" autocomplete="off">
 <label for="domain">视频领域（例如 科技）</label><input id="domain" required maxlength="32" autocomplete="off">
 <p>两个代号均可使用汉字、字母、数字、短横线和下划线。返回原视频并播放即可开始积累记录。刷新、切换视频或更换模型会结束本次记录。</p>
