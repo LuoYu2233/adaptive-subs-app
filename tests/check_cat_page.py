@@ -72,6 +72,7 @@ def check(table=None, *, expanded=False):
             assert 12 <= len(expected) <= 40
             assert [(a["word"], a["selected"]) for a in record["responses"]] == expected
             timing = record["timing"]
+            assert 0 < timing["startedAt"] <= timing["completedAt"]
             assert 0 < timing["visibleMs"] <= timing["elapsedMs"]
             times = [r["elapsedMs"] for r in record["responses"]]
             assert all(isinstance(t, int) and t >= 0 for t in times)

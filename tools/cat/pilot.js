@@ -6,7 +6,7 @@ if (data.itemBank?.variant === "expanded-v1") {
   el("bankInfo").textContent = `本页使用 ${data.itemBank.count} 道实验单词题。部分题目会给出主题，请选择该用法的释义。`;
 }
 let session, result;
-let startedAt, questionAt, visibleSince, visibleTotal = 0;
+let startedAt, startedUTC, questionAt, visibleSince, visibleTotal = 0;
 
 function updateVisibility(now) {
   if (visibleSince !== undefined) visibleTotal += now - visibleSince;
@@ -31,7 +31,7 @@ function advance() {
     const finished = performance.now();
     updateVisibility(finished);
     result = session.result();
-    result.timing = { elapsedMs: Math.round(finished - startedAt), visibleMs: Math.round(visibleTotal) };
+    result.timing = { startedAt: startedUTC, completedAt: Date.now(), elapsedMs: Math.round(finished - startedAt), visibleMs: Math.round(visibleTotal) };
     const { expectedVocabulary, theta, se } = result.fits.b_initial;
     el("quiz").hidden = true;
     el("done").hidden = false;
@@ -64,7 +64,7 @@ el("setup").onsubmit = event => {
   catch (error) { el("error").textContent = error.message; return; }
   el("start").hidden = true;
   el("quiz").hidden = false;
-  startedAt = performance.now();
+  startedUTC = Date.now(); startedAt = performance.now();
   updateVisibility(startedAt);
   advance();
 };
