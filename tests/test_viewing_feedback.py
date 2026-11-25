@@ -124,6 +124,13 @@ class ViewingModelTests(unittest.TestCase):
                 run(paths[:2], paths[:1])
             with self.assertRaisesRegex(ValueError, "时间"):
                 run(paths[2:4], paths[:1])
+            for index in (0, 1):
+                sessions[index]["mediaSha256"] = "a" * 64
+                save(paths[index], sessions[index])
+            with self.assertRaisesRegex(ValueError, "指纹重复"):
+                run(paths[:1], paths[1:2])
+            del sessions[1]["mediaSha256"]
+            save(paths[1], sessions[1])
             sessions[-1]["exposures"][0]["pUnknown"] = .123456
             save(paths[-1], sessions[-1])
             with self.assertRaisesRegex(ValueError, "试测参数"):
