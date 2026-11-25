@@ -15,6 +15,10 @@ a{color:#235e42}a.primary{display:inline-block;background:#245c42;color:white;te
 <ol><li>打开配套 Windows 程序，在 Chrome 或 Edge 中加载分发包里的「浏览器插件」。</li>
 <li>从插件弹窗进入「IRT 判词试用」，依次选择本资料包里的 <code>word-difficulty-v1.json</code> 和刚导出的 <code>word-cat-parameters.json</code>。</li>
 <li>点「导入并启用」，打开已生成字幕的视频。点候选词可查看当前概率和提示阈值。回到同一设置页可暂停试用。</li></ol>
+<h2>用自己的观看记录更新判词</h2>
+<ol><li>在有完整英文字幕的视频里，从扩展弹窗打开「观看记录」，填入片段代号和领域。主动开始记录，观看后停止并导出；每段视频分别保存。</li>
+<li>解压配套的 Windows 观看校准工具，双击 <code>AdaptiveSubs-Calibration.exe</code>。选「完整测量记录」、本包词难度表和先前导出的观看记录，选择与观看时相同的量尺，生成校准报告。</li>
+<li>回到「IRT 判词试用」，再次选择原表和判词参数，展开观看校准设置，导入报告并启用。若要评估是否少漏词，先保存模型，再对一段新视频做逐句盲标。</li></ol>
 <h2>单独测量短语</h2><p>从 @@PHRASES@@ 道语境题中抽取 6 至 8 道，结果单独导出，可用于后续校准。视频中的单词判词使用上面的单词参数。</p>
 <a href="短语能力试测.html">开始短语试测</a>
 <footer><a href="来源与许可.txt">资料来源与许可</a></footer>
