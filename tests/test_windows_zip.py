@@ -1,4 +1,5 @@
 import codecs
+import contextlib
 import importlib.util
 import sys
 import tempfile
@@ -61,6 +62,37 @@ class WindowsZipTests(unittest.TestCase):
                 with self.assertRaises((OSError, zipfile.BadZipFile)):
                     build.write_archive(self.folder, self.zip)
                 self.assert_previous_survives()
+
+    def test_build_entry_point_emits_windows_guide_and_preserves_last_good_zip(self):
+        # Provide a frozen-program fixture at PyInstaller's output boundary.
+        app = self.root / "app"
+        for name in ("models/faster-whisper-base.en/model.bin", "data/ranks_en.txt"):
+            path = app / name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"fixture")
+        dist = self.root / "build/dist/AdaptiveSubs"
+        dist.mkdir(parents=True)
+        exe = dist / "AdaptiveSubs.exe"
+        exe.write_bytes(b"program fixture")
+        extension = self.root / "extension"
+        extension.mkdir()
+        (extension / "manifest.json").write_bytes(self.files["浏览器插件/manifest.json"])
+
+        release = self.root / "release"
+        target = release / f"{build.NAME}.zip"
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.multiple(build, ROOT=self.root, APP=app, BUILD=self.root / "build", RELEASE=release))
+            stack.enter_context(patch.dict(sys.modules, {"PyInstaller": object(), "av": object()}))
+            stack.enter_context(patch.object(build.subprocess, "run"))
+            build.main()
+            with zipfile.ZipFile(target) as archive:
+                guide = archive.read(f"{build.NAME}/使用说明.txt")
+                self.assertEqual(guide, codecs.BOM_UTF8 + build.GUIDE.replace("\n", "\r\n").encode("utf-8"))
+            before = target.read_bytes()
+            exe.unlink()
+            with self.assertRaises(ValueError):
+                build.main()
+            self.assertEqual(target.read_bytes(), before)
 
     @unittest.skipUnless(sys.platform == "win32", "native Windows file sharing")
     def test_open_destination_is_preserved(self):
