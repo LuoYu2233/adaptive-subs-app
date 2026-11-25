@@ -44,15 +44,30 @@ const AdaptiveWordIRT = (() => {
   }
 
   // Compile once at import time. Tabs get only the per-word probabilities for the selected scale.
-  function compile(table, config, fingerprint, field) {
+  function compile(table, config, fingerprint, field, feedback = null, domain = "") {
     if (!["b_initial", "b_frequency"].includes(field)) throw new Error("未知的词难度量尺");
     checkedRows(table);
     const { a, domainBias, viewingDiscount, calibrated } = parameters(config, fingerprint);
     if (!calibrated) throw new Error("请使用单词试测导出的判词参数文件");
-    const theta = config.thetaByField[field];
+    const anchorTheta = config.thetaByField[field];
+    let effectiveTheta = anchorTheta + domainBias - viewingDiscount;
+    const policy = { anchorTheta, discrimination: a, effectiveTheta, source: "CAT" };
+    if (feedback !== null) {
+      const fit = feedback?.estimate, offsets = fit?.domainBias;
+      if (feedback?.version !== 1 || feedback.field !== field || feedback.tableSha256 !== fingerprint ||
+          feedback.anchor?.theta !== anchorTheta || feedback.anchor?.discrimination !== a ||
+          !Array.isArray(feedback.trainingClips) || !feedback.trainingClips.length ||
+          !Number.isSafeInteger(feedback.trainingCutoff) || feedback.trainingCutoff < 0 ||
+          !Number.isFinite(fit?.theta) || !Number.isFinite(fit?.viewingDiscount) || fit.viewingDiscount < 0 ||
+          !offsets || typeof offsets !== "object" || Array.isArray(offsets) || !Object.values(offsets).every(Number.isFinite) ||
+          domain !== "" && !Object.hasOwn(offsets, domain)) throw new Error("观看校准报告与当前测量、量尺或所选领域不一致");
+      effectiveTheta = fit.theta - fit.viewingDiscount + (domain ? offsets[domain] : 0);
+      Object.assign(policy, { source: "feedback", effectiveTheta, domain, trainedThrough: feedback.trainingCutoff,
+        clips: feedback.trainingClips.length });
+    }
     const probabilities = Object.fromEntries(Object.entries(table.words).map(([word, row]) =>
-      [word, sigmoid(unknownLogit(row[field], theta, a, domainBias, viewingDiscount))]));
-    return { version: 1, fingerprint, field, probabilities };
+      [word, sigmoid(unknownLogit(row[field], effectiveTheta, a, 0, 0))]));
+    return { version: 1, fingerprint, field, probabilities, policy };
   }
 
   function validPreview(model) {

@@ -21,6 +21,10 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
 <label for="table">试测使用的词难度表</label><input id="table" type="file" accept=".json,application/json" required>
 <label for="parameters">试测导出的判词参数</label><input id="parameters" type="file" accept=".json,application/json" required>
 <label for="field">难度模型</label><select id="field"><option value="b_initial">词频和考纲</option><option value="b_frequency">仅词频</option></select>
+<details><summary>使用自己的观看校准结果（可选）</summary>
+<label for="feedback">离线生成的观看校准报告</label><input id="feedback" type="file" accept=".json,application/json">
+<label for="domain">应用领域</label><select id="domain"><option value="">通用 · 不加领域偏置</option></select>
+<p>导入后本浏览器的视频使用所选参数。选择具体领域时，请在改看其他主题前切回通用参数。要恢复试测起点，可只导入上面的两份文件。</p></details>
 <div class="actions"><button class="primary" id="apply">导入并启用</button></div>
 </form>
 <p id="error" role="alert"></p>

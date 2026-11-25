@@ -752,7 +752,8 @@
       const threshold = trialThreshold();
       const display = S.visible[CARD.ci]?.has(S.cues[CARD.ci]?.notes.indexOf(n));
       const verdict = probability < threshold ? "低于当前提示阈值" : display ? "达到阈值，已提示" : "达到阈值，受本句或重复次数上限限制";
-      return `IRT 试用估计不认识概率为 ${(probability * 100).toFixed(1)}%，${verdict}（${Math.round(threshold * 100)}%）`;
+      const source = trialModel.policy?.source === "feedback" ? `观看校准 · ${trialModel.policy.domain || "通用"}` : "IRT 试用";
+      return `${source}估计不认识概率为 ${(probability * 100).toFixed(1)}%，${verdict}（${Math.round(threshold * 100)}%）`;
     }
     if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
     if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
