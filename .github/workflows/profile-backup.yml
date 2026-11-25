@@ -25,9 +25,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install srt numpy playwright==1.65.2
-      - run: python tests/test_profile_backup.py -v
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_profile_backup.py -v
       - if: runner.os == 'Linux'
         run: python -m playwright install --with-deps chromium
       - if: runner.os == 'Windows'
         run: python -m playwright install chromium
-      - run: python tests/check_profile_backup_page.py
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/check_profile_backup_page.py

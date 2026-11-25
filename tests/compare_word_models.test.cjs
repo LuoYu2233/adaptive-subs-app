@@ -136,3 +136,19 @@ test("explicit marks are protected while inferred word knowledge can be reconsid
   profile.marks.known = ["absent"];
   assert.throws(()=>compare(video,labels,profile,"normal",table,{theta:1}),/画像不一致/);
 });
+
+test("a phrase-only label cannot serve as negative evidence about either constituent word", () => {
+  const video = {video:{id:"phrase",duration:10},cues:[{s:0,e:3,text:"take off today",notes:[
+    {s:0,e:4,key:"take",kind:"word",lv:9000},{s:5,e:8,key:"off",kind:"word",lv:9000},
+    {s:9,e:14,key:"today",kind:"word",lv:9000},
+  ]}]};
+  const labels = prepare(video); labels.cues[0].unknown = ["take off"];
+  const table = {version:1,scale:"natural-log lemma rank",words:Object.fromEntries(
+    ["take","off","today"].map(w=>[w,{b_frequency:2,b_initial:2}]))};
+  const r = compare(video,labels,{level:2,known:[],unknown:[]},"normal",table,{theta:0});
+  assert.equal(r.coverage.classified,3); assert.equal(r.overlappingLabels,2);
+  for (const m of Object.values(r.models)) {
+    assert.equal(m.probability.observations,1); assert.equal(m.probability.positives,0);
+    assert.equal(m.display.missedByReason.noCandidate,1); assert.equal(m.display.extra,3);
+  }
+});
