@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for check in check_cat_page check_phrase_page check_blind_labels check_irt_extension check_viewing_study check_subtitle_spans check_profile_backup_page; do
+          for check in check_cat_page check_phrase_page check_blind_labels check_irt_extension check_viewing_study check_subtitle_spans check_profile_backup_page check_saved_navigation; do
             python "tests/$check.py"
           done
       - name: Build and open the native application from the distributed ZIP
@@ -46,6 +46,20 @@ jobs:
         run: python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p 'test_*.py'
       - name: Measure, predict, capture feedback and score a future blind video using the extracted ZIP
         run: python tools/check_integrated_trial.py build/word-difficulty-v1.json --archive release/AdaptiveSubs-Windows.zip
+      - name: Build the offline trial materials using the same validated table
+        shell: bash
+        run: |
+          set -e
+          node tools/build_cat_pilot.cjs build/word-difficulty-v1.json build/word-pilot.html --expanded
+          node tools/build_phrase_pilot.cjs build/phrase-pilot.html
+          python tools/build_trial_materials.py build/word-pilot.html build/phrase-pilot.html build/word-difficulty-v1.json release/AdaptiveSubs-IRT-Materials.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AdaptiveSubs-IRT-Materials
+          path: release/AdaptiveSubs-IRT-Materials.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain the verified candidate for seven days
         uses: actions/upload-artifact@v4
         with:

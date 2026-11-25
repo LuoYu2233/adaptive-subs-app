@@ -3,6 +3,7 @@ import argparse
 import base64
 import io
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -84,12 +85,54 @@ def trial(table, archive, analysis_python):
                 assert result["updated"]["probability"]["observations"] == 3
                 assert result["updated"]["display"]["hits"] + result["updated"]["display"]["missed"] == 1
                 assert result["tableSha256"] == measured["record"]["parameters"]["tableSha256"]
-                print("Passed real 800-item CAT, 30000-word import, local persisted correction, sealed feedback fit and later independent blind scoring.")
+                reimport(folder, ext, base, table, blind, fit)
+                print("Passed real 800-item CAT, 30000-word import, locally persisted correction, sealed feedback fit, later blind scoring and in-player calibrated probability.")
             finally:
                 if server.poll() is None:
                     server.terminate()
                     try: server.wait(timeout=12)
                     except subprocess.TimeoutExpired: server.kill(); server.wait(timeout=10)
+
+
+def reimport(folder, ext, base, table, blind, fit):
+    estimate = fit["estimate"]
+    theta = estimate["theta"] - estimate["viewingDiscount"] + estimate["domainBias"]["科技"]
+    difficulty = json.loads(table.read_bytes())["words"]["plume"][fit["field"]]
+    expected = 1 / (1 + math.exp(-fit["anchor"]["discrimination"] * (difficulty - theta)))
+    with sync_playwright() as pw:
+        ctx = pw.chromium.launch_persistent_context(str(folder / "浏览器"), channel="chromium", headless=True,
+            args=[f"--disable-extensions-except={ext}", f"--load-extension={ext}"])
+        try:
+            def route(r):
+                if r.request.url.startswith("https://www.youtube.com/watch?"):
+                    return r.fulfill(content_type="text/html", body='<div id="movie_player" style="height:400px"><video muted></video></div>')
+                if r.request.url.startswith(("chrome-extension://", base + "/")): return r.continue_()
+                return r.abort()
+            ctx.route("**/*", route)
+            worker = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
+            worker.evaluate("b => chrome.storage.session.set({base:b})", base)
+            page = ctx.new_page()
+            page.goto(worker.url.rsplit("/", 1)[0] + "/irt.html")
+            page.locator("#table").set_input_files(table)
+            page.locator("#parameters").set_input_files(folder / "parameters.json")
+            page.locator("details summary").click()
+            page.locator("#feedback").set_input_files(folder / "fit.json")
+            page.locator("#domain").select_option("科技")
+            page.locator("#apply").click()
+            expect(page.locator("#status")).to_contain_text("观看校准（科技，1 段）")
+            state = worker.evaluate("""async () => {
+                const {irtPreview: m} = await chrome.storage.local.get("irtPreview");
+                return {p: m.probabilities.plume, policy: m.policy};
+            }""")
+            assert math.isclose(state["p"], expected, abs_tol=1e-12)
+            assert state["policy"]["trainedThrough"] == fit["trainingCutoff"]
+            video = ctx.new_page()
+            video.goto("https://www.youtube.com/watch?v=" + blind)
+            video.locator(".asubs-t[data-n='1']").click()
+            expect(video.locator(".asubs-card-why")).to_contain_text("观看校准 · 科技")
+            expect(video.locator(".asubs-card-why")).to_contain_text(f"{expected * 100:.1f}%")
+        finally:
+            ctx.close()
 
 
 def capture(folder, ext, base, table, measured, training, blind):
