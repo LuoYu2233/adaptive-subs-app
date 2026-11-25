@@ -64,15 +64,19 @@ def parse_session(data, table, digest, field, prior):
         if not math.isclose(expected, r["pUnknown"], abs_tol=1e-9, rel_tol=1e-9):
             raise ValueError(f"第 {idx} 条概率与导入的试测参数不一致")
         rows.append({**r, "b": b})
-    return {k: data[k] for k in ("clip", "domain", "id", "started", "ended")} | {"rows": rows}
+    subtitle_hash = data.get("subtitleSha256")
+    if subtitle_hash is not None and (not isinstance(subtitle_hash, str) or len(subtitle_hash) != 64 or
+                                      any(ch not in "0123456789abcdef" for ch in subtitle_hash)):
+        raise ValueError("字幕指纹无效")
+    return {k: data[k] for k in ("clip", "domain", "id", "started", "ended")} | {"rows": rows, "subtitleHash": subtitle_hash}
 
 
 def report(record_file, table_file, field, train_files, test_files, *, half_life=90,
            domain_bias=True, viewing_discount=True, fit_feedback=True):
     if not numeric(half_life) or half_life <= 0:
         raise ValueError("半衰期必须为正数")
-    if field not in ("b_frequency", "b_initial") or not train_files or not test_files:
-        raise ValueError("请指定量尺、先前观看记录和随后留出的独立片段")
+    if field not in ("b_frequency", "b_initial") or not train_files:
+        raise ValueError("请指定量尺和先前观看记录")
     raw = Path(table_file).read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     table = json.loads(raw.decode("utf-8-sig"))
@@ -94,10 +98,13 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
     ordered = train + test
     if len({s["id"] for s in ordered}) != len(ordered) or len({s["clip"] for s in ordered}) != len(ordered):
         raise ValueError("存在重复会话或同一视频代号；请为留出集使用独立视频")
+    hashes = [s["subtitleHash"] for s in ordered if s["subtitleHash"]]
+    if len(hashes) != len(set(hashes)):
+        raise ValueError("字幕指纹重复；同一段字幕不能以不同代号进入多个会话")
     if any(left["ended"] > right["started"] for left, right in zip(ordered, ordered[1:])):
         raise ValueError("观看时间重叠或训练数据晚于留出片段")
     domains = sorted({s["domain"] for s in train})
-    cutoff = test[0]["started"]
+    cutoff = train[-1]["ended"]
     training = Batch.build(train, domains, reference=cutoff, half_life=half_life)
     if not training.included or not training.weight.sum():
         raise ValueError("训练数据没有可用的单词观看事件")
@@ -126,7 +133,8 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
         overall["leaveOneClipOutRange"] = [min(remaining), max(remaining)]
 
     return {"version": 1, "field": field, "tableSha256": digest, "trainingCutoff": cutoff,
-            "trainingClips": [s["clip"] for s in train], "halfLifeDays": half_life, "iterations": iterations,
+            "trainingClips": [s["clip"] for s in train], "trainingSubtitleHashes": [s["subtitleHash"] for s in train if s["subtitleHash"]],
+            "halfLifeDays": half_life, "iterations": iterations,
             "options": {"domainBias": domain_bias, "viewingDiscount": viewing_discount, "fitFeedback": fit_feedback},
             "anchor": {"theta": prior.theta, "se": prior.se, "discrimination": prior.slope},
             "estimate": parameters(x, domains), "training": score(x, training, prior),

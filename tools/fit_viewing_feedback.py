@@ -13,7 +13,7 @@ def main():
     parser.add_argument("table", type=Path, help="与试测文件指纹相同的难度表")
     parser.add_argument("--field", choices=["b_initial", "b_frequency"], default="b_initial")
     parser.add_argument("--train", type=Path, nargs="+", required=True, help="先前视频的观看记录")
-    parser.add_argument("--holdout", type=Path, nargs="+", required=True, help="随后独立视频的观看记录")
+    parser.add_argument("--holdout", type=Path, nargs="+", default=[], help="随后独立视频的观看记录")
     parser.add_argument("--half-life-days", type=float, default=90)
     parser.add_argument("--no-domain", action="store_true")
     parser.add_argument("--no-discount", action="store_true")
