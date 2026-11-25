@@ -40,4 +40,4 @@ node tools/compare_word_models.cjs video.json labels.json profile.json word-diff
 node tools/compare_word_cohort.cjs manifest.json word-difficulty-v1.json normal
 ```
 
-overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。overrideSources 给出各组使用新旧快照的场次数。同一人观看同一视频的重复记录会报错，重测可另存清单独立分析。
+overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。overrideSources 给出各组使用新旧快照的场次数。同一人可以评估同一长视频的多个独立片段。重复或交叠的区间会报错，重测可另存清单独立分析。

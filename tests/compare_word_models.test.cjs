@@ -152,3 +152,14 @@ test("a phrase-only label cannot serve as negative evidence about either constit
     assert.equal(m.display.missedByReason.noCandidate,1); assert.equal(m.display.extra,3);
   }
 });
+
+test("IRT reproduces prefix density but omits unreviewed prefix words from calibration and coverage", () => {
+  const {profile,table} = setup();
+  const video = {video:{id:"seg",duration:30},cues:[0,10,20].map(s=>({s,e:s+1,text:"hard",
+    notes:[{s:0,e:4,key:"hard",kind:"word",lv:1000}]}))};
+  const labels = prepare(video,{start:18,end:30}); labels.cues[0].unknown=["hard"];
+  const r = compare(video,labels,profile,"normal",table,{theta:1});
+  assert.equal(r.coverage.classified,1); assert.equal(r.models.b_initial.probability.observations,1);
+  assert.equal(r.models.b_initial.display.missedByReason.displayLimit,1);
+  assert.equal(r.baseline.durationSeconds,12);
+});
