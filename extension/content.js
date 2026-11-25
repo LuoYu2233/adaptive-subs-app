@@ -1095,6 +1095,7 @@
       S.cur = live; S.dirty = false;
       renderLine(live);
     }
+    if (study && document.documentElement.classList.contains("asubs-labeling")) endStudy();
     if (study) sampleScreen(video, live, t);
     // while glosses are being generated, tell the server where the viewer is (after a jump, or every 20 s)
     if (S.annDone && S.id) {
@@ -1130,7 +1131,11 @@
     if (msg.type === "studyStart") {
       if (!studyReady() || study) { reply({ error: "请启用 IRT、载入完整字幕，再开始记录" }); return; }
       const gen = S.gen, model = trialModel;
-      bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint }).then(r => {
+      const bytes = new TextEncoder().encode(JSON.stringify(S.cues.map(c => [c.s, c.e, c.text])));
+      crypto.subtle.digest("SHA-256", bytes).then(digest => {
+        const subtitleSha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint, subtitleSha256 });
+      }).then(r => {
         if (r.id) {
           study = { id: r.id, gen }; observedFrame = null;
           if (gen !== S.gen || model !== trialModel || !studyReady()) {
@@ -1139,7 +1144,7 @@
           toast("本视频的单词观看记录已开始");
         }
         reply(r);
-      });
+      }).catch(error => reply({ error: error.message }));
       return true;
     }
     if (msg.type === "where") {
