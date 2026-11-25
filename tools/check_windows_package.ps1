@@ -70,5 +70,13 @@ try {
         if (!$process.HasExited) { $process.Kill($true); $process.WaitForExit() }
         $process.Dispose()
     }
-    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    # WebView2 releases its profile handles shortly after the owning window exits.
+    $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (Test-Path -LiteralPath $work) {
+        try { Remove-Item -LiteralPath $work -Recurse -Force; break }
+        catch {
+            if ([DateTime]::UtcNow -ge $cleanupDeadline) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
