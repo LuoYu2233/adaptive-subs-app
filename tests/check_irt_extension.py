@@ -102,6 +102,29 @@ def check():
             tab_file.write_bytes(tab_file.read_bytes()[:-1])
             select(); settings.locator("#field").select_option("b_frequency"); settings.locator("#apply").click()
             expect(words).to_have_text(["house","fog"])
+            feedback = {"version": 1, "field": "b_initial", "tableSha256": params["tableSha256"],
+                        "anchor": {"theta": 6,"discrimination": 2}, "estimate": {"theta": 6.7, "viewingDiscount": .1,
+                        "domainBias": {"科技": -.7}}, "trainingClips": ["s1","s2"], "trainingCutoff": 100}
+            feedback_file = folder / "观看校准.json"
+            feedback_file.write_text(json.dumps(feedback,ensure_ascii=False), encoding="utf-8")
+            settings.locator("details summary").click()
+            select(); settings.locator("#feedback").set_input_files(feedback_file)
+            settings.locator("#apply").click()
+            expect(settings.locator("#status")).to_contain_text("观看校准（通用，2 段）")
+            expect(words).to_have_text(["fog"])
+            select(); settings.locator("#feedback").set_input_files(feedback_file)
+            settings.locator("#domain").select_option("科技")
+            settings.locator("#apply").click()
+            expect(settings.locator("#status")).to_contain_text("观看校准（科技，2 段）")
+            expect(words).to_have_text(["orbit","fog"])
+            page.locator(".asubs-t[data-n='0']").click()
+            expect(page.locator(".asubs-card-why")).to_contain_text("观看校准 · 科技")
+            page.locator(".asubs-card [data-act=close]").click()
+            select(); settings.locator("#feedback").set_input_files(feedback_file)
+            settings.locator("#field").select_option("b_frequency")
+            settings.locator("#apply").click()
+            expect(settings.locator("#error")).to_contain_text("量尺")
+            expect(settings.locator("#status")).to_contain_text("观看校准（科技，2 段）")
             settings.locator("#remove").click()
             expect(settings.locator("#status")).to_contain_text("原有判词")
             assert worker.evaluate("async () => Object.keys(await chrome.storage.local.get(['irtEnabled','irtPreview'])).length") == 0

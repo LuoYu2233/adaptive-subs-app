@@ -20,7 +20,8 @@ def check():
     video = {"video": {"id": "abcdefghijk", "title": "私人测试标题", "duration": 60},
              "cues": [{"s": 0, "e": 60, "text": sentence, "notes": notes}]}
     profile = {"level": 5000, "rev": 1, "known": ["bank"], "unknown": [], "marks": {"known": ["bank"], "unknown": []}}
-    model = {"version": 1, "fingerprint": "1" * 64, "field": "b_initial", "probabilities": dict(zip(WORDS, PROB))}
+    model = {"version": 1, "fingerprint": "1" * 64, "field": "b_initial", "probabilities": dict(zip(WORDS, PROB)),
+             "policy": {"source": "feedback", "anchorTheta": 6, "effectiveTheta": 5.5, "discrimination": 2, "trainedThrough": 100, "domain": "科技"}}
     with TemporaryDirectory() as temp, sync_playwright() as pw:
         ext = ROOT / "extension"
         ctx = pw.chromium.launch_persistent_context(str(Path(temp) / "browser"), channel="chromium", headless=True,
@@ -63,6 +64,9 @@ def check():
             control.goto(origin + "/study.html?tab=" + str(tab_id))
             expect(control.locator("#begin")).to_be_visible()
             control.locator("#clip").fill("clip01")
+            control.locator("#domain").fill("历史")
+            control.locator("#begin").click()
+            expect(control.locator("#error")).to_contain_text("领域")
             control.locator("#domain").fill("科技")
             control.locator("#begin").click()
             expect(control.locator("#status")).to_contain_text("正在记录")
@@ -96,6 +100,7 @@ def check():
             assert result["kind"] == "word-viewing-study" and result["tableSha256"] == "1" * 64
             digest = sha256(json.dumps([[0, 60, sentence]], separators=(",", ":")).encode()).hexdigest()
             assert result["subtitleSha256"] == digest
+            assert result["policy"] == model["policy"]
             assert result["clip"] == "clip01" and result["domain"] == "科技"
             rows = {r["word"]: (r["shown"], r["event"]) for r in result["exposures"]}
             assert rows == {"orbit": (True, "known"), "plume": (True, "none"), "fog": (True, "none"),
