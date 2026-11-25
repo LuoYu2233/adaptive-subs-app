@@ -37,6 +37,7 @@ import time
 import srt
 
 import subtitle_store as SS
+from video_catalog import update as update_index
 from storage import write_json
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -460,18 +461,6 @@ def load_dotenv(path: Path) -> None:
             continue
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
-    idx_path = data_dir / "index.json"
-    try:
-        idx = json.loads(idx_path.read_text(encoding="utf-8"))
-        if not isinstance(idx, list) or (idx and not isinstance(idx[0], dict)):
-            idx = []
-    except (OSError, json.JSONDecodeError):
-        idx = []
-    idx = [v for v in idx if v.get("id") != video_id] + [{"id": video_id, "title": title, "file": file}]
-    idx_path.write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 # -------------------------------------------------------------------- main ---

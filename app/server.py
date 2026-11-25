@@ -32,9 +32,10 @@ import traceback
 import numpy as np
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import subtitle_store as SS
+import video_catalog
 import annotate as A
 import applog
 import asr as ASR
@@ -877,29 +878,17 @@ def extension_dir() -> Path:
 
 
 def recent_videos(limit: int = 8) -> list:
-    """Videos finished before (Bilibili extension + player), newest first. Only the head of each file is read."""
+    """Completed videos, newest first, for the Windows control panel."""
     out = []
     for folder, kind in ((EXT_DATA, "bili"), (DATA, "youtube")):
-        if not folder.exists():
-            continue
-        for f in folder.glob("*.json"):
-            if f.name == "index.json":
-                continue
-            try:
-                head = f.open(encoding="utf-8").read(600)
-                m = re.search(r'"title":"((?:[^"\\]|\\.)*)"', head) or re.search(r'"title":\s*"((?:[^"\\]|\\.)*)"', head)
-                if not m or '"video"' not in head:      # not a processed video (word lists, test bank ...)
-                    continue
-                title = json.loads(f'"{m.group(1)}"')
-            except (OSError, ValueError):
-                continue
-            vid = f.stem
+        for row, modified in video_catalog.entries(folder):
+            vid, title = row["id"], row["title"]
             bv = re.match(r"bili_(BV[0-9A-Za-z]{10})", vid)
             yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
             url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
                    f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or kind == "youtube" else "")
             out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
-                        "mtime": f.stat().st_mtime})
+                        "mtime": modified})
     out.sort(key=lambda x: -x["mtime"])
     return out[:limit]
 
@@ -948,8 +937,13 @@ class Handler(SimpleHTTPRequestHandler):
             f, base = WEB / STATIC_PAGES[path], WEB
         elif path.startswith("/assets/"):
             f, base = WEB / path.lstrip("/"), WEB / "assets"
-        elif re.fullmatch(r"/data/[A-Za-z0-9_.-]+\.json", path):
-            name = path.split("/")[-1]
+        elif path == "/data/index.json":
+            try:
+                return self.send_json(video_catalog.read(DATA))
+            except OSError:
+                return self.send_json({"error": "无法读取视频目录"}, 503)
+        elif path.startswith("/data/") and video_catalog.valid_name(unquote(path[6:])):
+            name = unquote(path[6:])
             f, base = (DATA / name, DATA) if (DATA / name).exists() else (BUNDLE_DATA / name, BUNDLE_DATA)
         else:
             return self.send_error(404)
