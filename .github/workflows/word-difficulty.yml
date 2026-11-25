@@ -1,0 +1,27 @@
+name: Word difficulty table
+on:
+  pull_request:
+    paths:
+      - 'tools/build_word_difficulty.py'
+      - 'app/data/exam_words.json'
+      - 'tests/test_word_difficulty.py'
+      - '.github/workflows/word-difficulty.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python tests/test_word_difficulty.py -v
+      - run: python -m pip install wordfreq==3.1.1 spacy==3.8.18 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+      - run: python tools/build_word_difficulty.py
+      - name: Verify full-table coverage and recorded sources
+        run: python -c "import json,pathlib; t=json.loads(pathlib.Path('build/word-difficulty-v1.json').read_text(encoding='utf-8')); assert len(t['words'])==30000 and t['words']['go']['forms']>1 and 'saw' in t['words'] and t['coverage']['ambiguous']>0 and t['sources']['wordfreq']=='3.1.1'"
