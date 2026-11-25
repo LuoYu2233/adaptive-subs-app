@@ -3,7 +3,7 @@ const byId = id => document.getElementById(id);
 const tell = text => { byId("notice").textContent = text; };
 const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
-let playbackIndices = [], sourceNotes, sourceHash, subtitleSha256;
+let playbackIndices = [], sourceNotes, sourceHash, subtitleSha256, mediaSha256;
 let busy = false, connected = false, oldDraft = false, releaseLock;
 
 function wordLists(p) {
@@ -230,7 +230,7 @@ byId("bundle").onclick = () => {
   const video = { video: { id: source.video, duration: source.duration },
     cues: source.cues.map(({ s, e, text }, i) => ({ s, e, text, notes: sourceNotes[i] })) };
   download(downloadName() + "-evaluation.json", { version: 1, kind: "blind-video-evaluation",
-    sourceVerifiedAtStart: draft.sourceHash === sourceHash, subtitleSha256, video, labels: draft.sheet, profile });
+    sourceVerifiedAtStart: draft.sourceHash === sourceHash, subtitleSha256, mediaSha256, video, labels: draft.sheet, profile });
 };
 
 function disconnected() {
@@ -240,7 +240,8 @@ function disconnected() {
   if (!byId("notice").textContent) tell("视频页已断开。已确认的答案可继续导出。");
 }
 
-async function openDraft(sheet, title, candidates) {
+async function openDraft(sheet, title, candidates, mediaKey) {
+  if (typeof mediaKey !== "string" || !mediaKey) throw new Error("请刷新视频以获取影片标识");
   if (!Array.isArray(candidates) || candidates.length !== sheet.cues.length) throw new Error("缺少与字幕对应的候选词");
   sourceNotes = candidates;
   const digest = async value => {
@@ -248,7 +249,9 @@ async function openDraft(sheet, title, candidates) {
     const hash = await crypto.subtle.digest("SHA-256", bytes);
     return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
   };
-  [sourceHash, subtitleSha256] = await Promise.all([digest([sheet, candidates]), digest(sheet.cues.map(c => [c.s, c.e, c.text]))]);
+  [sourceHash, subtitleSha256, mediaSha256] = await Promise.all([
+    digest([sheet, candidates, mediaKey]), digest(sheet.cues.map(c => [c.s, c.e, c.text])), digest(mediaKey),
+  ]);
   source = sheet; key = "blindLabels:" + sheet.video;
   byId("title").textContent = title;
   byId("duration").textContent = `原视频长 ${Math.floor(sheet.duration / 60)} 分 ${Math.floor(sheet.duration % 60)} 秒。`;
@@ -281,7 +284,7 @@ if (Number.isSafeInteger(tabId) && tabId > 0) {
   connected = true;
   let stopReason = "";
   port.onMessage.addListener(message => {
-    if (message.type === "sheet") openDraft(message.sheet, message.title, message.candidates).catch(error => tell(error.message));
+    if (message.type === "sheet") openDraft(message.sheet, message.title, message.candidates, message.mediaKey).catch(error => tell(error.message));
     if (message.type === "notice") tell(message.text);
     if (message.type === "stopped") { stopReason = message.reason; tell(stopReason); disconnected(); }
   });
