@@ -77,6 +77,7 @@ document.querySelectorAll(".seg[data-key]").forEach((seg) => {
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const tab = tabs && tabs[0];
   if (!tab || tab.id == null) return;
+  $("#studyLink").href = chrome.runtime.getURL("study.html?tab=" + tab.id);
   chrome.tabs.sendMessage(tab.id, { type: "where" }, (w) => {
     if (chrome.runtime.lastError || !w || !w.owner) return;
     const row = $("#coverHere"), seg = row.querySelector(".seg");

@@ -1,0 +1,32 @@
+name: Opt-in viewing study
+on:
+  pull_request:
+    paths:
+      - 'extension/**'
+      - 'tests/check_viewing_study.py'
+      - 'tests/viewing_study.test.cjs'
+      - '.github/workflows/viewing-study.yml'
+permissions:
+  contents: read
+jobs:
+  study:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install playwright==1.65.2
+      - if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: python -m playwright install chromium
+      - run: node --test tests/viewing_study.test.cjs
+      - run: python tests/check_viewing_study.py
