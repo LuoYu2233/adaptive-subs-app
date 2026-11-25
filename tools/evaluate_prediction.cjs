@@ -129,10 +129,14 @@ function main(args) {
     const range = args.length === 5 ? { start: LabelWindow.seconds(profile), end: LabelWindow.seconds(preset) } : undefined;
     const sheet = prepare(load(video), range);
     fs.writeFileSync(labels, JSON.stringify(sheet, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+  } else if (command === "score-bundle" && args.length === 3) {
+    const packet = load(video);
+    check(packet?.version === 1 && packet.kind === "blind-video-evaluation", "需要盲标导出的完整评分包");
+    console.log(JSON.stringify(evaluate(packet.video, packet.labels, packet.profile, labels), null, 2));
   } else if (command === "score" && args.length === 5) {
     console.log(JSON.stringify(evaluate(load(video), load(labels), load(profile), preset), null, 2));
   } else {
-    throw new Error("用法：prepare VIDEO.json LABELS.json [START END] | score VIDEO.json LABELS.json PROFILE.json more|normal|less");
+    throw new Error("用法：prepare VIDEO.json LABELS.json [START END] | score VIDEO.json LABELS.json PROFILE.json more|normal|less | score-bundle PACKET.json more|normal|less");
   }
 }
 
