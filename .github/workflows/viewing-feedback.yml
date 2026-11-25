@@ -1,0 +1,31 @@
+name: Selection-aware feedback calibration
+on:
+  pull_request:
+    paths:
+      - 'tools/viewing/**'
+      - 'tools/fit_viewing_feedback.py'
+      - 'tools/benchmark_viewing_feedback.py'
+      - 'tests/test_viewing_feedback.py'
+      - 'tools/score_blind_feedback.cjs'
+      - 'tests/blind_feedback.test.cjs'
+      - '.github/workflows/viewing-feedback.yml'
+permissions:
+  contents: read
+jobs:
+  estimation:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/blind_feedback.test.cjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/viewing/requirements.txt
+      - run: python -X warn_default_encoding -W error::EncodingWarning tests/test_viewing_feedback.py -v
