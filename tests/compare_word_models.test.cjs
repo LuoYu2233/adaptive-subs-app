@@ -120,3 +120,19 @@ test("cohort weights events and time, pools AUC before scoring, and rejects dupl
   assert.throws(()=>run([first,first]),/第 2 组.*重复/);
   assert.throws(()=>run([{...first,profile:""}]),/第 1 组.*路径/);
 });
+
+test("explicit marks are protected while inferred word knowledge can be reconsidered by the model", () => {
+  const {video,labels,profile,table} = setup();
+  profile.known.push("hard");
+  profile.unknown.push("easy");
+  const old = compare(video,labels,profile,"normal",table,{theta:1});
+  profile.marks = {known:["manual"],unknown:["forced"]};
+  const observed = compare(video,labels,profile,"normal",table,{theta:1});
+  assert.deepEqual(old.baseline,observed.baseline);
+  assert.equal(old.coverage.profileOverride,4); assert.equal(observed.coverage.profileOverride,2);
+  assert.equal(observed.models.b_initial.display.hits,old.models.b_initial.display.hits+1);
+  assert.equal(observed.models.b_initial.display.extra,old.models.b_initial.display.extra-1);
+  assert.equal(observed.params.overrideSource,"manual marks");
+  profile.marks.known = ["absent"];
+  assert.throws(()=>compare(video,labels,profile,"normal",table,{theta:1}),/画像不一致/);
+});

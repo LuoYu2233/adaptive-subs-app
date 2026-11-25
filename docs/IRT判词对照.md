@@ -6,7 +6,7 @@
 node tools/compare_word_models.cjs video.json labels.json profile.json word-difficulty-v1.json normal
 ```
 
-命令输出三套结果。baseline 复现当前播放器；b_frequency 使用词频难度；b_initial 加入考纲阶段先验。三套使用同一份候选、重复次数上限、句内上限和显示优先级。个人已经标记的词直接沿用标记；短语、特殊义项和表外词沿用现行规则。coverage 分别统计这些情况，便于发现实验实际改动了多少次判词。
+命令输出三套结果。baseline 复现当前播放器；b_frequency 使用词频难度；b_initial 加入考纲阶段先验。三套使用同一份候选、重复次数上限、句内上限和显示优先级。用户亲自标记的生熟词直接沿用标记。对表内其余单词，IRT 可重新判断现行规则从考试词表、频率或旧测验推断出的生熟状态。短语、特殊义项和表外词沿用现行规则。旧快照如果缺少 marks，则把全部有效词库保留为例外，结果中的 overrideSource 会标明口径。coverage 分别统计这些情况，便于发现实验实际改动了多少次判词。
 
 ## 能力与阈值
 
@@ -40,4 +40,4 @@ node tools/compare_word_models.cjs video.json labels.json profile.json word-diff
 node tools/compare_word_cohort.cjs manifest.json word-difficulty-v1.json normal
 ```
 
-overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。同一人观看同一视频的重复记录会报错，重测可另存清单独立分析。
+overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。overrideSources 给出各组使用新旧快照的场次数。同一人观看同一视频的重复记录会报错，重测可另存清单独立分析。

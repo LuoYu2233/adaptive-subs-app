@@ -6,8 +6,10 @@ const { readTable, compare, probabilityMetrics } = require("./compare_word_model
 
 function summarize(sessions) {
   const durationSeconds = sessions.reduce((n, row) => n + row.report.baseline.durationSeconds, 0);
-  const result = { sessions: sessions.length, durationSeconds, coverage: {}, models: {} };
+  const result = { sessions: sessions.length, durationSeconds, overrideSources: {}, coverage: {}, models: {} };
   for (const { report } of sessions) {
+    const source = report.params.overrideSource;
+    result.overrideSources[source] = (result.overrideSources[source] || 0) + 1;
     for (const [key, count] of Object.entries(report.coverage))
       result.coverage[key] = (result.coverage[key] || 0) + count;
   }
