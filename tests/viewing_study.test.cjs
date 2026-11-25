@@ -23,7 +23,7 @@ function fixture() {
   const store = vm.runInContext(fs.readFileSync(path.join(__dirname, "../extension/study-store.js"), "utf8") + "\nAdaptiveStudyStore", context);
   const tab = { id: "extension", frameId: 0, url: "https://www.youtube.com/watch?v=test", tab: { id: 2 }, documentId: "original" };
   const control = { id: "extension", url: origin + "study.html?tab=2", documentId: "settings", tab: { id: 3 }, frameId: 0 };
-  const start = () => store.handle({ type: "studyBegin", clip: "c1", domain: "科技", field: "b_initial", fingerprint: "0".repeat(64), subtitleSha256: "b".repeat(64) }, tab);
+  const start = () => store.handle({ type: "studyBegin", clip: "c1", domain: "科技", field: "b_initial", fingerprint: "0".repeat(64), subtitleSha256: "b".repeat(64), mediaSha256: "c".repeat(64) }, tab);
   return { data, store, tab, control, start };
 }
 const row = { start: 0, end: 4, word: "bank", shown: false, pUnknown: .35, event: "none" };

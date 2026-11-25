@@ -19,7 +19,7 @@ const AdaptiveStudyStore = (() => {
       const meta = (await storage.get(META))[META];
       if (msg.type === "studyBegin") {
         if (!tab || control || !codeOK(msg.clip) || !codeOK(msg.domain) || !fieldOK(msg.field) ||
-            ![msg.fingerprint, msg.subtitleSha256].every(h => typeof h === "string" && /^[a-f0-9]{64}$/.test(h))) fail("片段代号、领域或模型信息无效");
+            ![msg.fingerprint, msg.subtitleSha256, msg.mediaSha256].every(h => typeof h === "string" && /^[a-f0-9]{64}$/.test(h))) fail("片段代号、领域或模型信息无效");
         const p = msg.policy;
         let policy;
         if (p !== undefined) {
@@ -34,7 +34,7 @@ const AdaptiveStudyStore = (() => {
         }
         if (meta) fail("本机已有一组记录，请先导出并清除");
         const next = { version: 1, id: crypto.randomUUID(), clip: msg.clip, domain: msg.domain, field: msg.field,
-          fingerprint: msg.fingerprint, subtitleSha256: msg.subtitleSha256, ...(policy ? { policy } : {}), started: Date.now(), recording: true, count: 0, cues: [],
+          fingerprint: msg.fingerprint, subtitleSha256: msg.subtitleSha256, mediaSha256: msg.mediaSha256, ...(policy ? { policy } : {}), started: Date.now(), recording: true, count: 0, cues: [],
           tab: sender.tab.id, document: sender.documentId };
         await storage.set({ [META]: next });
         return summary(next);
@@ -64,7 +64,7 @@ const AdaptiveStudyStore = (() => {
         });
         if (exposures.length !== meta.count) fail("本机记录数量不一致");
         return { version: 1, kind: "word-viewing-study", id: meta.id, clip: meta.clip, domain: meta.domain,
-          tableSha256: meta.fingerprint, subtitleSha256: meta.subtitleSha256, field: meta.field, ...(meta.policy ? { policy: meta.policy } : {}), started: meta.started, ended: meta.ended,
+          tableSha256: meta.fingerprint, subtitleSha256: meta.subtitleSha256, mediaSha256: meta.mediaSha256, field: meta.field, ...(meta.policy ? { policy: meta.policy } : {}), started: meta.started, ended: meta.ended,
           stopReason: meta.reason, exposures };
       }
       if (msg.type !== "studyObserve" || !owner) fail("只有发起记录的视频可以填写观看事件");

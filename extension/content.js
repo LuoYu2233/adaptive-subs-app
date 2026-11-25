@@ -1176,10 +1176,14 @@
     if (msg.type === "studyStart") {
       if (!studyReady() || study) { reply({ error: "请启用 IRT、载入完整字幕，再开始记录" }); return; }
       const gen = S.gen, model = trialModel;
-      const bytes = new TextEncoder().encode(JSON.stringify(S.cues.map(c => [c.s, c.e, c.text])));
-      crypto.subtle.digest("SHA-256", bytes).then(digest => {
-        const subtitleSha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint, subtitleSha256, policy: model.policy });
+      const digest = async value => {
+        const bytes = new TextEncoder().encode(JSON.stringify(value));
+        const hash = await crypto.subtle.digest("SHA-256", bytes);
+        return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
+      };
+      Promise.all([digest(S.cues.map(c => [c.s, c.e, c.text])), digest(S.key)]).then(([subtitleSha256, mediaSha256]) => {
+        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field,
+          fingerprint: model.fingerprint, subtitleSha256, mediaSha256, policy: model.policy });
       }).then(r => {
         if (r.id) {
           study = { id: r.id, gen }; observedFrame = null;
