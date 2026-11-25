@@ -60,7 +60,7 @@ function labelSpan(sentence, label) {
 
 const spanKey = ({ s, e }) => `${s}:${e}`;
 
-function evaluate(result, labels, profile, preset) {
+function evaluate(result, labels, profile, preset, classifyNote) {
   const expected = prepare(result);
   const range = labels?.window;
   const selected = LabelWindow.indices(expected.cues, expected.duration, range);
@@ -73,7 +73,7 @@ function evaluate(result, labels, profile, preset) {
   check(Object.hasOwn(preferences, preset), "注释档位须为 more、normal 或 less");
   const preference = preferences[preset];
   const known = new Set(profile.known), unknown = new Set(profile.unknown);
-  const state = note => classify(note, known, unknown, profile.level * preference.factor);
+  const state = classifyNote ?? (note => classify(note, known, unknown, profile.level * preference.factor));
   const repetitions = new Map();
   let hits = 0, extra = 0, noCandidate = 0, belowThresholdOrKnown = 0, displayLimit = 0;
 
@@ -104,15 +104,19 @@ function evaluate(result, labels, profile, preset) {
     }
   });
   const missed = noCandidate + belowThresholdOrKnown + displayLimit;
-  const f2Denominator = 5 * hits + 4 * missed + extra;
   return {
     video: expected.video, preset, durationSeconds: duration, evaluatedCues: selected.length,
     ...(range === undefined ? {} : { window: { start: range.start, end: range.end } }),
-    hits, missed, extra,
+    ...displayMetrics(hits, missed, extra, duration),
     missedByReason: { noCandidate, belowThresholdOrKnown, displayLimit },
-    missRate: hits + missed ? missed / (hits + missed) : null,
-    extraPerMinute: extra * 60 / duration,
-    f2: f2Denominator ? 5 * hits / f2Denominator : null,
+  };
+}
+
+function displayMetrics(hits, missed, extra, durationSeconds) {
+  const denominator = 5 * hits + 4 * missed + extra;
+  return {
+    hits, missed, extra, missRate: hits + missed ? missed / (hits + missed) : null,
+    extraPerMinute: extra * 60 / durationSeconds, f2: denominator ? 5 * hits / denominator : null,
   };
 }
 
@@ -148,7 +152,7 @@ function main(args) {
   }
 }
 
-module.exports = { prepare, evaluate, unpackBlindPacket };
+module.exports = { prepare, evaluate, displayMetrics, labelSpan, spanKey, load, unpackBlindPacket };
 if (require.main === module) {
   try { main(process.argv.slice(2)); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
