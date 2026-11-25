@@ -47,7 +47,7 @@ def main():
                 if child.poll() is not None:
                     raise RuntimeError(f"Expected owner exited with {child.returncode}")
                 try:
-                    info = json.loads((folder / ".instance.json").read_text())
+                    info = json.loads((folder / ".instance.json").read_text(encoding="utf-8"))
                     if info["pid"] == child.pid and info["port"]:
                         with opener.open(f"http://{info['host']}:{info['port']}/api/health", timeout=.5) as response:
                             health = json.load(response)

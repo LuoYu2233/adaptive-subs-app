@@ -26,3 +26,15 @@ def isolated_runtime(tmp_path, monkeypatch):
     yield
     providers.reset_clients()
     server.ASR.reset_client()
+
+
+@pytest.fixture
+def create_file_symlink():
+    def create(link, target):
+        try:
+            link.symlink_to(target)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows did not grant the file symlink privilege")
+            raise
+    return create

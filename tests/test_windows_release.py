@@ -43,7 +43,7 @@ def test_windows_archive_verifies_versions_hashes_and_preserves_previous_version
     assert "程序/_internal/models/model.bin" in manifest["files"]
     assert "浏览器插件/content.js" in manifest["files"]
     assert "README.md" not in manifest["files"]
-    assert path.with_suffix(".zip.sha256").read_text() == f"{checksum}  {path.name}\n"
+    assert path.with_suffix(".zip.sha256").read_text(encoding="utf-8") == f"{checksum}  {path.name}\n"
     assert build_fixture(tmp_path, native_output) == (path, checksum)
     (native_output[0] / "AdaptiveSubs.exe").write_bytes(b"different build")
     with pytest.raises(ValueError, match="increment the version"):
@@ -58,21 +58,21 @@ def test_snapshot_never_collects_ignored_extension_settings_or_old_dist(tmp_path
     git("init")
     (tmp_path / "app").mkdir()
     (tmp_path / "extension").mkdir()
-    (tmp_path / "app/version.py").write_text('VERSION="0.4.0-alpha.99"\nEXTENSION_VERSION="0.4.0.99"\n')
-    (tmp_path / "extension/manifest.json").write_text('{"version":"0.4.0.99","version_name":"0.4.0-alpha.99"}')
-    (tmp_path / ".gitignore").write_text("*.env\nprofile.json\nbuild/\n")
+    (tmp_path / "app/version.py").write_text('VERSION="0.4.0-alpha.99"\nEXTENSION_VERSION="0.4.0.99"\n', encoding="utf-8")
+    (tmp_path / "extension/manifest.json").write_text('{"version":"0.4.0.99","version_name":"0.4.0-alpha.99"}', encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("*.env\nprofile.json\nbuild/\n", encoding="utf-8")
     git("add", ".")
     git("-c", "user.name=Release Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
-    (tmp_path / "extension/private.env").write_text("SYNTHETIC_SECRET=not-for-delivery")
-    (tmp_path / "extension/profile.json").write_text('{"marks":"synthetic private record"}')
+    (tmp_path / "extension/private.env").write_text("SYNTHETIC_SECRET=not-for-delivery", encoding="utf-8")
+    (tmp_path / "extension/profile.json").write_text('{"marks":"synthetic private record"}', encoding="utf-8")
     (tmp_path / "build").mkdir()
     (tmp_path / "build/stale.exe").write_bytes(b"old version")
     entries, _, _ = source.snapshot(tmp_path)
     assert not any("private" in name or "profile.json" in name or name.startswith("build/") for name in entries)
     # Even after a working-tree change, staging remains the exact frozen commit.
-    (tmp_path / "extension/manifest.json").write_text("uncommitted mutation")
+    (tmp_path / "extension/manifest.json").write_text("uncommitted mutation", encoding="utf-8")
     source.write_snapshot(entries, tmp_path / "staging")
-    assert json.loads((tmp_path / "staging/extension/manifest.json").read_text())["version"] == "0.4.0.99"
+    assert json.loads((tmp_path / "staging/extension/manifest.json").read_text(encoding="utf-8"))["version"] == "0.4.0.99"
     assert not (tmp_path / "staging/extension/private.env").exists()
 
 
@@ -124,17 +124,14 @@ def test_concurrent_different_publishers_cannot_overwrite_the_winner(tmp_path):
         outcomes = list(pool.map(attempt, staged))
     winner = next(result for result in outcomes if result)
     assert outcomes.count(None) == 1 and source.file_digest(destination) == winner
-    assert destination.with_suffix(".zip.sha256").read_text().startswith(winner)
+    assert destination.with_suffix(".zip.sha256").read_text(encoding="utf-8").startswith(winner)
 
 
-def test_symlinked_native_content_is_not_read(tmp_path, native_output):
+def test_symlinked_native_content_is_not_read(tmp_path, native_output, create_file_symlink):
     link = native_output[0] / "_internal/private-link"
     secret = tmp_path / "outside.txt"
-    secret.write_text("synthetic private bytes")
-    try:
-        link.symlink_to(secret)
-    except OSError:
-        pytest.skip("Creating symlinks is not permitted on this host")
+    secret.write_text("synthetic private bytes", encoding="utf-8")
+    create_file_symlink(link, secret)
     with pytest.raises(ValueError, match="Symbolic links"):
         build_fixture(tmp_path, native_output)
 

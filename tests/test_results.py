@@ -21,7 +21,7 @@ def test_valid_legacy_and_current_results_keep_unicode_codepoint_positions(tmp_p
         assert valid_result(value)
         assert value == before
         path = tmp_path / "result.json"
-        path.write_text(json.dumps(value))
+        path.write_text(json.dumps(value), encoding="utf-8")
         assert server.saved_result(path) == value
 
 
@@ -34,7 +34,7 @@ def test_corrupt_cue_cannot_short_circuit_generation(tmp_path, change):
     value["cues"][0].update(change)
     assert not valid_result(value)
     path = tmp_path / "result.json"
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value), encoding="utf-8")
     assert server.saved_result(path) is None
 
 

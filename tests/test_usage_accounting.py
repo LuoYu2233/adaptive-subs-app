@@ -43,7 +43,7 @@ def test_unusual_usage_never_discards_or_repeats_valid_generation(usage, incompl
     assert total["calls"] == 1 and total["incomplete_calls"] == incomplete
     if incomplete:
         assert P.cost_usd("deepseek", total) is None
-    logged = [json.loads(line) for line in (A.CACHE_DIR / "usage.jsonl").read_text().splitlines()]
+    logged = [json.loads(line) for line in (A.CACHE_DIR / "usage.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(logged) == 1 and logged[0]["incomplete_calls"] == incomplete
 
 
@@ -82,7 +82,7 @@ def test_concurrent_usage_counts_are_complete_and_logs_remain_parseable():
         list(pool.map(lambda _: A.record_usage(response, "test", "low", "annotate", counts), range(32)))
     assert A.usage_total(counts) == {"calls": 32, "input": 320, "output": 96, "cached_input": 128,
                                    "reasoning": 0, "incomplete_calls": 0}
-    assert len([json.loads(line) for line in (A.CACHE_DIR / "usage.jsonl").read_text().splitlines()]) == 32
+    assert len([json.loads(line) for line in (A.CACHE_DIR / "usage.jsonl").read_text(encoding="utf-8").splitlines()]) == 32
 
 
 @pytest.mark.parametrize("value", [None, [], {"calls": True}, {"input": -1}, {"output": float("nan")},

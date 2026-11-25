@@ -285,7 +285,7 @@ def test_failed_work_cannot_be_reported_complete(tmp_path, monkeypatch):
     assert j.state == "partial"
     assert j.failed_tasks and j.events[-1][0] == "fail"
     assert j.events[-1][1]["retry"]
-    saved = json.loads((tmp_path / "abcdefghijk.json").read_text())
+    saved = json.loads((tmp_path / "abcdefghijk.json").read_text(encoding="utf-8"))
     assert saved["status"] == "partial" and saved["cues"][0]["text"]
     assert S.saved_result(tmp_path / "abcdefghijk.json") is None
 
@@ -378,7 +378,7 @@ def test_probe_never_repairs_old_asr_with_billable_work(http_server, monkeypatch
     S.EXT_DATA.mkdir()
     vid = "yt_abcdefghijk_asr"
     (S.EXT_DATA / f"{vid}.json").write_text(json.dumps({"status": "complete", "source": "asr", "video": {"id": vid, "title": "test", "duration": 5},
-        "cues": [{"s": 0, "e": 5, "notes": [], "text": "The request was rejected because it was considered high risk."}]}))
+        "cues": [{"s": 0, "e": 5, "notes": [], "text": "The request was rejected because it was considered high risk."}]}), encoding="utf-8")
     start, repair = Mock(return_value=None), Mock()
     monkeypatch.setattr(S, "get_job", start)
     monkeypatch.setattr(S, "repair_saved", repair)
@@ -517,7 +517,7 @@ def test_simultaneous_settings_writers_cannot_both_use_one_revision(http_server,
         results = list(pool.map(save, ["first-model", "second-model"]))
     assert sorted(status for status, _ in results) == [200, 409]
     winner = next(model for status, model in results if status == 200)
-    assert S.P.model("deepseek") == winner and f"DEEPSEEK_MODEL={winner}" in path.read_text()
+    assert S.P.model("deepseek") == winner and f"DEEPSEEK_MODEL={winner}" in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("asr_url,cache_version,warning", [("https://www.youtube.com/watch?v=abcdefghijk", None, True),

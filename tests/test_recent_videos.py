@@ -20,23 +20,27 @@ def save(folder, ident, title="Original recent video", status="complete", extra=
     value = {"video": {"id": ident, "title": title, "duration": 1}, "status": status,
         "cues": [{"s": 0, "e": 1, "text": "Original sample.", "notes": []}], **(extra or {})}
     path = folder / f"{ident}.json"
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value), encoding="utf-8")
     return path
 
 
-def test_recent_list_rejects_partial_corrupt_unicode_mismatched_and_external_results(library):
+def test_recent_list_rejects_partial_corrupt_unicode_and_mismatched_results(library):
     save(library, "abcdefghijk")
     save(library, "bbbbbbbbbbb", status="partial")
     save(library, "ccccccccccc", title="\ud800")
     save(library, "ddddddddddd", extra={"cues": "bad"})
     wrong = save(library, "eeeeeeeeeee")
     wrong.rename(library / "fffffffffff.json")
-    (library / "broken.json").write_text('[[[[bad')
-    outside = save(library.parent, "ggggggggggg")
-    (library / outside.name).symlink_to(outside)
+    (library / "broken.json").write_text('[[[[bad', encoding="utf-8")
     before = {p.name: p.read_bytes() for p in library.glob("*.json")}
     assert [row["id"] for row in S.recent_videos()] == ["abcdefghijk"]
     assert {p.name: p.read_bytes() for p in library.glob("*.json")} == before
+
+
+def test_recent_list_ignores_external_link(library, create_file_symlink):
+    outside = save(library.parent, "ggggggggggg")
+    create_file_symlink(library / outside.name, outside)
+    assert S.recent_videos() == []
 
 
 def test_recent_list_handles_long_metadata_and_platform_links(library):
@@ -72,9 +76,9 @@ def test_cache_invalidates_atomic_replacement_even_with_preserved_modification_t
     before = path.stat()
     assert S.recent_videos()[0]["title"] == "Previous"
     replacement = save(library, "temporary", title="Changed")
-    value = json.loads(replacement.read_text())
+    value = json.loads(replacement.read_text(encoding="utf-8"))
     value["video"]["id"] = "abcdefghijk"
-    replacement.write_text(json.dumps(value))
+    replacement.write_text(json.dumps(value), encoding="utf-8")
     os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
     os.replace(replacement, path)
     assert S.recent_videos()[0]["title"] == "Changed"

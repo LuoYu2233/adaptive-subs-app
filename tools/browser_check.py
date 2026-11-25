@@ -38,7 +38,7 @@ def main():
                                   ("complete000", "最近视频的原创长标题" * 100, "complete")):
             path = recent_folder / f"{ident}.json"
             path.write_text(json.dumps({"video": {"id": ident, "title": title, "duration": 1}, "status": state,
-                "cues": [{"s": 0, "e": 1, "text": "Original status sample.", "notes": []}]}))
+                "cues": [{"s": 0, "e": 1, "text": "Original status sample.", "notes": []}]}), encoding="utf-8")
             recent_fixtures.append(path)
         env = {k: v for k, v in os.environ.items() if k not in (
             "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY", "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")}
@@ -401,7 +401,7 @@ def main():
                     page.reload()
                     expect(page.locator("#field")).to_have_value("计算机")
                     expect(page.locator("#identity [data-id='undergrad']")).to_have_attribute("aria-pressed", "true")
-                    saved = json.loads((home / "profile.json").read_text())
+                    saved = json.loads((home / "profile.json").read_text(encoding="utf-8"))
                     assert saved["exams"]["cet4"] == 560
 
                     page.goto(base + "/player.html")
@@ -457,7 +457,7 @@ def main():
                         page.locator('[data-act="backup-book"]').click()
                     book_path = home / "wordbook-backup.json"
                     download.value.save_as(book_path)
-                    book_backup = json.loads(book_path.read_text())
+                    book_backup = json.loads(book_path.read_text(encoding="utf-8"))
                     assert book_backup["format"] == "adaptive-subs-wordbook"
                     assert {item["zh"] for item in book_backup["entries"]} == {"银行", "河岸"}
                     assert "😀" in book_backup["entries"][0]["sentence"]
@@ -509,7 +509,7 @@ def main():
                     page.locator("#bookImportConfirm").click()
                     expect(page.locator("#bookCount")).to_have_text("2")
                     invalid_book = home / "wordbook-invalid.json"
-                    invalid_book.write_text(json.dumps({**book_backup, "entries": [book_backup["entries"][0], {"key": "broken"}]}))
+                    invalid_book.write_text(json.dumps({**book_backup, "entries": [book_backup["entries"][0], {"key": "broken"}]}), encoding="utf-8")
                     page.locator("#bookBackupFile").set_input_files(str(invalid_book))
                     expect(page.locator("#toast")).to_contain_text("无法读取生词本备份")
                     expect(page.locator("#bookCount")).to_have_text("2")
@@ -574,7 +574,7 @@ def main():
                         page.locator("#downloadStorage").click()
                     original_path = home / "player-original.json"
                     download.value.save_as(original_path)
-                    assert json.loads(original_path.read_text())["copies"][0]["raw"] == damaged_store
+                    assert json.loads(original_path.read_text(encoding="utf-8"))["copies"][0]["raw"] == damaged_store
                     page.evaluate("""() => {
                       window.originalSetItem = Storage.prototype.setItem;
                       Storage.prototype.setItem = function(key, value) {
@@ -596,7 +596,7 @@ def main():
                     with page.expect_download() as download:
                         page.locator("#downloadRecovery").click()
                     download.value.save_as(original_path)
-                    assert json.loads(original_path.read_text())["copies"][0]["raw"] == damaged_store
+                    assert json.loads(original_path.read_text(encoding="utf-8"))["copies"][0]["raw"] == damaged_store
                     page.locator(".tabs [data-tab='book']").click()
                     expect(page.locator('[data-act="import-book"]')).to_be_visible()
                     page.locator("#bookBackupFile").set_input_files(str(book_path))
@@ -620,7 +620,7 @@ def main():
                     known_key = response.value.request.post_data_json["key"]
                     page.locator("#toast button").click()
                     expect(page.locator("#toast")).to_contain_text("已撤销")
-                    current_profile = json.loads((home / "profile.json").read_text())
+                    current_profile = json.loads((home / "profile.json").read_text(encoding="utf-8"))
                     assert known_key in current_profile["unknown"]
                     assert current_profile["mark_details"][known_key]["zh"] == "银行"
                     # Another client changes this particular meaning after the next mark.
@@ -633,7 +633,7 @@ def main():
                     with page.expect_response(lambda r: r.url.endswith("/api/mark") and r.status == 409):
                         page.locator("#toast button").click()
                     expect(page.locator("#toast")).to_contain_text("其他页面更新")
-                    after_undo = json.loads((home / "profile.json").read_text())
+                    after_undo = json.loads((home / "profile.json").read_text(encoding="utf-8"))
                     assert known_key not in after_undo["known"] + after_undo["unknown"]
                     row.locator("[data-act='know']").click()
                     expect(page.locator("#toast")).to_contain_text("已标为认识")
@@ -648,22 +648,22 @@ def main():
 
                     # A damaged saved file must offer an explicit retry, without starting work on read.
                     broken = home / "data/zzzzzzzzzzz.json"
-                    complete = broken.read_text()
-                    broken.write_text('{"video":{},"cues":["invalid"]}')
+                    complete = broken.read_text(encoding="utf-8")
+                    broken.write_text('{"video":{},"cues":["invalid"]}', encoding="utf-8")
                     page.goto(base + "/player.html")
                     expect(page.locator('[data-generation="retry"]')).to_be_visible()
                     page.locator('.retry-btn').click()
                     expect(page.locator("#toast")).to_contain_text("API key")
                     page.locator('[data-generation="retry"]').click()
                     expect(page.locator("#toast")).to_contain_text("API key")
-                    broken.write_text(complete)
+                    broken.write_text(complete, encoding="utf-8")
                     page.goto(base + "/profile")
 
                     with page.expect_download() as download:
                         page.locator("#exportProfile").click()
                     backup_path = home / "browser-backup.json"
                     download.value.save_as(backup_path)
-                    exported = json.loads(backup_path.read_text())
+                    exported = json.loads(backup_path.read_text(encoding="utf-8"))
                     assert exported["format"] == "adaptive-subs-profile"
                     assert exported["profile"]["field"] == "计算机"
                     page.locator("#field").fill("设计")
@@ -737,7 +737,7 @@ def main():
                         page.locator('[data-act="backup-book"]').click()
                     filtered_backup = home / "filtered-backup.json"
                     download.value.save_as(filtered_backup)
-                    assert len(json.loads(filtered_backup.read_text())["entries"]) == 5002
+                    assert len(json.loads(filtered_backup.read_text(encoding="utf-8"))["entries"]) == 5002
                     page.locator('[data-act="unbook"]').click()
                     expect(page.locator("#bookList")).to_contain_text("没有匹配的记录")
                     page.locator("#toast button").click()
@@ -753,7 +753,7 @@ def main():
                     page.screenshot(path=str(output / "wordbook-search-mobile.png"), full_page=True)
                     page.set_viewport_size({"width": 1280, "height": 900})
                     (output / "wordbook-performance.json").write_text(json.dumps({"entries": 5002,
-                        "rendered_rows": page.locator("#bookList .wrow").count(), "mode_switch_ms": book_timings}))
+                        "rendered_rows": page.locator("#bookList .wrow").count(), "mode_switch_ms": book_timings}), encoding="utf-8")
                     await_script = "entries => AdaptivePlayerStore.create().update(current => ({ ...current, book: entries }))"
                     page.evaluate(await_script, book_backup["entries"])
 
@@ -764,9 +764,9 @@ def main():
                     long_cues = [{"s": i * 5, "e": i * 5 + 5, "text": f"The bank approved request number {i}.",
                                   "zh": "银行批准了申请。", "notes": [{"s": 4, "e": 8, "key": "bank", "zh": "银行",
                                   "kind": "word", "lv": 15000}]} for i in range(6000)]
-                    (data / "yyyyyyyyyyy.json").write_text(json.dumps({"video": {"id": "yyyyyyyyyyy", "title": "长字幕回归", "duration": 30000}, "cues": long_cues}))
-                    entries = json.loads((data / "index.json").read_text())
-                    (data / "index.json").write_text(json.dumps(entries + [{"id": "yyyyyyyyyyy", "title": "长字幕回归", "file": "yyyyyyyyyyy.json"}]))
+                    (data / "yyyyyyyyyyy.json").write_text(json.dumps({"video": {"id": "yyyyyyyyyyy", "title": "长字幕回归", "duration": 30000}, "cues": long_cues}), encoding="utf-8")
+                    entries = json.loads((data / "index.json").read_text(encoding="utf-8"))
+                    (data / "index.json").write_text(json.dumps(entries + [{"id": "yyyyyyyyyyy", "title": "长字幕回归", "file": "yyyyyyyyyyy.json"}]), encoding="utf-8")
                     page.goto(base + "/player.html?v=yyyyyyyyyyy")
                     page.locator(".tabs [data-tab='transcript']").click()
                     expect(page.locator(".tr-row")).to_have_count(6000)
@@ -778,7 +778,7 @@ def main():
                         timings.append(round((time.monotonic() - begin) * 1000))
                         assert retained.evaluate("element => element.isConnected")
                     expect(page.locator(".tr-row").last).to_contain_text("5999")
-                    (output / "transcript-performance.json").write_text(json.dumps({"cues": 6000, "mode_switch_ms": timings}))
+                    (output / "transcript-performance.json").write_text(json.dumps({"cues": 6000, "mode_switch_ms": timings}), encoding="utf-8")
 
                     page.set_viewport_size({"width": 390, "height": 844})
                     page.goto(base + "/player.html?v=zzzzzzzzzzz")

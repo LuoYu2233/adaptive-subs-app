@@ -66,9 +66,9 @@ def test_context_explanation_cache_is_validated_and_does_not_change_meaning():
     assert A.call_json(*args) == expected
     assert client.chat.completions.create.call_count == 1
     cache = next(A.CACHE_DIR.glob("*.json"))
-    cache.write_text('{"zh":{"invalid":"cached"}}')
+    cache.write_text('{"zh":{"invalid":"cached"}}', encoding="utf-8")
     assert A.call_json(*args)["zh"] == "河岸"
-    assert json.loads(cache.read_text())["zh"] == "河岸"
+    assert json.loads(cache.read_text(encoding="utf-8"))["zh"] == "河岸"
 
 
 def test_explanations_for_different_contexts_do_not_share_cache():
@@ -95,9 +95,9 @@ def test_corrupt_cache_is_replaced():
     args = (client, "test", "low", A.ANNOTATE_PROMPT, [{"id": 0}])
     A.call_json(*args)
     cache = next(A.CACHE_DIR.glob("*.json"))
-    cache.write_text('{"items":')
+    cache.write_text('{"items":', encoding="utf-8")
     assert A.call_json(*args) == expected
-    assert json.loads(cache.read_text()) == expected
+    assert json.loads(cache.read_text(encoding="utf-8")) == expected
 
 
 def test_invalid_credentials_are_not_retried():
@@ -240,7 +240,7 @@ def test_unencodable_or_deep_cache_is_not_reused(raw):
     cache.write_bytes(raw)
     assert A.call_json(*args) == expected
     assert client.chat.completions.create.call_count == 2
-    assert json.loads(cache.read_text()) == expected
+    assert json.loads(cache.read_text(encoding="utf-8")) == expected
 
 
 def test_identical_model_names_on_different_services_do_not_share_cache():

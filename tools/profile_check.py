@@ -40,7 +40,7 @@ def check_profile(context, base, home, output):
         if mode == "lost":
             response = route.fetch()
             assert response.status == 200
-            saved = json.loads((home / "profile.json").read_text())["test"]
+            saved = json.loads((home / "profile.json").read_text(encoding="utf-8"))["test"]
             assert saved["est"] == body["test"]["est"]
             assert set(saved["unknown"]) == set(body["test"]["unknown"])
             if fail_read_after_write: fail_read = True
@@ -88,7 +88,7 @@ def check_profile(context, base, home, output):
             page.locator("#exportProfile").click()
         backup_path = output / "profile-unavailable-backup.json"
         download_info.value.save_as(backup_path)
-        assert json.loads(backup_path.read_text())["profile"] == original["profile"]
+        assert json.loads(backup_path.read_text(encoding="utf-8"))["profile"] == original["profile"]
         page.screenshot(path=str(output / "profile-load-failure.png"), full_page=True)
         page.evaluate("""() => {
             window.originalReadTimeout = AbortSignal.timeout;
@@ -152,7 +152,7 @@ def check_profile(context, base, home, output):
         page.locator('[data-act="retry-save"]').click()
         expect(page.locator("[data-test-save]")).to_contain_text("尚未确认保存")
         assert len(posts) == 4 and posts[-1]["test"] == first_answers
-        assert json.loads((home / "profile.json").read_text())["test"]["est"] == first_answers["est"]
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["test"]["est"] == first_answers["est"]
         page.screenshot(path=str(output / "vocabulary-save-unconfirmed.png"), full_page=True)
         fail_read = False
         fail_read_after_write = False
@@ -223,7 +223,7 @@ def check_profile_conflicts(context, base, home, output):
         second.locator("#field").fill("重新读取后保存")
         second.locator("#saveProfile").click()
         expect(second.locator("#msg1")).to_contain_text("已保存")
-        assert json.loads((home / "profile.json").read_text())["exams"] == {"cet4": 600}
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["exams"] == {"cet4": 600}
 
         # Refreshing the summary after clearing a mark must not bless old form fields with a new revision.
         assert first.request.post(base + "/api/mark", headers=headers,
@@ -238,7 +238,7 @@ def check_profile_conflicts(context, base, home, output):
         first.locator("#field").fill("概览刷新后的旧表单")
         first.locator("#saveProfile").click()
         expect(first.locator("#msg1")).to_contain_text("当前填写已保留")
-        assert json.loads((home / "profile.json").read_text())["exams"] == {"cet4": 615}
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["exams"] == {"cet4": 615}
 
         # A test started before another profile update is retained until the user explicitly retries.
         second.reload()
@@ -260,7 +260,7 @@ def check_profile_conflicts(context, base, home, output):
         second.locator('[data-act="retry-save"]').click()
         expect(second.locator("[data-test-save]")).to_contain_text("已记录本次结果")
         assert len(posts) == before_posts + 2 and posts[-1]["test"] == answers
-        saved = json.loads((home / "profile.json").read_text())
+        saved = json.loads((home / "profile.json").read_text(encoding="utf-8"))
         assert saved["field"] == "测试过程中另一个窗口的修改" and saved["exams"] == {"cet4": 615}
         assert not errors, errors
         print("Profile conflict checks passed: stale forms, retained drafts, fresh reads, independent form revisions and test retry.")
@@ -280,7 +280,7 @@ def check_vocab_bank(context, base, home, output):
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
     before = (home / "profile.json").read_bytes()
-    valid = json.loads((Path(__file__).parents[1] / "app/data/vocab_test.json").read_text())
+    valid = json.loads((Path(__file__).parents[1] / "app/data/vocab_test.json").read_text(encoding="utf-8"))
     duplicate = json.loads(json.dumps(valid))
     duplicate["bands"][1]["words"][0]["word"] = duplicate["bands"][0]["words"][0]["word"]
     mode = "empty"

@@ -22,7 +22,7 @@ def test_backup_roundtrip_keeps_exact_level_date_and_meanings(tmp_path):
     assert b.export_backup()["profile"] == sample()["profile"]
     # Do not accept credentials or implementation metadata from the stored profile.
     dirty = a.load() | {"api_key": "test-secret", "path": "/tmp/test"}
-    a.path.write_text(json.dumps(dirty))
+    a.path.write_text(json.dumps(dirty), encoding="utf-8")
     assert "test-secret" not in json.dumps(a.export_backup())
 
 

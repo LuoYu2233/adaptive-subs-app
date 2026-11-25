@@ -26,15 +26,15 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
     git("init")
     (tmp_path / "app").mkdir()
     (tmp_path / "extension").mkdir()
-    (tmp_path / "app/version.py").write_text('VERSION = "0.4.0-alpha.1"\nEXTENSION_VERSION = "0.4.0.1"\n')
-    (tmp_path / "extension/manifest.json").write_text(json.dumps({"version": "0.4.0.1", "version_name": "0.4.0-alpha.1"}))
-    (tmp_path / "README.md").write_text("test source")
-    (tmp_path / "pytest.ini").write_text("[pytest]\npythonpath = app\n")
-    (tmp_path / ".gitignore").write_text(".env\nprofile.json\nrelease/\n")
+    (tmp_path / "app/version.py").write_text('VERSION = "0.4.0-alpha.1"\nEXTENSION_VERSION = "0.4.0.1"\n', encoding="utf-8")
+    (tmp_path / "extension/manifest.json").write_text(json.dumps({"version": "0.4.0.1", "version_name": "0.4.0-alpha.1"}), encoding="utf-8")
+    (tmp_path / "README.md").write_text("test source", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]\npythonpath = app\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text(".env\nprofile.json\nrelease/\n", encoding="utf-8")
     git("add", ".")
     git("-c", "user.name=Release Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
-    (tmp_path / ".env").write_text("MIMO_API_KEY=test-secret-never-package")
-    (tmp_path / "profile.json").write_text('{"field":"private-learning-record"}')
+    (tmp_path / ".env").write_text("MIMO_API_KEY=test-secret-never-package", encoding="utf-8")
+    (tmp_path / "profile.json").write_text('{"field":"private-learning-record"}', encoding="utf-8")
     path, checksum, commit = BUILD.build(tmp_path)
     before = path.read_bytes()
     assert BUILD.build(tmp_path)[1] == checksum and path.read_bytes() == before
@@ -52,7 +52,7 @@ def test_reproducible_committed_source_excludes_local_data_and_detects_tampering
             archive.writestr(name, body)
     with pytest.raises(ValueError, match="Content verification failed"):
         VERIFY.verify(altered)
-    (tmp_path / "README.md").write_text("uncommitted change")
+    (tmp_path / "README.md").write_text("uncommitted change", encoding="utf-8")
     with pytest.raises(ValueError, match="working-tree"):
         BUILD.build(tmp_path)
     git("add", "README.md")
@@ -70,6 +70,6 @@ def test_release_rejects_accidentally_tracked_private_data(name):
 
 def test_real_extension_version_matches_program():
     from version import VERSION, EXTENSION_VERSION
-    manifest = json.loads((ROOT / "extension/manifest.json").read_text())
+    manifest = json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == EXTENSION_VERSION
     assert manifest["version_name"] == VERSION

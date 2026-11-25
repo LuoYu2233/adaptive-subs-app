@@ -39,7 +39,7 @@ def test_empty_annotations_do_not_load_a_language_model(monkeypatch):
 def test_installed_english_model_preserves_contextual_lemmas_and_glosses():
     pytest.importorskip("spacy")
     pytest.importorskip("en_core_web_sm")
-    cases = json.loads((Path(__file__).parent / "fixtures/context_lemmas.json").read_text())
+    cases = json.loads((Path(__file__).parent / "fixtures/context_lemmas.json").read_text(encoding="utf-8"))
     cues, expected = [], []
     for case in cases:
         notes = []
@@ -75,7 +75,7 @@ def test_generation_persists_contextual_keys_and_reuses_the_existing_model_respo
     S.run_annotation(job, [0], "low")
     assert create.call_count == 1
     S.finalize(job)
-    saved = json.loads((job.save_dir / f"{job.vid}.json").read_text())
+    saved = json.loads((job.save_dir / f"{job.vid}.json").read_text(encoding="utf-8"))
     assert saved["cues"][0]["notes"][0]["key"] == "leaf"
     assert saved["cues"][0]["notes"][0]["zh"] == "树叶"
     assert saved["status"] == "complete"

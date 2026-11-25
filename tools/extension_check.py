@@ -23,10 +23,10 @@ def check_extension(playwright, base, home, output):
         worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
         worker.evaluate("base => chrome.storage.session.set({base})", base)
         worker.evaluate("() => chrome.storage.local.set({asubsKeysHint: 1})")
-        data = json.loads((home / "data/zzzzzzzzzzz.json").read_text())
+        data = json.loads((home / "data/zzzzzzzzzzz.json").read_text(encoding="utf-8"))
         bili = home / "data/extension/bili_BV1234567890_123_en.json"
         bili.parent.mkdir(exist_ok=True)
-        bili.write_text(json.dumps(data | {"video": data["video"] | {"id": bili.stem}}))
+        bili.write_text(json.dumps(data | {"video": data["video"] | {"id": bili.stem}}), encoding="utf-8")
         external = []
         fail_mark = False
         fail_profile = False
@@ -57,7 +57,7 @@ def check_extension(playwright, base, home, output):
                     if profile_write_mode == "lost":
                         response = route.fetch()
                         assert response.status == 200
-                        assert json.loads((home / "profile.json").read_text())["level"] == route.request.post_data_json["level"]
+                        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == route.request.post_data_json["level"]
                         return route.abort("failed")
                     if profile_write_mode == "malformed":
                         return route.fulfill(json={"level": route.request.post_data_json["level"]})
@@ -75,7 +75,7 @@ def check_extension(playwright, base, home, output):
                 if offline and url.endswith("/api/health"):
                     return route.fulfill(status=503, json={})
                 if (mismatched_version or missing_runtime) and url.endswith("/api/health"):
-                    version = "0.3.0" if mismatched_version else json.loads((extension / "manifest.json").read_text())["version_name"]
+                    version = "0.3.0" if mismatched_version else json.loads((extension / "manifest.json").read_text(encoding="utf-8"))["version_name"]
                     return route.fulfill(json={"ok": True, "app": "adaptive-subs", "version": version, "ext": 2,
                         "setup": "/setup", "profile": "/profile", "key": True, "provider_name": "模拟服务商",
                         "runtime": {"state": "error", "message": "英语语言模型无法正常加载"} if missing_runtime else {"state": "ready"}})
@@ -159,7 +159,7 @@ def check_extension(playwright, base, home, output):
             expect(page.locator(".asubs-card-zh")).to_contain_text("银行")
             page.locator('.asubs-card [data-act="known"]').click()
             expect(page.locator(".asubs-pill")).to_contain_text("已加入熟词库")
-            marked = json.loads((home / "profile.json").read_text())
+            marked = json.loads((home / "profile.json").read_text(encoding="utf-8"))
             assert len(marked["known"]) == 1 and marked["known"][0].startswith("ctx:bank:"), marked["known"]
             assert next(iter(marked["mark_details"].values()))["zh"] == "银行"
             worker.evaluate("async () => { const p = await handle({type:'profile'}); return handle({type:'setprofile',payload:{reset_marks:true,expected_rev:p.rev}}); }")
@@ -182,7 +182,7 @@ def check_extension(playwright, base, home, output):
             expect(page.locator(".asubs-card-zh")).to_contain_text("河岸")
             page.locator('.asubs-card [data-act="unknown"]').click()
             expect(page.locator(".asubs-pill")).to_contain_text("已标为生词")
-            saved = json.loads((home / "profile.json").read_text())
+            saved = json.loads((home / "profile.json").read_text(encoding="utf-8"))
             assert len(saved["known"]) == len(saved["unknown"]) == 1
             assert {x["zh"] for x in saved["mark_details"].values()} == {"银行", "河岸"}
             page.screenshot(path=str(output / f"extension-{site}.png"), full_page=True)
@@ -203,7 +203,7 @@ def check_extension(playwright, base, home, output):
         fail_profile = False
         popup.locator("#level").press("Home")
         expect(popup.locator("#saveStatus")).to_contain_text("已保存到本机画像")
-        assert json.loads((home / "profile.json").read_text())["level"] == 1500
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == 1500
         saved_preferences = worker.evaluate("() => chrome.storage.local.get('settings')")
         profile_write_mode = "malformed"
         before = len(profile_posts)
@@ -218,7 +218,7 @@ def check_extension(playwright, base, home, output):
         expect(popup.locator("#saveStatus")).to_contain_text("当前词汇量与本次设置一致")
         expect(popup.locator("#levelValue")).to_contain_text("15,000")
         assert len(profile_posts) == before + 1  # The real saved write was not replayed.
-        assert json.loads((home / "profile.json").read_text())["level"] == 15000
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == 15000
         # A lost write response followed by a failed read is uncertain, never a saved/unsaved claim.
         profile_read_mode = "component"
         before = len(profile_posts)
@@ -226,7 +226,7 @@ def check_extension(playwright, base, home, output):
         expect(popup.locator("#saveStatus")).to_contain_text("保存结果尚未确认")
         expect(popup.locator("#level")).to_be_disabled()
         expect(popup.locator("#profileText")).to_contain_text("不会自动重发")
-        assert json.loads((home / "profile.json").read_text())["level"] == 1500
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == 1500
         assert len(profile_posts) == before + 1
         profile_read_mode = None
         popup.locator("#retryProfile").click()
@@ -251,12 +251,12 @@ def check_extension(playwright, base, home, output):
         profile_write_mode = None
         popup.locator("#level").press("End")
         expect(popup.locator("#saveStatus")).to_contain_text("已保存到本机画像")
-        assert json.loads((home / "profile.json").read_text())["level"] == 15000
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == 15000
         # Requests are queued in the service worker, including server discovery.
         result = worker.evaluate("() => Promise.all([2000, 6000, 5000].map(level => handle({type:'setprofile',payload:{level}})))")
         assert [r["level"] for r in result] == [2000, 6000, 5000]
         assert result[0]["rev"] < result[1]["rev"] < result[2]["rev"]
-        assert json.loads((home / "profile.json").read_text())["level"] == 5000
+        assert json.loads((home / "profile.json").read_text(encoding="utf-8"))["level"] == 5000
         popup.reload()
         expect(popup.locator("#levelValue")).to_contain_text("5,000")
         # Connected service with an unavailable profile must not become an offline write.
@@ -372,7 +372,7 @@ def check_extension(playwright, base, home, output):
         popup.reload()
         expect(popup.locator("#levelValue")).to_contain_text("5,000")
         popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)
-        (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2))
+        (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2), encoding="utf-8")
         print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and separate meaning feedback.")
     except Exception:
         for i, page in enumerate(context.pages):

@@ -53,7 +53,7 @@ def main():
         (home / "data").mkdir()
         saved = {"video": {"id": "zzzzzzzzzzz", "title": "Original saved sample", "duration": 1},
                  "cues": [{"s": 0, "e": 1, "text": "Original sample.", "notes": []}]}
-        (home / "data/zzzzzzzzzzz.json").write_text(json.dumps(saved))
+        (home / "data/zzzzzzzzzzz.json").write_text(json.dumps(saved), encoding="utf-8")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(ASUBS_HOME=temp, ASUBS_NO_BROWSER="1", ASUBS_HEADLESS="1", ANNOTATION_PROVIDER="deepseek",
                    DEEPSEEK_API_KEY="synthetic-test-key-never-used", MIMO_API_KEY="synthetic-asr-key-never-used")

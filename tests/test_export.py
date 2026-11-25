@@ -10,7 +10,7 @@ import srt
 import annotate as A
 import storage
 
-FIXTURE = json.loads((Path(__file__).parent / "fixtures/export_meanings.json").read_text())
+FIXTURE = json.loads((Path(__file__).parent / "fixtures/export_meanings.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("case", FIXTURE["cases"], ids=lambda case: case["name"])
@@ -86,11 +86,11 @@ def test_cli_export_and_empty_input_do_not_need_a_model(tmp_path, monkeypatch):
     forbidden = Mock(side_effect=AssertionError("Must not start generation"))
     monkeypatch.setattr(A, "find_candidates", forbidden)
     src = tmp_path / "abcdefghijk.en.srt"
-    src.with_name("abcdefghijk.json").write_text(json.dumps(sample()))
+    src.with_name("abcdefghijk.json").write_text(json.dumps(sample()), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["annotate.py", str(src), "--export-srt", "3000"])
     A.main()
     assert src.with_name("abcdefghijk.v3000.srt").is_file()
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["annotate.py", str(src)])
     with pytest.raises(SystemExit, match="字幕文件为空"): A.main()
     forbidden.assert_not_called()
@@ -106,8 +106,8 @@ def test_cli_keeps_completed_result_when_catalog_write_fails(tmp_path, monkeypat
     monkeypatch.setattr(A, "add_keys", lambda cues: None)
     monkeypatch.setattr(A, "update_index", Mock(side_effect=OSError("disk full")))
     src = tmp_path / "abcdefghijk.en.srt"
-    src.write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal test sentence.\n")
+    src.write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal test sentence.\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["annotate.py", str(src)])
     A.main()
-    assert A.valid_result(json.loads((tmp_path / "abcdefghijk.json").read_text()))
+    assert A.valid_result(json.loads((tmp_path / "abcdefghijk.json").read_text(encoding="utf-8")))
     assert "无需重新生成" in capsys.readouterr().err

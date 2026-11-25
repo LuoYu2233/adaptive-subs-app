@@ -19,7 +19,7 @@ def test_process_lock_is_exclusive_and_metadata_is_not_the_lock(tmp_path):
         assert read_instance(tmp_path)["port"] == 8766
         assert not second.acquire()
         # Corrupt metadata cannot release the OS lock or permit a second server.
-        (tmp_path / ".instance.json").write_text("broken")
+        (tmp_path / ".instance.json").write_text("broken", encoding="utf-8")
         assert read_instance(tmp_path) is None
         assert not second.acquire()
     finally:
@@ -57,7 +57,7 @@ sys.stdin.read()
 @pytest.mark.parametrize("change", [{"host": "outside.invalid"}, {"port": 0}, {"port": True}, {"instance": "bad"}])
 def test_invalid_runtime_metadata_is_not_used_for_navigation(tmp_path, change):
     (tmp_path / ".instance.json").write_text(json.dumps({"version": S.VERSION, "instance": "a" * 32,
-        "host": "127.0.0.1", "port": 8766, **change}))
+        "host": "127.0.0.1", "port": 8766, **change}), encoding="utf-8")
     assert read_instance(tmp_path) is None
 
 

@@ -117,7 +117,7 @@ def test_truncated_recognition_keeps_job_partial_and_never_emits_done(pcm, tmp_p
     assert job.has_text == [True] and job.asr_stats["errors"] == 1
     S.finalize(job)
     assert job.state == "partial" and not any(kind == "done" for kind, _ in job.events)
-    assert json.loads((tmp_path / f"{job.vid}.json").read_text())["status"] == "partial"
+    assert json.loads((tmp_path / f"{job.vid}.json").read_text(encoding="utf-8"))["status"] == "partial"
     assert job.asr_client.chat.completions.create.call_count == 1
 
 

@@ -59,7 +59,7 @@ def test_valid_generated_bank_is_written_once_with_unique_options(builder, monke
     module, path = builder
     monkeypatch.setattr(module, "call_json", answers(module))
     module.main()
-    bank = json.loads(path.read_text())
+    bank = json.loads(path.read_text(encoding="utf-8"))
     assert [len(b["words"]) for b in bank["bands"]] == [12,12]
     assert len(bank["nonwords"]) == 8
     assert len({w["word"] for b in bank["bands"] for w in b["words"]}) == 24
