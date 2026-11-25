@@ -1,9 +1,11 @@
 import copy
 import json
+import multiprocessing
 from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +18,24 @@ def example():
         "field": "计算机", "identity": "undergrad", "exams": {"cet4": 555, "ielts": 6.5}, "level": 4500,
         "known": ["sense:bank", "phrase:take off"], "unknown": ["forecast"],
         "test": {"date": "2026-11-24", "est": 4600, "bands": [1, .5, 0], "known": ["dock"], "unknown": ["anchor"]}}}
+
+
+def competing_writer(path, prefix, token, gate, results):
+    store = profiles.Store(path)
+    original_save = store._save
+    def delayed_save(profile):
+        time.sleep(.025)
+        original_save(profile)
+    store._save = delayed_save
+    gate.wait(timeout=30)
+    try:
+        store.restore_backup(example(), token)
+        outcome = "saved"
+    except profiles.RestoreConflict:
+        outcome = "conflict"
+    for word in ("one", "two", "three", "four"):
+        assert store.mark(prefix + " " + word, "known") is None
+    results.put(outcome)
 
 
 class ProfileBackupTests(unittest.TestCase):
@@ -73,6 +93,28 @@ class ProfileBackupTests(unittest.TestCase):
         for t in threads: t.join(timeout=5)
         self.assertCountEqual(results, ["conflict", "saved"])
         self.assertEqual(self.store.load()["rev"], 1)
+
+    def test_independent_processes_serialize_restore_and_preserve_all_marks(self):
+        token = self.store.preview_backup(example())["token"]
+        ctx = multiprocessing.get_context("spawn")
+        gate, results = ctx.Barrier(2), ctx.Queue()
+        workers = [ctx.Process(target=competing_writer, args=(self.store.path, prefix, token, gate, results))
+                   for prefix in ("left", "right")]
+        try:
+            for worker in workers: worker.start()
+            for worker in workers:
+                worker.join(timeout=45)
+                self.assertEqual(worker.exitcode, 0)
+            self.assertCountEqual([results.get(timeout=3), results.get(timeout=3)], ["saved", "conflict"])
+        finally:
+            for worker in workers:
+                if worker.is_alive(): worker.terminate()
+                if worker.pid: worker.join()
+            results.close()
+        profile = self.store.load()
+        self.assertEqual(profile["rev"], 9)
+        for prefix in ("left", "right"):
+            self.assertTrue(all(prefix + " " + word in profile["known"] for word in ("one", "two", "three", "four")))
 
     def test_bad_backups_leave_original_untouched(self):
         backup = example()
