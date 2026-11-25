@@ -1,0 +1,16 @@
+name: Windows ZIP packaging
+on:
+  pull_request:
+    paths:
+      - 'packaging/build.py'
+      - 'tests/test_windows_zip.py'
+      - '.github/workflows/windows-zip.yml'
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tests/test_windows_zip.py -v

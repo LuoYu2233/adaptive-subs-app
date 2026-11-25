@@ -8,6 +8,7 @@ The program holds no API keys: each tester enters their own on its settings page
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -83,6 +84,28 @@ ECDICT 词典数据（MIT，考试词表和释义）等。
 """
 
 
+def write_archive(folder: Path, destination: Path) -> None:
+    """Replace the downloadable ZIP only after the complete archive passes its CRC checks."""
+    with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=f".{destination.name}.",
+                                     suffix=".tmp", delete=False) as tmp:
+        pending = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(pending, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for item in sorted(folder.rglob("*")):
+                archive.write(item, Path(NAME) / item.relative_to(folder))
+        with zipfile.ZipFile(pending) as archive:
+            for member in ("程序/AdaptiveSubs.exe", "浏览器插件/manifest.json", "使用说明.txt"):
+                name = f"{NAME}/{member}"
+                if name not in archive.namelist() or not archive.getinfo(name).file_size:
+                    raise ValueError(f"发布包缺少有效文件：{member}")
+            damaged = archive.testzip()
+            if damaged is not None:
+                raise zipfile.BadZipFile(f"文件校验失败：{damaged}")
+        pending.replace(destination)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def main():
     for mod in ("PyInstaller", "av"):
         try:
@@ -112,13 +135,10 @@ def main():
     out.mkdir(parents=True)
     shutil.copytree(dist / "AdaptiveSubs", out / "程序")
     shutil.copytree(ROOT / "extension", out / "浏览器插件", ignore=shutil.ignore_patterns("README.md"))
-    (out / "使用说明.txt").write_text(GUIDE.replace("\n", "\r\n"), encoding="utf-8-sig")
+    (out / "使用说明.txt").write_text(GUIDE, encoding="utf-8-sig", newline="\r\n")
 
     zpath = RELEASE / f"{NAME}.zip"
-    zpath.unlink(missing_ok=True)
-    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        for f in sorted(out.rglob("*")):
-            z.write(f, Path(NAME) / f.relative_to(out))
+    write_archive(out, zpath)
     size = zpath.stat().st_size / 1e6
     print(f"\n  done: {zpath}  ({size:.0f} MB)")
 
