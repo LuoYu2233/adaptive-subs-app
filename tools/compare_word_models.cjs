@@ -100,8 +100,10 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
   const threshold = thresholds[preset];
   const oldState = note => classify(note, known, unknown, profile.level * preferences[preset].factor);
   const modeled = [], coverage = { classified: 0, profileOverride: 0, missingWord: 0, otherKind: 0 };
+  let overlappingLabels = 0;
   video.cues.forEach((cue, i) => {
-    const truth = new Set(labels.cues[i].unknown.map(label => spanKey(labelSpan(cue.text, label))));
+    const spans = labels.cues[i].unknown.map(label => labelSpan(cue.text, label));
+    const truth = new Set(spans.map(spanKey));
     for (const note of cue.notes) {
       const key = markKey(note);
       if (overrides.has(key)) coverage.profileOverride++;
@@ -109,7 +111,11 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
       else if (!Object.hasOwn(table.words, note.key)) coverage.missingWord++;
       else {
         coverage.classified++;
-        modeled.push({ note, row: table.words[note.key], truth: truth.has(spanKey(note)) });
+        // An unknown phrase does not tell us whether the learner knows its constituent words.
+        const exact = truth.has(spanKey(note));
+        const ambiguous = !exact && spans.some(s => s.s < note.e && note.s < s.e);
+        if (ambiguous) overlappingLabels++;
+        modeled.push({ note, row: table.words[note.key], truth: ambiguous ? null : exact });
       }
     }
   });
@@ -122,13 +128,13 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
       const logit = a * (row[field] - (theta + domainBias - viewingDiscount));
       if (!Number.isFinite(logit)) throw new Error("参数超出可计算的范围");
       decisions.set(note, sigmoid(logit) >= threshold ? "hard" : "easy");
-      samples.push({ logit, unknown: truth });
+      if (truth !== null) samples.push({ logit, unknown: truth });
     }
     const display = evaluate(video, labels, profile, preset, note => decisions.get(note) ?? oldState(note));
     onSamples?.(field, samples);
     models[field] = { theta, display, probability: probabilityMetrics(samples) };
   }
-  return { baseline, coverage, params: { a, viewingDiscount, domainBias, threshold,
+  return { baseline, coverage, overlappingLabels, params: { a, viewingDiscount, domainBias, threshold,
     overrideSource: profile.marks == null ? "legacy effective lists" : "manual marks",
     abilitySource: calibrated ? "measured theta per table field" : config.theta === undefined ? "expected-vocabulary approximation" : "provided theta" }, models };
 }

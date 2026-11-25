@@ -6,8 +6,9 @@ const { readTable, compare, probabilityMetrics } = require("./compare_word_model
 
 function summarize(sessions) {
   const durationSeconds = sessions.reduce((n, row) => n + row.report.baseline.durationSeconds, 0);
-  const result = { sessions: sessions.length, durationSeconds, overrideSources: {}, coverage: {}, models: {} };
+  const result = { sessions: sessions.length, durationSeconds, overlappingLabels: 0, overrideSources: {}, coverage: {}, models: {} };
   for (const { report } of sessions) {
+    result.overlappingLabels += report.overlappingLabels;
     const source = report.params.overrideSource;
     result.overrideSources[source] = (result.overrideSources[source] || 0) + 1;
     for (const [key, count] of Object.entries(report.coverage))
