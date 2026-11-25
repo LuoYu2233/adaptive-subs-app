@@ -31,7 +31,7 @@ def check(table=None):
             page.on("request", lambda req: network.append(req.url) if req.url.startswith(("http://", "https://")) else None)
             page.goto(page_file.as_uri())
             page.locator("#prior").fill("100")
-            page.locator("#begin").click()
+            page.locator("#prior").press("Enter")
             expected = []
             while page.locator("#quiz").is_visible():
                 word = page.locator("#word").inner_text()

@@ -16,8 +16,8 @@ button[data-key]::before{content:attr(data-key);display:inline-block;min-width:1
 <main>
 <section id="start"><h1>单词能力试测</h1>
 <p>选择最接近的中文释义。拿不准可以选“不认识”。系统会按照你的回答调整难度，最多 40 题。也可按 1–4 选释义，按 0 表示不认识。答完后可以把结果保存在本机。</p>
-<label for="prior">起始词汇量估计</label>
-<input id="prior" type="number" min="1" step="1" required value="5000"><button id="begin" class="primary">开始试测</button>
+<form id="setup"><label for="prior">起始词汇量估计</label>
+<input id="prior" type="number" min="1" step="1" required value="5000"><button id="begin" class="primary" type="submit">开始试测</button></form>
 <p id="error" role="alert"></p>
 </section>
 <section id="quiz" hidden><p id="progress"></p><h2 id="word" lang="en" tabindex="-1"></h2>

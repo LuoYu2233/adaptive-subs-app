@@ -51,7 +51,8 @@ function advance() {
   questionAt = performance.now();
 }
 
-el("begin").onclick = () => {
+el("setup").onsubmit = event => {
+  event.preventDefault();
   if (!el("prior").reportValidity()) return;
   try { session = new WordCat.Session(data, el("prior").valueAsNumber); }
   catch (error) { el("error").textContent = error.message; return; }
