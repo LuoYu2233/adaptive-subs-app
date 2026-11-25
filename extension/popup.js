@@ -77,7 +77,17 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const tab = tabs && tabs[0];
   if (!tab || tab.id == null) return;
   chrome.tabs.sendMessage(tab.id, { type: "where" }, (w) => {
-    if (chrome.runtime.lastError || !w || !w.owner) return;
+    if (chrome.runtime.lastError || !w) return;
+    if (w.videoPage) {
+      const button = $("#labelVideo");
+      button.hidden = false;
+      button.disabled = !w.canLabel;
+      button.title = w.canLabel ? "打开独立标注窗口" : "请先完成字幕生成，再打开插件弹窗";
+      button.onclick = () => chrome.windows.create({
+        url: chrome.runtime.getURL("label.html?tab=" + tab.id), type: "popup", width: 520, height: 580,
+      });
+    }
+    if (!w.owner) return;
     const row = $("#coverHere"), seg = row.querySelector(".seg");
     const name = w.name.length > 14 ? `${w.name.slice(0, 13)}…` : w.name;
     $("#coverHereLabel").textContent = `${w.here}${name ? `（${name}）` : ""}`;
