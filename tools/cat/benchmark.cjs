@@ -1,7 +1,7 @@
 // Paired synthetic study. The same participant has the same potential answer to an item in both arms.
 "use strict";
 const fs = require("node:fs");
-const { assemble } = require("../build_cat_pilot.cjs");
+const { buildData } = require("../build_cat_pilot.cjs");
 const { Session, Posterior, correctProbability, priorMean } = require("./model.js");
 
 function simulate(data, levels, perLevel, initialLevel, seed) {
@@ -22,7 +22,14 @@ function simulate(data, levels, perLevel, initialLevel, seed) {
         const k = Math.floor(random() * (j + 1));
         [shuffled[k], shuffled[j]] = [shuffled[j], shuffled[k]];
       }
-      for (const item of shuffled.slice(0, 25)) control.update(item.b_initial, correct.get(item.word));
+      let count = 0;
+      const usedSets = new Set();
+      for (const item of shuffled) {
+        if (item.contrastSet && usedSets.has(item.contrastSet)) continue;
+        if (item.contrastSet) usedSets.add(item.contrastSet);
+        control.update(item.b_initial, correct.get(item.word));
+        if (++count === 25) break;
+      }
       let adaptive25 = null;
       while (session.next()) {
         const { item, choices } = session.current;
@@ -52,9 +59,10 @@ function simulate(data, levels, perLevel, initialLevel, seed) {
 module.exports = { simulate };
 if (require.main === module) {
   try {
-    if (process.argv.length !== 3) throw new Error("用法：node tools/cat/benchmark.cjs word-difficulty-v1.json");
-    const bank = require("../../app/data/vocab_test.json");
-    const data = assemble(fs.readFileSync(process.argv[2]), bank);
+    const [table, flag] = process.argv.slice(2);
+    if (!table || process.argv.length > 4 || (flag !== undefined && flag !== "--expanded"))
+      throw new Error("用法：node tools/cat/benchmark.cjs TABLE.json [--expanded]");
+    const data = buildData(fs.readFileSync(table), flag === "--expanded");
     console.log(JSON.stringify(simulate(data, [1500,3000,5000,8000,15000], 60, 5000, 20261125), null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

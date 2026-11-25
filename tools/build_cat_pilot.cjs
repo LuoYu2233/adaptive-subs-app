@@ -16,17 +16,20 @@ function assemble(tableBytes, bank) {
   }
   const items = [], seen = new Set();
   for (const band of bank.bands) {
-    for (const { word, zh, distractors } of band.words) {
+    for (const { word, zh, distractors, context, contrastSet } of band.words) {
       if (!Object.hasOwn(table.words, word) || seen.has(word)) continue;
       if (!Array.isArray(distractors) || distractors.length !== 3 || new Set([zh, ...distractors]).size !== 4 ||
           [word, zh, ...distractors].some(t => typeof t !== "string" || !t.trim())) throw new Error("无效的四选一题目：" + word);
       const { b_initial, b_frequency } = table.words[word];
-      items.push({word, zh, distractors, b_initial, b_frequency});
+      items.push({word, zh, distractors, b_initial, b_frequency, ...(contrastSet ? { context, contrastSet } : {})});
       seen.add(word);
     }
   }
   if (items.length < 40) throw new Error("题库与难度表匹配的有效题目少于 40 道。");
-  return { items, difficulties, tableSha256: createHash("sha256").update(tableBytes).digest("hex") };
+  const content = items.map(({word, zh, distractors, context, contrastSet}) => [word, zh, distractors, context, contrastSet]);
+  const itemBank = { variant: bank.variant || "original", count: items.length,
+    sha256: createHash("sha256").update(JSON.stringify(content)).digest("hex") };
+  return { items, difficulties, itemBank, tableSha256: createHash("sha256").update(tableBytes).digest("hex") };
 }
 
 function makePage(data) {
@@ -36,13 +39,22 @@ function makePage(data) {
   return template.replace(/@@(DATA|MODEL|UI)@@/g, (_, name) => scripts[name]);
 }
 
-module.exports = { assemble, makePage };
+function buildData(bytes, expanded = false) {
+  const original = JSON.parse(fs.readFileSync(path.join(__dirname, "../app/data/vocab_test.json"), "utf8"));
+  if (!expanded) return assemble(bytes, original);
+  const { expand } = require("./cat/bank/expand.cjs");
+  const text = fs.readFileSync(here("bank/contrast-sets.tsv"), "utf8");
+  const table = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
+  return assemble(bytes, expand(table, original, text));
+}
+
+module.exports = { assemble, makePage, buildData };
 if (require.main === module) {
   try {
-    const [table, output] = process.argv.slice(2);
-    if (process.argv.length !== 4) throw new Error("用法：node tools/build_cat_pilot.cjs TABLE.json OUTPUT.html");
-    const bank = JSON.parse(fs.readFileSync(path.join(__dirname, "../app/data/vocab_test.json"), "utf8"));
-    const data = assemble(fs.readFileSync(table), bank);
+    const [table, output, flag] = process.argv.slice(2);
+    if (process.argv.length < 4 || process.argv.length > 5 || (flag !== undefined && flag !== "--expanded"))
+      throw new Error("用法：node tools/build_cat_pilot.cjs TABLE.json OUTPUT.html [--expanded]");
+    const data = buildData(fs.readFileSync(table), flag === "--expanded");
     fs.writeFileSync(output, makePage(data), { encoding: "utf8", flag: "wx" });
     console.log(`已生成 ${output}，可用单词题 ${data.items.length} 道。`);
   } catch (error) { console.error(error.message); process.exitCode = 1; }

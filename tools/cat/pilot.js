@@ -1,6 +1,10 @@
 "use strict";
 const el = id => document.getElementById(id);
 const data = JSON.parse(el("data").textContent);
+if (data.itemBank?.variant === "expanded-v1") {
+  el("bankInfo").hidden = false;
+  el("bankInfo").textContent = `本页使用 ${data.itemBank.count} 道实验单词题。部分题目会给出主题，请选择该用法的释义。`;
+}
 let session, result;
 let startedAt, questionAt, visibleSince, visibleTotal = 0;
 
@@ -39,6 +43,8 @@ function advance() {
   }
   el("progress").textContent = `第 ${session.history.length + 1} 题 / 最多 40 题`;
   el("word").textContent = question.item.word;
+  el("context").hidden = !question.item.context;
+  el("context").textContent = question.item.context ? `用法主题 · ${question.item.context}` : "";
   el("choices").replaceChildren(...question.choices.map((text, i) => {
     const button = document.createElement("button");
     button.textContent = text;
