@@ -63,7 +63,7 @@ function probabilityMetrics(samples) {
   };
 }
 
-function compare(video, labels, profile, preset, table, config = {}, tableSha256) {
+function compare(video, labels, profile, preset, table, config = {}, { tableSha256, onSamples } = {}) {
   const baseline = evaluate(video, labels, profile, preset);
   if (table?.version !== 1 || table.scale !== "natural-log lemma rank" || !table.words || Array.isArray(table.words) ||
       typeof table.words !== "object" || !Object.keys(table.words).length)
@@ -87,6 +87,16 @@ function compare(video, labels, profile, preset, table, config = {}, tableSha256
   if (rows.some(r => !Number.isFinite(r?.b_frequency) || !Number.isFinite(r?.b_initial)))
     throw new Error("词难度表包含无效的难度");
   const known = new Set(profile.known), unknown = new Set(profile.unknown);
+  let overrides;
+  if (profile.marks == null) {
+    overrides = new Set([...known, ...unknown]);
+  } else {
+    const marks = profile.marks;
+    if (!Array.isArray(marks.known) || !Array.isArray(marks.unknown) ||
+        !marks.known.every(k => known.has(k) && !unknown.has(k)) ||
+        !marks.unknown.every(k => unknown.has(k) && !known.has(k))) throw new Error("手动标记与观看前画像不一致");
+    overrides = new Set([...marks.known, ...marks.unknown]);
+  }
   const threshold = thresholds[preset];
   const oldState = note => classify(note, known, unknown, profile.level * preferences[preset].factor);
   const modeled = [], coverage = { classified: 0, profileOverride: 0, missingWord: 0, otherKind: 0 };
@@ -94,7 +104,7 @@ function compare(video, labels, profile, preset, table, config = {}, tableSha256
     const truth = new Set(labels.cues[i].unknown.map(label => spanKey(labelSpan(cue.text, label))));
     for (const note of cue.notes) {
       const key = markKey(note);
-      if (known.has(key) || unknown.has(key)) coverage.profileOverride++;
+      if (overrides.has(key)) coverage.profileOverride++;
       else if (note.kind !== "word") coverage.otherKind++;
       else if (!Object.hasOwn(table.words, note.key)) coverage.missingWord++;
       else {
@@ -115,22 +125,28 @@ function compare(video, labels, profile, preset, table, config = {}, tableSha256
       samples.push({ logit, unknown: truth });
     }
     const display = evaluate(video, labels, profile, preset, note => decisions.get(note) ?? oldState(note));
+    onSamples?.(field, samples);
     models[field] = { theta, display, probability: probabilityMetrics(samples) };
   }
   return { baseline, coverage, params: { a, viewingDiscount, domainBias, threshold,
+    overrideSource: profile.marks == null ? "legacy effective lists" : "manual marks",
     abilitySource: calibrated ? "measured theta per table field" : config.theta === undefined ? "expected-vocabulary approximation" : "provided theta" }, models };
 }
 
-module.exports = { compare, abilityForLevel, probabilityMetrics };
+function readTable(file) {
+  const bytes = readFileSync(file);
+  const table = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
+  return { table, tableSha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+module.exports = { compare, readTable, abilityForLevel, probabilityMetrics };
 if (require.main === module) {
   try {
     const [video, labels, profile, table, preset, config] = process.argv.slice(2);
     if (process.argv.length < 7 || process.argv.length > 8)
       throw new Error("用法：node tools/compare_word_models.cjs VIDEO LABELS PROFILE TABLE more|normal|less [PARAMETERS]");
-    const bytes = readFileSync(table);
-    const difficulty = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
-    const fingerprint = createHash("sha256").update(bytes).digest("hex");
-    console.log(JSON.stringify(compare(load(video), load(labels), load(profile), preset, difficulty,
-      config ? load(config) : {}, fingerprint), null, 2));
+    const input = readTable(table);
+    console.log(JSON.stringify(compare(load(video), load(labels), load(profile), preset, input.table,
+      config ? load(config) : {}, { tableSha256: input.tableSha256 }), null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

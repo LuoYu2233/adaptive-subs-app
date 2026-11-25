@@ -115,6 +115,6 @@ const WordCat = (() => {
     }
   }
 
-  return { Session, correctProbability, information, expectedVocabulary, priorMean };
+  return { Session, Posterior, correctProbability, information, expectedVocabulary, priorMean };
 })();
 if (typeof module !== "undefined") module.exports = WordCat;

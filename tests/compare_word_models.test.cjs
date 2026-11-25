@@ -82,11 +82,57 @@ test("measured abilities are field-specific and can only be used with the table 
   const {video,labels,profile,table} = setup();
   const hash = "a".repeat(64);
   const config = {tableSha256:hash,thetaByField:{b_initial:0.5,b_frequency:1.5},discrimination:2};
-  const run = (options, expectedHash) => compare(video,labels,profile,"normal",table,options,expectedHash);
+  const run = (options, expectedHash) => compare(video,labels,profile,"normal",table,options,{tableSha256:expectedHash});
   const result = run(config,hash);
   assert.equal(result.models.b_initial.theta,0.5); assert.equal(result.models.b_frequency.theta,1.5);
   assert.equal(result.params.abilitySource,"measured theta per table field");
   assert.throws(()=>run(config,"b".repeat(64)),/指纹/);
   assert.throws(()=>run({...config,theta:1},hash),/同时提供/);
   assert.throws(()=>run({...config,thetaByField:{b_initial:1}},hash),/同时提供/);
+});
+
+test("cohort weights events and time, pools AUC before scoring, and rejects duplicate learner/video pairs", t => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const { cohort } = require("../tools/compare_word_cohort.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),"参与者-"));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const write = (name, data) => fs.writeFileSync(path.join(dir,name),JSON.stringify(data));
+  const {video,labels,profile,table} = setup();
+  write("长片",video); write("标注",labels); write("人",profile); write("参数",{theta:1}); write("表",table);
+  const first = {learner:"P1",domain:"科技",video:"长片",labels:"标注",profile:"人",parameters:"参数"};
+  const short = {video:{id:"new",duration:10},cues:[video.cues[0]]};
+  const answers = prepare(short); answers.cues[0].unknown = ["easy"];
+  write("短片",short); write("短标",answers);
+  const second = {...first,learner:"P2",domain:"新闻",video:"短片",labels:"短标"};
+  const run = sessions => {
+    write("清单",{version:1,sessions});
+    return cohort(path.join(dir,"清单"),path.join(dir,"表"),"normal");
+  };
+  const out = run([first,second]), model = out.overall.models.b_frequency;
+  assert.equal(out.participants,2); assert.equal(out.videos,2);
+  assert.equal(out.overall.durationSeconds,70);
+  assert.equal(model.display.missRate,1/4);
+  assert.equal(model.display.extraPerMinute,60/70);
+  assert.equal(model.probability.observations,4);
+  assert.equal(model.probability.auc,5/6); // a positive ties the single negative across participants
+  assert.equal(out.byLearner[1].models.b_frequency.probability.auc,null);
+  assert.equal(out.byDomain[0].models.b_frequency.display.missed,0);
+  assert.throws(()=>run([first,first]),/第 2 组.*重复/);
+  assert.throws(()=>run([{...first,profile:""}]),/第 1 组.*路径/);
+});
+
+test("explicit marks are protected while inferred word knowledge can be reconsidered by the model", () => {
+  const {video,labels,profile,table} = setup();
+  profile.known.push("hard");
+  profile.unknown.push("easy");
+  const old = compare(video,labels,profile,"normal",table,{theta:1});
+  profile.marks = {known:["manual"],unknown:["forced"]};
+  const observed = compare(video,labels,profile,"normal",table,{theta:1});
+  assert.deepEqual(old.baseline,observed.baseline);
+  assert.equal(old.coverage.profileOverride,4); assert.equal(observed.coverage.profileOverride,2);
+  assert.equal(observed.models.b_initial.display.hits,old.models.b_initial.display.hits+1);
+  assert.equal(observed.models.b_initial.display.extra,old.models.b_initial.display.extra-1);
+  assert.equal(observed.params.overrideSource,"manual marks");
+  profile.marks.known = ["absent"];
+  assert.throws(()=>compare(video,labels,profile,"normal",table,{theta:1}),/画像不一致/);
 });
