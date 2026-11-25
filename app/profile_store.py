@@ -19,13 +19,19 @@ Phrases and common words in an uncommon sense are never hidden by the library, o
 from __future__ import annotations
 
 import json
+import copy
+import datetime
+import hashlib
+import math
 import re
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
 import annotate as A
+from storage import atomic_write_bytes, write_json
 
 EXAM_FILE = Path(__file__).parent / "data" / "exam_words.json"     # built by tools/make_exam_words.py (ECDICT)
 TAGS = ["zk", "gk", "cet4", "cet6", "ky", "ielts", "toefl", "gre"]
@@ -38,6 +44,75 @@ EXAMS = {   # id: (name, min, max)
 IDENTITIES = {"high": "高中生", "undergrad": "大学生", "grad": "研究生", "work": "已工作", "other": "其他"}
 KEY_RE = re.compile(r"[a-z][a-z' .:-]{0,79}")
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000]
+MAX_MARKS = 10000
+BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown"}
+UNSPECIFIED_REVISION = object()
+
+
+def input_number(value, *, integer=False):
+    """Accept form numbers and numeric strings, without coercing booleans or fractions to integers."""
+    if type(value) not in (int, float, str):
+        raise ValueError("invalid number type")
+    number = float(value)
+    if not math.isfinite(number) or (integer and not number.is_integer()):
+        raise ValueError("invalid numeric value")
+    return int(number) if integer else number
+
+
+class ProfileConflict(ValueError):
+    pass
+
+
+class ProfileCorrupt(ValueError):
+    def __init__(self, raw):
+        super().__init__("学习档案损坏或格式不兼容，原文件未改动；请在英语画像页保留副本后重建，再恢复有效备份")
+        self.fingerprint = hashlib.sha256(raw).hexdigest()
+
+
+def validate_backup(backup: dict) -> dict:
+    """Validate the whole portable profile before any file or revision can change."""
+    if not isinstance(backup, dict) or backup.get("format") != "adaptive-subs-profile" or type(backup.get("version")) is not int or backup["version"] != 1:
+        raise ValueError("不是支持的英语画像备份文件")
+    p = backup.get("profile")
+    if not isinstance(p, dict) or set(p) - BACKUP_FIELDS:
+        raise ValueError("备份包含不支持的画像字段")
+    p = copy.deepcopy(p)
+    ident = p.get("identity")
+    if ident is not None and (not isinstance(ident, str) or ident not in IDENTITIES):
+        raise ValueError("备份中的身份无效")
+    field = p.get("field")
+    if field is not None and (not isinstance(field, str) or len(field) > 40):
+        raise ValueError("备份中的专业或行业无效")
+    exams = p.get("exams", {})
+    if not isinstance(exams, dict) or any(k not in EXAMS or type(v) not in (int, float) or not EXAMS[k][1] <= v <= EXAMS[k][2] or not math.isfinite(v) for k, v in exams.items()):
+        raise ValueError("备份中的考试成绩无效")
+    if "level" in p and (type(p["level"]) is not int or not 1 <= p["level"] <= 100000):
+        raise ValueError("备份中的词汇量无效")
+
+    def words(value, limit):
+        if not isinstance(value, list) or len(value) > limit or any(not isinstance(w, str) or not KEY_RE.fullmatch(w) for w in value):
+            raise ValueError("备份中的词条或词义标记无效")
+        if len(value) != len(set(value)):
+            raise ValueError("备份包含重复标记")
+        return set(value)
+
+    known = words(p.get("known", []), MAX_MARKS)
+    unknown = words(p.get("unknown", []), MAX_MARKS)
+    if known & unknown or len(known | unknown) > MAX_MARKS:
+        raise ValueError("备份的标记存在冲突或超过一万条")
+    t = p.get("test")
+    if t is not None:
+        if not isinstance(t, dict) or set(t) - {"est", "date", "bands", "known", "unknown"} or type(t.get("est")) is not int or not 1 <= t["est"] <= 100000:
+            raise ValueError("备份中的词汇测试无效")
+        try:
+            datetime.date.fromisoformat(t.get("date", ""))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("备份中的测试日期无效") from None
+        tk, tu = words(t.get("known", []), 500), words(t.get("unknown", []), 500)
+        bands = t.get("bands", [])
+        if tk & tu or not isinstance(bands, list) or len(bands) > 20 or any(type(b) not in (int, float) or not 0 <= b <= 1 or not math.isfinite(b) for b in bands):
+            raise ValueError("备份中的测试词表或分段结果无效")
+    return p
 
 
 # ------------------------------------------------------ exams -> lists ---
@@ -140,26 +215,65 @@ def base_known(tags: set[str], level: int) -> tuple[set[str], dict]:
 
 # ------------------------------------------------------------- storage ---
 
+class LibraryUnavailable(RuntimeError):
+    def __init__(self):
+        super().__init__("本地英语词库无法加载，请修复程序组件；现有学习记录仍保留")
+
+
+def library_known(tags, level):
+    try:
+        return base_known(tags, level)
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, RecursionError) as error:
+        raise LibraryUnavailable() from error
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self._cache = None        # (rev, payload) of the computed library
 
     def load(self) -> dict:
         try:
-            p = json.loads(self.path.read_text(encoding="utf-8"))
-            return p if isinstance(p, dict) else {}
-        except (OSError, ValueError):
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
             return {}
+        try:
+            p = json.loads(raw.decode("utf-8"), parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+            json.dumps(p, ensure_ascii=False).encode("utf-8")
+            if not isinstance(p, dict) or type(p.get("rev", 0)) is not int or not 0 <= p.get("rev", 0) < 9007199254740991:
+                raise ValueError("invalid profile revision")
+            validate_backup({"format": "adaptive-subs-profile", "version": 1,
+                             "profile": {k: v for k, v in p.items() if k in BACKUP_FIELDS}})
+            return p
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            raise ProfileCorrupt(raw) from None
+
+    def recover(self, fingerprint: str) -> str:
+        """Preserve exactly the damaged bytes before explicitly rebuilding an empty profile."""
+        with self.lock:
+            try:
+                self.load()
+            except ProfileCorrupt as error:
+                if error.fingerprint != fingerprint:
+                    raise ProfileConflict("档案已变化，请刷新页面后重新确认") from None
+            else:
+                raise ProfileConflict("当前档案没有损坏，请刷新页面")
+            raw = self.path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != fingerprint:
+                raise ProfileConflict("档案已变化，请刷新页面后重新确认")
+            name = f"profile-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.corrupt"
+            backup = self.path.parent / "recovery" / name
+            atomic_write_bytes(backup, raw)
+            # Exceed ordinary revision counters so open clients accept the recovered profile.
+            self._save({"rev": int(time.time() * 1000)})
+            return str(backup)
 
     def _save(self, p: dict):
         p["rev"] = int(p.get("rev", 0)) + 1
         p["updated"] = int(time.time())
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        write_json(self.path, p)
         self._cache = None
 
     # -- what clients get --
@@ -171,7 +285,7 @@ class Store:
                 return self._cache[1]
             tags, prior = mastered_lists(p)
             level = int(p.get("level") or prior)
-            base, stats = base_known(tags, level)
+            base, stats = library_known(tags, level)
             test = p.get("test") or {}
             t_known, t_unknown = set(test.get("known") or []), set(test.get("unknown") or [])
             m_known, m_unknown = set(p.get("known") or []), set(p.get("unknown") or [])
@@ -193,25 +307,60 @@ class Store:
             return out
 
     # -- updates --
-    def update(self, body: dict) -> str | None:
-        """Profile fields from the setup page. Returns an error message or None."""
+    def export_backup(self) -> dict:
         with self.lock:
             p = self.load()
+            return {"format": "adaptive-subs-profile", "version": 1, "exported_at": int(time.time()),
+                    "profile": {k: copy.deepcopy(v) for k, v in p.items() if k in BACKUP_FIELDS}}
+
+    def import_backup(self, backup: dict, expected_rev: int):
+        p = validate_backup(backup)
+        self._replace(p, expected_rev)
+
+    def clear_profile(self, expected_rev: int):
+        self._replace({}, expected_rev)
+
+    def _replace(self, p: dict, expected_rev: int):
+        with self.lock:
+            rev = self.load().get("rev", 0)
+            if type(expected_rev) is not int or expected_rev != rev:
+                raise ProfileConflict("画像已在其他页面更新，请刷新后重新确认")
+            p["rev"] = rev
+            self._save(p)
+
+    def update(self, body: dict, *, expected_rev=UNSPECIFIED_REVISION) -> str | None:
+        """Profile fields from the setup page. Returns an error message or None."""
+        if not isinstance(body, dict) or set(body) - {"identity", "field", "exams", "level", "test", "reset_marks"}:
+            return "画像包含不支持的字段"
+        if "reset_marks" in body and type(body["reset_marks"]) is not bool:
+            return "重置标记必须明确使用 true 或 false"
+        with self.lock:
+            p = self.load()
+            if expected_rev is not UNSPECIFIED_REVISION and (type(expected_rev) is not int or expected_rev != p.get("rev", 0)):
+                raise ProfileConflict("画像已在其他页面更新，请重新读取后核对再保存")
             if "identity" in body:
                 ident = body.get("identity")
+                if ident is not None and not isinstance(ident, str):
+                    return "身份选项不对"
                 if ident not in IDENTITIES and ident not in (None, ""):
                     return "身份选项不对"
                 p["identity"] = ident or None
             if "field" in body:
-                p["field"] = str(body.get("field") or "").strip()[:40] or None
+                if body["field"] is not None and not isinstance(body["field"], str):
+                    return "专业或行业应为文字"
+                p["field"] = (body["field"] or "").strip()[:40] or None
             if "exams" in body:
                 exams = {}
+                if not isinstance(body["exams"], dict):
+                    return "考试成绩格式不正确"
                 for k, v in (body.get("exams") or {}).items():
-                    if k not in EXAMS or v in (None, ""):
+                    if k not in EXAMS:
+                        return "考试成绩包含不支持的考试类型"
+                    if v in (None, ""):
                         continue
                     try:
-                        v = float(v)
-                    except (TypeError, ValueError):
+                        v = input_number(v)
+                    except (TypeError, ValueError, OverflowError):
                         return f"{EXAMS[k][0]}的分数不是数字"
                     lo, hi = EXAMS[k][1], EXAMS[k][2]
                     if not lo <= v <= hi:
@@ -220,38 +369,70 @@ class Store:
                 p["exams"] = exams
             if "level" in body:
                 try:
-                    p["level"] = min(LEVELS, key=lambda lv: abs(lv - int(body["level"])))
-                except (TypeError, ValueError):
-                    return "词汇量不是数字"
+                    level = input_number(body["level"], integer=True)
+                    if not 1 <= level <= 100000:
+                        raise ValueError
+                    p["level"] = min(LEVELS, key=lambda lv: abs(lv - level))
+                except (TypeError, ValueError, OverflowError):
+                    return "词汇量应为 1 到 100000 之间的整数"
             if ("exams" in body or "identity" in body) and "level" not in body and not p.get("test"):
                 p.pop("level", None)      # no test yet: the level follows the exams / identity
-            if isinstance(body.get("test"), dict):
+            if "test" in body:
+                if not isinstance(body["test"], dict) or set(body["test"]) - {"est", "known", "unknown", "bands"}:
+                    return "测试结果格式不正确"
                 t = body["test"]
                 try:
-                    est = int(t.get("est"))
-                except (TypeError, ValueError):
+                    est = input_number(t.get("est"), integer=True)
+                    if not 0 < est <= 100_000:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
                     return "测试结果不完整"
+                for name in ("known", "unknown"):
+                    xs = t.get(name, [])
+                    if not isinstance(xs, list) or len(xs) > 500 or any(
+                            not isinstance(x, str) or not KEY_RE.fullmatch(x.lower()) for x in xs):
+                        return "测试词表格式不正确"
                 clean = lambda xs: sorted({str(x).lower() for x in (xs or []) if KEY_RE.fullmatch(str(x).lower())})[:500]
-                bands = [round(float(b), 3) for b in (t.get("bands") or [])][:20]
+                if set(clean(t.get("known"))) & set(clean(t.get("unknown"))):
+                    return "测试中的认识与不认识词表存在冲突"
+                raw_bands = t.get("bands", [])
+                if not isinstance(raw_bands, list) or len(raw_bands) > 20:
+                    return "测试分段结果格式不正确"
+                try:
+                    bands = [round(input_number(b), 3) for b in raw_bands]
+                    if any(not math.isfinite(b) or not 0 <= b <= 1 for b in bands):
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    return "测试分段结果应在 0 到 1 之间"
                 p["test"] = {"est": est, "date": time.strftime("%Y-%m-%d"), "bands": bands,
                              "known": clean(t.get("known")), "unknown": clean(t.get("unknown"))}
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
+            if body.get("reset_marks") is True:
+                p["known"], p["unknown"] = [], []
             self._save(p)
             return None
 
-    def mark(self, key: str, state: str) -> str | None:
-        key = str(key or "").lower().strip()
+    def mark(self, key: str, state: str, *, expected_state=None) -> str | None:
+        if not isinstance(key, str):
+            return "bad mark"
+        key = key.lower().strip()
         if not KEY_RE.fullmatch(key) or state not in ("known", "unknown", "clear"):
             return "bad mark"
         with self.lock:
             p = self.load()
             known, unknown = set(p.get("known") or []), set(p.get("unknown") or [])
+            if expected_state is not None:
+                previous = "known" if key in known else "unknown" if key in unknown else "clear"
+                if expected_state != previous:
+                    raise ProfileConflict("这个词的标记已在其他页面更新，请核对后再操作")
             known.discard(key)
             unknown.discard(key)
             if state == "known":
                 known.add(key)
             elif state == "unknown":
                 unknown.add(key)
+            if len(known | unknown) > MAX_MARKS:
+                return "标记已达一万条，请先导出备份并整理已有标记"
             p["known"], p["unknown"] = sorted(known), sorted(unknown)
             self._save(p)
             return None

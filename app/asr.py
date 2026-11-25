@@ -16,6 +16,9 @@ from __future__ import annotations
 import base64
 import bisect
 import io
+import hashlib
+import json
+import math
 import os
 import re
 import shutil
@@ -28,6 +31,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import numpy as np
+import annotate as A
+from storage import write_json
+from usage_accounting import audio_seconds, audio_totals
 
 SR = 16000
 FRAME = 0.03                 # analysis frame, seconds
@@ -54,6 +60,7 @@ CHUNK = 1 << 20              # bytes per range request: stays inside the CDN's f
 FIRST_CHUNKS = 4             # the first ranges are smaller (256 KB ≈ 20 s of audio each): sound sooner
 DL_WORKERS = 8               # parallel connections
 CHUNK_TRIES = 4
+MAX_AUDIO_BYTES = 384 * 1024 * 1024  # compressed audio; prevents unbounded allocation from a bad header
 
 
 def audio_formats(url: str) -> tuple[dict, list[dict]]:
@@ -78,6 +85,8 @@ class ChunkedDownload:
     queue), so a decoder can read the file while it downloads."""
 
     def __init__(self, url: str, headers: dict, workers: int = DL_WORKERS, chunk: int = CHUNK):
+        if workers < 1 or chunk < 4:
+            raise ValueError("Invalid audio download concurrency or chunk size")
         self.url, self.headers, self.chunk = url, dict(headers or {}), chunk
         self.cond = threading.Condition()
         self.error: str | None = None
@@ -105,6 +114,7 @@ class ChunkedDownload:
     def _open(self, start: int | None = None, end: int | None = None, timeout: float = 15):
         import urllib.request
         h = dict(self.headers)
+        h["Accept-Encoding"] = "identity"  # Range offsets describe the audio file bytes.
         if start is not None:
             h["Range"] = f"bytes={start}-{end}"
         return urllib.request.urlopen(urllib.request.Request(self.url, headers=h), timeout=timeout)
@@ -112,14 +122,25 @@ class ChunkedDownload:
     def _probe(self) -> int:
         with self._open(0, 0) as r:
             cr = r.headers.get("Content-Range", "")
-            m = re.search(r"/(\d+)$", cr)
-            if r.status == 206 and m:
+            m = re.fullmatch(r"bytes 0-0/(\d+)", cr)
+            if r.status == 206:
+                if not m:
+                    raise AudioError("音频服务器返回了无效的分段范围")
                 self.ranged = True
-                return int(m.group(1))
-            self.ranged = False
-            size = int(r.headers.get("Content-Length") or 0)
-        if not size:
-            raise AudioError("音频服务器没有告诉文件大小")
+                size_text = m.group(1)
+            elif r.status == 200:
+                self.ranged = False
+                size_text = r.headers.get("Content-Length") or "0"
+            else:
+                raise AudioError("音频服务器未返回可读取的文件")
+        try:
+            size = int(size_text)
+        except (ValueError, TypeError):
+            raise AudioError("音频服务器没有提供有效文件大小") from None
+        if size <= 0:
+            raise AudioError("音频服务器没有提供有效文件大小")
+        if size > MAX_AUDIO_BYTES:
+            raise AudioError(f"音频文件超过 {MAX_AUDIO_BYTES // 1024 // 1024} MB，请选择较短或较小的视频")
         return size
 
     def _next(self) -> int | None:
@@ -141,7 +162,9 @@ class ChunkedDownload:
             for attempt in range(CHUNK_TRIES):
                 try:
                     with self._open(s, e) as r:
-                        data = r.read()
+                        if r.status != 206 or r.headers.get("Content-Range") != f"bytes {s}-{e}/{self.size}":
+                            raise AudioError("音频服务器返回的分段范围与请求不符")
+                        data = r.read(e - s + 2)  # At most the requested bytes plus one overflow sentinel.
                     if len(data) != e - s + 1:
                         raise IOError(f"short read {len(data)}/{e - s + 1}")
                     with self.cond:
@@ -166,18 +189,23 @@ class ChunkedDownload:
             with self._open(timeout=30) as r:
                 pos = 0
                 while not self.cancelled:
-                    data = r.read(65536)
+                    data = r.read(min(65536, self.size - pos + 1))
                     if not data:
+                        if pos != self.size:
+                            raise AudioError(f"音频下载提前结束（已收到 {pos}/{self.size} 字节），请重试")
+                        with self.cond:
+                            self.done[-1] = True  # Final chunk is complete only after a verified EOF.
+                            self.cond.notify_all()
                         break
+                    if pos + len(data) > self.size:
+                        raise AudioError("音频文件大小在下载期间变化，请重试")
                     with self.cond:
                         self.buf[pos:pos + len(data)] = data
                         pos += len(data)
                         self.received = pos
                         for i, st in enumerate(self.starts):
-                            if self._end(i) <= pos:
+                            if self._end(i) <= pos and self._end(i) < self.size:
                                 self.done[i] = True
-                        if pos >= self.size:
-                            self.done = [True] * len(self.done)
                         self.cond.notify_all()
         except Exception as ex:
             with self.cond:
@@ -189,6 +217,8 @@ class ChunkedDownload:
 
     def read_at(self, pos: int, n: int) -> bytes:
         """Up to n bytes from pos; waits for them to arrive. b"" only at the end of the file."""
+        if pos < 0:
+            raise ValueError("Audio read position cannot be negative")
         if pos >= self.size or n <= 0:
             return b""
         i = bisect.bisect_right(self.starts, pos) - 1
@@ -241,7 +271,12 @@ class _Reader(io.RawIOBase):
         return len(data)
 
     def seek(self, off, whence=io.SEEK_SET):
-        self.pos = off if whence == io.SEEK_SET else self.pos + off if whence == io.SEEK_CUR else self.dl.size + off
+        if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
+            raise ValueError("Invalid audio seek mode")
+        target = off if whence == io.SEEK_SET else self.pos + off if whence == io.SEEK_CUR else self.dl.size + off
+        if target < 0:
+            raise ValueError("Audio seek position cannot be negative")
+        self.pos = target
         return self.pos
 
     def tell(self):
@@ -416,13 +451,15 @@ def segment(pcm: np.ndarray) -> list[tuple[float, float]]:
     smooth = np.convolve(db, np.ones(w) / w, mode="same")
 
     def split(a: int, b: int):                       # long line: cut at its quietest moment
-        if (b - a) * FRAME <= MAX_LINE:
-            pieces.append((a, b))
-            return
-        lo, hi = a + int(1.5 / FRAME), b - int(1.5 / FRAME)
-        k = lo + int(np.argmin(smooth[lo:hi]))
-        split(a, k)
-        split(k, b)
+        pending = [(a, b)]
+        while pending:
+            lo_piece, hi_piece = pending.pop()
+            if (hi_piece - lo_piece) * FRAME <= MAX_LINE:
+                pieces.append((lo_piece, hi_piece))
+                continue
+            lo, hi = lo_piece + int(1.5 / FRAME), hi_piece - int(1.5 / FRAME)
+            k = lo + int(np.argmin(smooth[lo:hi]))
+            pending.extend(((k, hi_piece), (lo_piece, k)))
 
     for a, b in utts:
         split(a, b)
@@ -457,7 +494,14 @@ class StreamSegmenter:
     MAX_WINDOW = 240.0
 
     def __init__(self, duration: float = 0.0):
-        self.pcm = np.zeros(int((duration + 10) * SR) if duration else SR * 600, dtype=np.int16)
+        try:
+            duration = float(duration)
+            if not math.isfinite(duration) or not 0 <= duration <= MAX_HOURS * 3600:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError):
+            raise AudioError(f"音频时长无效或超过 {MAX_HOURS} 小时") from None
+        self.max_samples = int(MAX_HOURS * 3600 * SR)
+        self.pcm = np.zeros(min(self.max_samples, int((duration + 10) * SR) if duration else SR * 600), dtype=np.int16)
         self.n = 0                  # samples filled
         self.commit = 0.0           # seconds: everything before this is cut into released pieces
         self.next_cut = self.FIRST
@@ -469,8 +513,10 @@ class StreamSegmenter:
 
     def add(self, block: np.ndarray) -> list[tuple[float, float]]:
         with self.lock:
+            if self.n + len(block) > self.max_samples:
+                raise AudioError(f"实际音频超过 {MAX_HOURS} 小时，已停止识别")
             if self.n + len(block) > len(self.pcm):          # longer than expected: grow
-                bigger = np.zeros(max(len(self.pcm) * 2, self.n + len(block)), dtype=np.int16)
+                bigger = np.zeros(min(self.max_samples, max(len(self.pcm) * 2, self.n + len(block))), dtype=np.int16)
                 bigger[:self.n] = self.pcm[:self.n]
                 self.pcm = bigger
             self.pcm[self.n:self.n + len(block)] = block
@@ -514,24 +560,36 @@ class RateLimiter:
         self.next = 0.0
         self.lock = threading.Lock()
 
-    def wait(self):
+    def wait(self, cancelled=None):
         with self.lock:
             now = time.monotonic()
             t = max(now, self.next)
             self.next = t + self.interval
-        if t > now:
-            time.sleep(t - now)
+        while t > time.monotonic():
+            if cancelled and cancelled():
+                raise A.GenerationCancelled("任务已取消")
+            time.sleep(min(0.05, max(0, t - time.monotonic())))
 
 
 _client = None
+_client_config = None
 _client_lock = threading.Lock()
+_usage_lock = threading.Lock()
+_cache_locks = [threading.Lock() for _ in range(64)]
+ASR_SLOTS = threading.BoundedSemaphore(4)
 LIMIT = RateLimiter(float(os.environ.get("ASR_RPM", 90)))   # MiMo: 100 RPM per account
 
 
 def reset_client():
-    global _client
+    global _client, _client_config
     with _client_lock:
         _client = None
+        _client_config = None
+
+
+def usage_snapshot(usage: dict) -> dict:
+    with _usage_lock:
+        return audio_totals(usage) if usage else {}
 
 
 def configured() -> bool:
@@ -539,13 +597,13 @@ def configured() -> bool:
 
 
 def client():
-    global _client
+    global _client, _client_config
     with _client_lock:
-        if _client is None:
+        config = (os.environ["MIMO_API_KEY"], os.environ.get("MIMO_BASE_URL") or "https://api.xiaomimimo.com/v1")
+        if _client is None or config != _client_config:
             from openai import OpenAI
-            _client = OpenAI(api_key=os.environ["MIMO_API_KEY"],
-                             base_url=os.environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-                             max_retries=3, timeout=40)
+            _client = OpenAI(api_key=config[0], base_url=config[1], max_retries=0, timeout=40)
+            _client_config = config
         return _client
 
 
@@ -559,26 +617,89 @@ def wav_bytes(samples: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+MAX_TRANSCRIPT_CHARS = 20000
+MAX_TRANSCRIPT_CACHE_BYTES = 128 * 1024
+TRANSCRIPT_CACHE_VERSION = 2  # Only confirmed complete, UTF-8 encodable responses.
+
+
+def valid_transcript(text):
+    if not isinstance(text, str) or len(text) > MAX_TRANSCRIPT_CHARS or (text and not text.strip()):
+        return False
+    try:
+        text.encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def cached_transcript(path):
+    """None means unusable cache; an empty string is a valid saved silence result."""
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_TRANSCRIPT_CACHE_BYTES + 1)
+        if len(raw) > MAX_TRANSCRIPT_CACHE_BYTES:
+            return None
+        value = json.loads(raw.decode("utf-8"))
+        if (isinstance(value, dict) and set(value) == {"version", "text"}
+                and type(value["version"]) is int and value["version"] == TRANSCRIPT_CACHE_VERSION and valid_transcript(value["text"])):
+            return value["text"]
+    except (OSError, ValueError, RecursionError):
+        pass
+    return None
+
+
 def transcribe(pcm: np.ndarray, s: float, e: float, usage: dict | None = None,
-               pad_before: float = 0.15, pad_after: float = 0.15) -> str:
+               pad_before: float = 0.15, pad_after: float = 0.15, *, client_instance=None,
+               model=None, language=None, cancelled=None) -> str:
     """Recognise one piece. A little padding keeps edge words from being clipped, but only into a
     real pause: where a long line was cut mid-speech, padding would make both halves hear the word."""
     a, b = max(0, int((s - pad_before) * SR)), min(len(pcm), int((e + pad_after) * SR))
-    data = base64.b64encode(wav_bytes(pcm[a:b])).decode("ascii")
-    LIMIT.wait()
-    r = client().chat.completions.create(
-        model=os.environ.get("ASR_MODEL", "mimo-v2.5-asr"),
-        messages=[{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": f"data:audio/wav;base64,{data}"}}]}],
-        extra_body={"asr_options": {"language": os.environ.get("ASR_LANGUAGE", "auto")}},
-    )
-    if usage is not None and r.usage is not None:
-        u = r.usage.model_dump()
-        usage["asr_calls"] = usage.get("asr_calls", 0) + 1
-        usage["asr_seconds"] = usage.get("asr_seconds", 0) + (u.get("seconds") or round(b / SR - a / SR))
-    text = re.sub(r"\s+", " ", r.choices[0].message.content or "").strip()
-    if r.choices[0].finish_reason == "content_filter" or is_refusal(text):
-        raise ContentRefused(text)
-    return fix_i(strip_tags(text))
+    if b <= a:
+        raise AudioError("音频片段为空")
+    model = model or os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+    language = language or os.environ.get("ASR_LANGUAGE", "auto")
+    service = client_instance or client()
+    raw = wav_bytes(pcm[a:b])
+    digest = hashlib.sha256(json.dumps([TRANSCRIPT_CACHE_VERSION, model, language, str(getattr(service, "base_url", ""))]).encode() + raw).hexdigest()
+    cache_file = A.CACHE_DIR / "asr" / f"{digest}.json"
+    with A.request_slot(_cache_locks[int(digest[:2], 16) % len(_cache_locks)], cancelled):
+        cached = cached_transcript(cache_file)
+        if cached is not None:
+            return cached
+        with A.request_slot(ASR_SLOTS, cancelled):
+            LIMIT.wait(cancelled)
+            with A.request_slot(A.MODEL_SLOTS, cancelled):
+                data = base64.b64encode(raw).decode("ascii")
+                r = service.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": f"data:audio/wav;base64,{data}"}}]}],
+                    extra_body={"asr_options": {"language": language}},
+                )
+        if usage is not None:
+            seconds, estimated = audio_seconds(r, (b - a) / SR)
+            with _usage_lock:
+                previous = audio_totals(usage)
+                usage.update(asr_calls=previous["asr_calls"] + 1,
+                             asr_seconds=previous["asr_seconds"] + seconds,
+                             asr_estimated_calls=previous["asr_estimated_calls"] + int(estimated))
+        choices = getattr(r, "choices", None)
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise AudioError("语音识别返回的结果格式不正确，请重试")
+        choice = choices[0]
+        text = getattr(getattr(choice, "message", None), "content", None)
+        reason = getattr(choice, "finish_reason", None)
+        if reason == "content_filter" or is_refusal(text):
+            raise ContentRefused(text)
+        if reason != "stop":
+            raise AudioError("语音识别结果未确认完整结束，请重试")
+        if not valid_transcript(text) or not text:
+            raise AudioError("语音识别没有返回有效文本，请重试")
+        text = fix_i(strip_tags(re.sub(r"\s+", " ", text).strip()))
+        try:
+            write_json(cache_file, {"version": TRANSCRIPT_CACHE_VERSION, "text": text})
+        except OSError:
+            print("语音识别缓存保存失败，本次结果仍可使用")
+        return text
 
 
 # Labels the recognisers put out instead of words when there is no speech: MiMo writes its language tag
@@ -600,12 +721,12 @@ class ContentRefused(Exception):
 
 
 # MiMo's refusal sentence, and close variants (a backstop in case finish_reason is not set)
-REFUSAL_RE = re.compile(r"^\s*the request was rejected because it was considered high risk\.?\s*$|"
-                        r"considered (as )?high[- ]risk|request (was|has been) (rejected|refused|blocked)", re.I)
+REFUSAL_RE = re.compile(r"\s*(?:the )?request (?:was|has been) (?:rejected|refused|blocked)"
+                        r" because it was considered (?:as )?high[- ]risk[.!]?\s*", re.I)
 
 
 def is_refusal(text: str) -> bool:
-    return bool(text) and bool(REFUSAL_RE.search(text))
+    return isinstance(text, str) and bool(REFUSAL_RE.fullmatch(text))
 
 
 def fix_i(text: str) -> str:

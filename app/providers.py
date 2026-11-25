@@ -8,6 +8,7 @@ DeepSeek bills peak-hour rates shown here and half off-peak.
 from __future__ import annotations
 
 import os
+import hashlib
 import threading
 
 PROVIDERS = {
@@ -44,22 +45,36 @@ def current() -> str:
 
 def model(provider: str | None = None) -> str:
     p = provider or current()
-    return os.environ.get("OPENAI_MODEL") if p == "openai" and os.environ.get("OPENAI_MODEL") else PROVIDERS[p]["model"]
+    return os.environ.get(f"{p.upper()}_MODEL") or PROVIDERS[p]["model"]
 
 
 def has_key(provider: str | None = None) -> bool:
     return bool(os.environ.get(PROVIDERS[provider or current()]["key"]))
 
 
+def default_base_url(provider):
+    return PROVIDERS[provider]["base_url"] or "https://api.openai.com/v1"
+
+
+def base_url(provider):
+    return os.environ.get(f"{provider.upper()}_BASE_URL") or default_base_url(provider)
+
+
+def endpoint_id(url):
+    # Store only a fingerprint: custom URLs can contain account or authentication information.
+    return hashlib.sha256(str(url).rstrip("/").encode()).hexdigest()
+
+
 def client(provider: str | None = None):
     p = provider or current()
     key = os.environ.get(PROVIDERS[p]["key"], "")
+    base = base_url(p)
     with _lock:
-        c = _clients.get((p, key))
+        c = _clients.get((p, key, base))
         if c is None:
             from openai import OpenAI
-            base = os.environ.get(f"{p.upper()}_BASE_URL") or PROVIDERS[p]["base_url"]
-            c = _clients[(p, key)] = OpenAI(api_key=key, base_url=base, max_retries=3, timeout=120)
+            # Retries are owned by annotate.call_json, so the two layers cannot multiply requests.
+            c = _clients[(p, key, base)] = OpenAI(api_key=key, base_url=base, max_retries=0, timeout=60)
         return c
 
 
@@ -88,7 +103,12 @@ def chat_options(model_name: str, effort: str | None) -> dict:
     return {}
 
 
-def cost_usd(provider: str, usage_total: dict) -> float:
+def cost_usd(provider: str, usage_total: dict, model_name: str | None = None, endpoint=None) -> float | None:
+    from usage_accounting import token_totals
+    usage_total = token_totals(usage_total)
+    if (usage_total["incomplete_calls"] or (model_name or model(provider)) != PROVIDERS[provider]["model"]
+            or (endpoint or endpoint_id(base_url(provider))) != endpoint_id(default_base_url(provider))):
+        return None  # Default-model prices must not be applied to a different model.
     pin, pcache, pout = PROVIDERS[provider]["price"]
     cached = usage_total.get("cached_input", 0)
     return ((usage_total.get("input", 0) - cached) * pin + cached * pcache + usage_total.get("output", 0) * pout) / 1e6

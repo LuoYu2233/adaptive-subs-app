@@ -1,9 +1,12 @@
-spacy
-wordfreq
-openai
-srt
-yt-dlp
-numpy
-av
-pywebview
-faster-whisper
+# Direct dependencies verified together on Python 3.12 (2026-11-24).
+# Windows packaging still requires validation on Windows before release.
+spacy==3.8.18
+wordfreq==3.1.1
+openai==3.58.0
+srt==3.5.3
+yt-dlp==2026.11.23
+numpy==2.5.5
+av==19.0.2
+pywebview==6.2.1
+faster-whisper==1.2.1
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

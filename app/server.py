@@ -19,15 +19,19 @@ The OpenAI key stays on this machine (.env); the page never sees it.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
+import math
 import os
 import re
 import shutil
 import socket
+import sqlite3
 import sys
 import threading
 import time
 import traceback
+import uuid
 
 import numpy as np
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +44,14 @@ import asr as ASR
 import local_asr as LOCAL_ASR
 import profile_store as PS
 import providers as P
+import video_catalog
+from instance_lock import InstanceLock, read_instance
+from runtime_readiness import Readiness, ComponentError
+from desktop_actions import open_folder, FolderOpenError
+from storage import atomic_write, write_json
+from task_store import TaskStore, TaskStoreCorrupt, TaskStoreConflict
+from version import VERSION
+from result_validation import valid_result
 
 # Running from the source folder: everything lives here. As a packaged program (PyInstaller):
 # the page files are inside the bundle (read-only) and settings / results go to %LOCALAPPDATA%.
@@ -53,11 +65,40 @@ HOME = Path(os.environ["ASUBS_HOME"]) if os.environ.get("ASUBS_HOME") else (
 DATA = HOME / "data"
 CONFIG = HOME / ("config.env" if FROZEN else ".env")                  # API keys + chosen model
 PROFILE = PS.Store(HOME / "profile.json")                              # learner profile + known words
+TASK_STORE = TaskStore(HOME / "tasks.sqlite3")
 SEG = 12               # lines per batch: small batches -> first annotations sooner
 WORKERS = 12           # parallel LLM requests per video (spare capacity for jumps)
 URGENT_WINDOW = 90     # seconds ahead of the playhead handled with low effort (speed first)
 ASR_PER_JOB = 4        # speech-recognition requests in flight per video (the API also has a per-minute cap)
+CHECKPOINT_INTERVAL = 1.0  # seconds between background snapshots; explicit boundaries always flush
 NLP_LOCK = threading.Lock()   # spaCy is not guaranteed thread-safe
+CONFIG_LOCK = threading.RLock()
+SETTINGS_REV = uuid.uuid4().hex  # Opaque edit token, also changes when this process restarts.
+INSTANCE_ID = uuid.uuid4().hex
+INSTANCE_GUARD = None
+
+
+def check_local_components():
+    try:
+        with NLP_LOCK:
+            A._nlp = None  # A repaired on-disk model must not reuse a failed in-memory pipeline.
+            model = A.nlp()
+            doc = model("The banks approved the loans.")
+            words = [token for token in doc if token.is_alpha]
+            if model.lang != "en" or not words or any(not token.lemma_ for token in words):
+                raise ValueError("English lemmatization is unavailable")
+    except Exception as error:
+        raise ComponentError("英语语言模型") from error
+    try:
+        A.load_ranks.cache_clear()
+        ranks = A.load_ranks()
+        if not ranks or not all(type(rank) is int and rank >= 1 for rank in ranks.values()):
+            raise ValueError("English word ranks are unavailable")
+    except Exception as error:
+        raise ComponentError("英语词频表") from error
+
+
+RUNTIME = Readiness(check_local_components)
 
 
 
@@ -66,7 +107,21 @@ def client():
 
 
 def key_missing_msg() -> str:
-    return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：在插件里点「打开设置」填写"
+    return f"还没有填写 {P.PROVIDERS[P.current()]['name']} 的 API key：请打开「程序设置」填写"
+
+
+def saved_result(path: Path, expected_id: str | None = None) -> dict | None:
+    """Only complete, well-formed results may short-circuit a generation request."""
+    try:
+        if path.stat().st_size > 32 * 1024 * 1024:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (valid_result(data) and (expected_id is None or data["video"]["id"] == expected_id)
+                and not (data.get("source") == "asr" and any(ASR.is_refusal(c["text"]) for c in data["cues"]))):
+            return data
+    except (OSError, ValueError, RecursionError):
+        pass
+    return None
 
 
 # ------------------------------------------------------------ subtitles ---
@@ -117,6 +172,28 @@ class FetchFailed(Exception):
     """YouTube did not answer in time (network trouble), as opposed to the video having no subtitles."""
 
 
+class VideoAccessError(Exception):
+    def __init__(self, code: str, message: str, retry: bool):
+        super().__init__(message)
+        self.code, self.retry = code, retry
+
+
+def video_access_error(error):
+    """Turn platform restrictions into useful messages, without exposing yt-dlp CLI instructions."""
+    text = str(error).lower()
+    if "not a bot" in text:
+        return VideoAccessError("platform_verification", "YouTube 要求验证访问身份，当前环境暂时无法匿名获取字幕。请稍后重试，或选择其他公开英语视频。", True)
+    if re.search(r"http(?: error| status)?[ :]+429\b", text) or "too many requests" in text:
+        return VideoAccessError("platform_rate_limit", "YouTube 暂时限制了请求频率。请稍后再试，连续重试可能延长限制。", True)
+    if any(term in text for term in ("private video", "members-only", "join this channel", "confirm your age", "age-restricted", "login required")):
+        return VideoAccessError("platform_login", "这个视频需要登录、年龄验证或会员权限，当前程序无法匿名获取字幕。请选择可公开访问的视频。", False)
+    if any(term in text for term in ("video unavailable", "has been removed", "not available in your country")):
+        return VideoAccessError("video_unavailable", "这个视频已不可用或在当前地区无法访问，请选择其他视频。", False)
+    if re.search(r"http(?: error| status)?[ :]+403\b", text):
+        return VideoAccessError("platform_denied", "YouTube 拒绝了当前字幕请求（HTTP 403）。请稍后重试，或选择其他公开英语视频。", True)
+    return None
+
+
 # A subtitle download normally takes well under a second, but YouTube's caption server now and then
 # accepts the connection and never answers. Give up on such a request quickly and ask again.
 NET_TIMEOUT = 10       # seconds without data before a request is abandoned
@@ -126,7 +203,7 @@ NET_ERR_RE = re.compile(r"timed? ?out|timeout|connection|connect|reset|refused|s
 
 
 def short_err(e: Exception) -> str:
-    msg = str(e).splitlines()[0] if str(e) else e.__class__.__name__
+    msg = applog.redact(str(e)).splitlines()[0] if str(e) else e.__class__.__name__
     return re.sub(r"^(ERROR: )?(\[\w+\] )?([\w-]{11}: )?", "", msg)[:160]
 
 
@@ -142,6 +219,9 @@ def with_retries(what: str, fn, on_retry=None, tries: int = NET_TRIES):
         try:
             return fn()
         except Exception as e:      # yt-dlp wraps timeouts in TransportError / DownloadError
+            access = video_access_error(e)
+            if access:
+                raise access from e  # Restrictions and rate limits must not trigger rapid automatic retries.
             if not is_network_error(e):
                 raise
             last = e
@@ -223,11 +303,65 @@ class Job:
         self.finished = 0
         self.ann: dict[int, list] = {}
         self.zh: dict[int, str] = {}
-        self.first: dict[tuple, dict] = {}    # (key, kind) -> first note, for consistent glosses
+        self.failed_tasks: list[dict] = []
         self.state = "running"
         self.started = time.time()
         self.first_ann_at = None
         self.usage: dict = {}     # tokens per step (annotate / translate)
+        self.provider = P.current()
+        self.model = P.model(self.provider)
+        self.endpoint_id = P.endpoint_id(P.base_url(self.provider))
+        self._client = None
+        self._client_lock = threading.Lock()
+        self.checkpoint_lock = threading.Lock()
+        self.last_checkpoint_attempt = None
+        self.persistence_error = False
+        self.restored = None
+        self.thread = None
+        self.feeder = None
+        self.asr_client = None
+        self.asr_model = os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+        self.asr_language = os.environ.get("ASR_LANGUAGE", "auto")
+        self.asr_endpoint_id = P.endpoint_id(P.base_url("mimo"))
+
+    def client(self):
+        with self._client_lock:
+            if self._client is None:
+                self._client = P.client(self.provider)
+            return self._client
+
+    def checkpoint(self, *, force=True):
+        with self.checkpoint_lock:
+            now = time.monotonic()
+            if not force and self.last_checkpoint_attempt is not None and now - self.last_checkpoint_attempt < CHECKPOINT_INTERVAL:
+                return not self.persistence_error
+            self.last_checkpoint_attempt = now
+            with self.cond:
+                payload = {
+                    "version": 1, "title": getattr(self, "title", "") or (self.sub or {}).get("title", self.vid),
+                    "sub": self.sub, "asr_url": self.asr_url,
+                    "destination": "extension" if self.save_dir == EXT_DATA else "player",
+                    "provider": self.provider, "model": self.model, "started": self.started,
+                    "endpoint_id": self.endpoint_id, "asr_endpoint_id": self.asr_endpoint_id,
+                    "asr_model": self.asr_model, "asr_language": self.asr_language,
+                    "asr_cache_version": ASR.TRANSCRIPT_CACHE_VERSION,
+                    "asr_usage": ASR.usage_snapshot(self.asr_usage), "asr_stats": dict(self.asr_stats),
+                    "done": self.finished, "total": self.total,
+                    "cues": [dict(c) for c in getattr(self, "cues", [])],
+                    "duration": getattr(self, "duration", 0),
+                    "ann": {str(k): [dict(n) for n in v] for k, v in self.ann.items()},
+                    "zh": dict(self.zh), "usage": A.usage_snapshot(self.usage),
+                    "failed_tasks": list(self.failed_tasks),
+                }
+                state = self.state
+            try:
+                TASK_STORE.save(self.vid, state, payload)
+                self.persistence_error = False
+                return True
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                self.persistence_error = True
+                print(f"[{self.vid}] 进度保存失败：{short_err(exc)}")
+                return False
 
     def emit(self, typ: str, data: dict):
         with self.cond:
@@ -245,18 +379,76 @@ JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 YT_SUBS: dict[str, dict] = {}     # YouTube subtitles fetched for the extension, waiting for "生成注释"
 YT_SUBS_LOCK = threading.Lock()
+MAX_ACTIVE_JOBS = 3
+
+
+class JobBusy(RuntimeError):
+    pass
 
 
 def get_job(vid: str, start: bool, sub: dict | None = None, save_dir: Path | None = None,
             asr_url: str | None = None) -> Job | None:
-    with JOBS_LOCK:
+    with JOBS_LOCK, CONFIG_LOCK:
+        now = time.time()
+        for key, old in list(JOBS.items()):
+            if old.state in ("done", "partial", "error", "cancelled") and now - old.started > 1800:
+                if old.thread is None or not old.thread.is_alive():
+                    del JOBS[key]
         job = JOBS.get(vid)
-        if job and job.state == "error" and start:
+        if job and job.state == "cancelling" and start:
+            raise JobBusy("正在停止此前的请求，请稍后再试")
+        if job and job.state in ("error", "partial", "cancelled") and start:
+            if job.thread is not None and job.thread.is_alive():
+                raise JobBusy("正在保存此前的进度，请稍后再试")
             job = None                         # retry a failed video
         if job is None and start:
-            job = JOBS[vid] = Job(vid, sub, save_dir, asr_url)
-            threading.Thread(target=run_job, args=(job,), daemon=True).start()
+            readiness = RUNTIME.snapshot()
+            if readiness["state"] == "unchecked":
+                readiness = RUNTIME.start()
+            if readiness["state"] != "ready":
+                raise JobBusy("本地英语处理组件尚未就绪，请打开控制台查看检查进度或修复提示。")
+            if sum(j.state in ("running", "cancelling") for j in JOBS.values()) >= MAX_ACTIVE_JOBS:
+                raise JobBusy("同时最多处理 3 个视频，请先完成或取消一个任务")
+            saved = TASK_STORE.load(vid)
+            old = saved["payload"] if saved and saved["state"] != "done" else None
+            if old:
+                sub = sub or old.get("sub")
+                asr_url = asr_url or old.get("asr_url")
+                if save_dir is None:
+                    save_dir = EXT_DATA if old.get("destination") == "extension" else DATA
+            job = Job(vid, sub, save_dir, asr_url)
+            job.restored = old
+            if old and old.get("provider") == job.provider and old.get("model") == job.model and old.get("endpoint_id") == job.endpoint_id:
+                job.usage = old.get("usage", {})
+            if old and old.get("asr_model") == job.asr_model and old.get("asr_language") == job.asr_language and old.get("asr_endpoint_id") == job.asr_endpoint_id:
+                job.asr_usage = old.get("asr_usage", {})
+            # Freeze the client while creating the job so settings changes cannot
+            # replace the key/provider for a job already in progress.
+            job.client()
+            if asr_url:
+                job.asr_client = ASR.client()
+            if old is None:
+                if not job.checkpoint():
+                    raise JobBusy("任务进度无法保存，请先检查控制台的任务记录或磁盘状态")
+            else:
+                # Preserve the entire old checkpoint until the worker merges it into the new job.
+                TASK_STORE.save(vid, "running", old)
+            job.thread = threading.Thread(target=run_job, args=(job,), daemon=True)
+            JOBS[vid] = job
+            job.thread.start()
         return job
+
+
+def cancel_job(job: Job):
+    with job.cond:
+        if job.state != "running":
+            return
+        job.aborted = True
+        job.state = "cancelling"
+        job.tasks.clear()
+        job.cond.notify_all()
+    job.emit("status", {"msg": "正在停止；已发出的请求可能仍会完成，结果会保留。"})
+    job.checkpoint()
 
 
 def task_key(job: Job, t: dict):
@@ -271,12 +463,32 @@ def task_key(job: Job, t: dict):
 
 def run_job(job: Job):
     try:
+        _run_job(job)
+    finally:
+        if job.feeder is not None:
+            job.feeder.join()
+        with job.cond:
+            cancelled = job.state == "cancelling"
+            if cancelled:
+                job.state = "cancelled"
+        if cancelled:
+            job.emit("fail", {"msg": "任务已取消，已生成的内容已保留。", "cancelled": True, "retry": True})
+        job.checkpoint()
+
+
+def _run_job(job: Job):
+    try:
         sub = job.sub
+        old = job.restored
+        if not job.asr_url and old and old.get("cues") and sub is None:
+            sub = {"title": old["title"], "duration": old.get("duration", 0), "cues": old["cues"], "source": "restored"}
         if job.asr_url:
             sub = start_asr(job)        # returns once the first lines are cut; the rest keep coming
         elif sub is None:
             job.emit("status", {"msg": "正在获取英文字幕…"})
             sub = fetch_subtitles(job.vid, on_retry=lambda msg: job.emit("status", {"msg": msg}))
+        if job.aborted:
+            return
         job.title, job.duration, job.cues = sub["title"], sub["duration"], sub["cues"]
         if job.asr_url:
             # speech recognition: lines (and their tasks) are added by the audio thread as the audio is cut
@@ -285,15 +497,34 @@ def run_job(job: Job):
                 job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                                   "source": sub["source"], "cues": list(job.cues)})
         else:
+            sub = {**sub, "cues": clean_ext_cues(sub["cues"])}
+            job.cues = sub["cues"]
+            job.sub = sub
             job.emit("meta", {"video": {"id": job.vid, "title": job.title, "duration": job.duration},
                               "source": sub["source"], "cues": job.cues})
             job.texts = [c["text"] for c in job.cues]
+            if old and old.get("provider") == job.provider and old.get("model") == job.model and old.get("endpoint_id") == job.endpoint_id:
+                old_texts = [c["text"] for c in old.get("cues", [])]
+                same = {i for i in range(min(len(old_texts), len(job.texts)))
+                        if A.context_item(old_texts, i) == A.context_item(job.texts, i)}
+                job.ann = {int(k): v for k, v in old.get("ann", {}).items() if int(k) in same}
+                job.zh = {int(k): v for k, v in old.get("zh", {}).items() if int(k) in same}
+                job.usage = old.get("usage", {})
+                if job.ann:
+                    job.emit("ann", {str(k): v for k, v in job.ann.items()})
+                if job.zh:
+                    job.emit("zh", {str(k): v for k, v in job.zh.items()})
             with NLP_LOCK:
                 job.cands = A.find_candidates(job.texts)
             segs = [list(range(i, min(i + SEG, len(job.texts)))) for i in range(0, len(job.texts), SEG)]
             with job.cond:
-                job.tasks = [{"kind": "ann", "ids": s} for s in segs] + [{"kind": "tr", "ids": s, "retry": 0} for s in segs]
+                if job.aborted:
+                    return
+                job.tasks = ([{"kind": "ann", "ids": [i for i in s if i not in job.ann]} for s in segs] +
+                             [{"kind": "tr", "ids": [i for i in s if i not in job.zh and job.texts[i]], "retry": 0} for s in segs])
+                job.tasks = [t for t in job.tasks if t["ids"]]
                 job.total = len(job.tasks)
+        job.checkpoint()
         print(f"[{job.vid}] {len(job.cues)} lines ({sub['source']} subtitles) in {time.time() - job.started:.1f}s: {job.title}")
         job.emit("progress", {"done": 0, "total": job.progress_total()})
 
@@ -305,20 +536,33 @@ def run_job(job: Job):
         if job.aborted:
             return
         finalize(job)
+    except VideoAccessError as e:
+        if job.state == "cancelling":
+            return
+        job.state = "error"
+        job.emit("fail", {"msg": str(e), "retry": e.retry, "code": e.code})
     except ASR.AudioError as e:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] {e}")
-        job.emit("fail", {"msg": str(e)})
+        job.emit("fail", {"msg": applog.redact(str(e))})
     except NoSubtitles:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] no English subtitles")
         job.emit("fail", {"msg": "这个视频没有英文字幕（人工字幕和自动字幕都没有），暂时没法处理。", "nosubs": True})
     except FetchFailed as e:
+        if job.state == "cancelling":
+            return
         job.state = "error"
         print(f"[{job.vid}] 连不上 YouTube（{e}一直超时），网页上可以点「重试」")
         job.emit("fail", {"msg": f"连不上 YouTube：{e}超时，已自动重试 {NET_TRIES} 次。可能是网络或代理不稳定，请点「重试」。",
                           "retry": True})
     except Exception as e:
+        if job.state == "cancelling":
+            return
         if e.__class__.__name__ == "DownloadError":      # video private / removed / region-locked ...
             job.state = "error"
             print(f"[{job.vid}] YouTube refused: {short_err(e)}")
@@ -326,7 +570,7 @@ def run_job(job: Job):
             return
         job.state = "error"
         traceback.print_exc()
-        msg = str(e).splitlines()[0][:200] if str(e) else e.__class__.__name__
+        msg = short_err(e)
         job.emit("fail", {"msg": f"处理失败：{msg}"})
 
 
@@ -372,15 +616,19 @@ def worker(job: Job):
                 run_annotation(job, t["ids"], "low" if urgent else "medium")
             else:
                 run_translation(job, t)
-        except Exception:
-            traceback.print_exc()
+        except Exception as exc:
+            if not job.aborted:
+                traceback.print_exc()
+                with job.cond:
+                    job.failed_tasks.append({"kind": t["kind"], "ids": list(t["ids"]), "error": short_err(exc)})
         with job.cond:
             if t["kind"] == "asr":
                 job.asr_inflight -= 1
                 job.cond.notify_all()
             job.finished += 1
             done, total = job.finished, job.progress_total()
-        job.emit("progress", {"done": done, "total": total})
+        job.emit("progress", {"done": done, "total": total, "failed": len(job.failed_tasks)})
+        job.checkpoint(force=False)
 
 
 # ---------------------------------------------------- speech recognition ---
@@ -390,13 +638,14 @@ def start_asr(job: Job) -> dict:
     while it arrives (asr.stream_audio + StreamSegmenter). Lines and their tasks are added to the job
     as they are cut, so recognition starts within seconds even for a two-hour video.
     Returns once the first lines exist (or the audio is done / failed)."""
-    if not ASR.configured():
+    if job.asr_client is None and not ASR.configured():
         raise ASR.AudioError("本地服务器没有配置 MIMO_API_KEY（.env），无法语音识别")
     job.cues, job.texts, job.cands, job.has_text, job.pieces = [], [], [], [], []
     job.feeding = True
     job.audio_error = None
     job.emit("status", {"msg": "正在获取音频地址…"})
-    threading.Thread(target=feed_audio, args=(job,), daemon=True).start()
+    job.feeder = threading.Thread(target=feed_audio, args=(job,), daemon=True)
+    job.feeder.start()
     with job.cond:
         while job.feeding and not job.cues and not job.audio_error and not job.aborted:
             job.cond.wait(timeout=1.0)
@@ -459,6 +708,8 @@ def feed_audio(job: Job):
 def add_asr_lines(job: Job, pieces: list, final: bool = False):
     """Append newly cut lines: their recognition tasks, full annotation batches, and a "more" event."""
     with job.cond:
+        if job.aborted:
+            return
         start = len(job.cues)
         for s, e in pieces:
             if job.cues and job.cues[-1]["e"] > s:            # a line ends where the next begins
@@ -490,10 +741,12 @@ def run_asr(job: Job, i: int):
     text, err = "", None
     before, after = ASR.pads(job.pieces, i)
     try:
-        text = ASR.transcribe(job.seg.view(), *job.pieces[i], job.asr_usage, before, after)
-    except ASR.ContentRefused:
-        # MiMo's content filter refused the line (swearing, "kill", "naked" ...): recognise it on this computer
-        text = local_fallback(job.seg.view(), job.pieces[i], before, after, f"{job.vid} #{i}")
+        try:
+            text = ASR.transcribe(job.seg.view(), *job.pieces[i], job.asr_usage, before, after,
+                                  client_instance=job.asr_client, model=job.asr_model, language=job.asr_language,
+                                  cancelled=lambda: job.aborted)
+        except ASR.ContentRefused:
+            text = local_fallback(job.seg.view(), job.pieces[i], before, after, f"{job.vid} #{i}")
     except Exception as e:
         err = short_err(e)
     chinese = bool(text) and ASR.mostly_chinese(text)
@@ -529,10 +782,9 @@ def run_asr(job: Job, i: int):
 
 
 def local_fallback(pcm, piece, before: float, after: float, label: str) -> str:
-    """A line the cloud recogniser refused -> local Whisper (or "" if it isn't available / fails)."""
+    """Use local Whisper when the cloud recogniser declines a line; failures remain explicit."""
     if not LOCAL_ASR.available():
-        print(f"[{label}] refused by the speech-recognition filter; no local model, line left empty")
-        return ""
+        raise ASR.AudioError("云端未识别这一句，且未安装本地语音模型；该句需要重试")
     try:
         t = time.time()
         text = LOCAL_ASR.transcribe(pcm, *piece, before, after)
@@ -540,7 +792,7 @@ def local_fallback(pcm, piece, before: float, after: float, label: str) -> str:
         return ASR.fix_i(ASR.strip_tags(text))
     except Exception as e:
         print(f"[{label}] local speech model failed: {short_err(e)}")
-        return ""
+        raise ASR.AudioError("本地语音识别失败，该句需要重试") from e
 
 
 REPAIRING: set = set()
@@ -616,7 +868,7 @@ def repair_saved(vid: str, path: Path):
             run_translation(job, {"ids": ids, "retry": 1})
         for i in bad:
             cues[i].update(text=job.texts[i], notes=job.ann.get(i, []), zh=job.zh.get(i, ""))
-        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        write_json(path, data)
         print(f"[{vid}] repaired: {sum(1 for i in bad if job.texts[i])} of {len(bad)} lines recognised again")
     except Exception as e:
         print(f"[{vid}] repair failed: {short_err(e)}")
@@ -647,7 +899,8 @@ def fix_asr_punctuation(job: Job, ids: list[int]):
                "lines": [{"id": i, "text": job.texts[i]} for i in ids],
                "next": job.texts[ids[-1] + 1] if ids[-1] + 1 < len(job.texts) else ""}
     try:
-        data = A.call_json(client(), P.model(), "none", PUNCT_PROMPT, payload, usage=job.usage)
+        data = A.call_json(job.client(), job.model, "none", PUNCT_PROMPT, payload, usage=job.usage,
+                           cancelled=lambda: job.aborted)
     except Exception as e:
         print(f"[{job.vid}] punctuation pass failed: {short_err(e)}")
         return
@@ -655,7 +908,7 @@ def fix_asr_punctuation(job: Job, ids: list[int]):
     for it in data.get("items", []):
         try:
             i, text = int(it["id"]), A.clean(str(it["text"]))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if i in ids and text != job.texts[i] and words(text) == words(job.texts[i]):
             changed[i] = text
@@ -688,18 +941,20 @@ def run_annotation(job: Job, ids: list[int], effort: str):
         it = A.context_item(job.texts, i)
         it["candidates"] = [{"word": c["word"], "rank": c["rank"]} for c in job.cands[i]]
         payload.append(it)
-    data = A.call_json(client(), P.model(), effort, A.ANNOTATE_PROMPT, payload, usage=job.usage)
+    data = A.call_json(job.client(), job.model, effort, A.ANNOTATE_PROMPT, payload, usage=job.usage,
+                       cancelled=lambda: job.aborted)
     by_id = {}
     for it in data.get("items", []):
         try:
             by_id[int(it["id"])] = it.get("notes", [])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             pass
     # second chance for rare words the model skipped (misspellings, everyday words it underrated)
     placed = {i: A.place_notes(job.texts[i], by_id.get(i, [])) for i in ids}
     missing = A.missing_candidates(job.texts, ids, job.cands, placed)
     if missing:
-        extra = A.gloss_missing(client(), P.model(), "low", job.texts, missing, usage=job.usage)
+        extra = A.gloss_missing(job.client(), job.model, "low", job.texts, missing, usage=job.usage,
+                                cancelled=lambda: job.aborted)
         for i, ns in extra.items():
             placed[i] = A.place_notes(job.texts[i], by_id.get(i, []) + ns)
     chunk = [{"i": i, "text": job.texts[i], "notes": placed[i]} for i in ids]
@@ -708,12 +963,6 @@ def run_annotation(job: Job, ids: list[int], effort: str):
     A.blend_word_levels(chunk)
     with job.cond:
         for c in chunk:
-            for n in c["notes"]:
-                k = (n["key"], n["kind"])
-                if k in job.first:
-                    n["zh"], n["lv"] = job.first[k]["zh"], job.first[k]["lv"]
-                else:
-                    job.first[k] = n
             job.ann[c["i"]] = c["notes"]
         if job.first_ann_at is None:
             job.first_ann_at = time.time()
@@ -728,51 +977,79 @@ def run_translation(job: Job, t: dict):
     t = {**t, "ids": [i for i in t["ids"] if job.texts[i]]}
     if not t["ids"]:
         return
-    data = A.call_json(client(), P.model(), "low", A.TRANSLATE_PROMPT, [A.context_item(job.texts, i) for i in t["ids"]],
-                         usage=job.usage)
+    data = A.call_json(job.client(), job.model, "low", A.TRANSLATE_PROMPT, [A.context_item(job.texts, i) for i in t["ids"]],
+                         usage=job.usage, cancelled=lambda: job.aborted)
     got = {}
     for it in data.get("items", []):
         try:
             i = int(it["id"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if i in t["ids"] and str(it.get("zh", "")).strip() and words(str(it.get("src", ""))) == words(job.texts[i]):
             got[i] = re.sub(r"^\s*>>\s*", "", str(it["zh"]).strip())     # some models copy the ">>" speaker mark
     with job.cond:
         job.zh.update(got)
         failed = [i for i in t["ids"] if i not in got]
-        if failed and t["retry"] == 0:          # misaligned lines: retry once in tiny batches
+        if failed and t["retry"] == 0 and not job.aborted:          # misaligned lines: retry once in tiny batches
             for k in range(0, len(failed), 4):
                 job.tasks.append({"kind": "tr", "ids": failed[k:k + 4], "retry": 1})
                 job.total += 1
     if got:
         job.emit("zh", {str(i): z for i, z in got.items()})
+    if failed and t["retry"]:
+        raise A.ModelResponseError(f"{len(failed)} 行翻译未成功对齐，请重试")
 
 
 def finalize(job: Job):
+    missing_ann = [i for i, c in enumerate(job.cues) if c["text"] and i not in job.ann]
+    missing_zh = [i for i, c in enumerate(job.cues) if c["text"] and i not in job.zh]
+    incomplete = bool(missing_ann or missing_zh or job.failed_tasks or getattr(job, "audio_error", None)
+                      or job.asr_stats["errors"])
     cues = [{"s": c["s"], "e": c["e"], "text": c["text"], "zh": job.zh.get(i, ""), "notes": job.ann.get(i, [])}
             for i, c in enumerate(job.cues) if c["text"]]
     A.unify_glosses(cues)   # final pass in video order
-    data = {"video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
-            "generated": time.strftime("%Y-%m-%d"), "model": P.model(),
+    data = {"schema_version": 2, "status": "partial" if incomplete else "complete",
+            "missing": {"annotations": missing_ann, "translations": missing_zh},
+            "video": {"id": job.vid, "title": job.title, "duration": job.duration or (cues[-1]["e"] if cues else 0)},
+            "generated": time.strftime("%Y-%m-%d"), "model": job.model, "provider": job.provider,
             "usage": {**job.usage, "total": A.usage_total(job.usage), **({"asr": job.asr_usage} if job.asr_usage else {})},
+            "asr_model": job.asr_model if job.asr_url else None,
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
-    (job.save_dir / f"{job.vid}.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    if job.save_dir == DATA:      # YouTube videos appear in the player's list; extension videos don't
-        A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
-    job.state = "done"
+    write_json(job.save_dir / f"{job.vid}.json", data)
+    catalog_warning = ""
+    if job.save_dir == DATA and not incomplete:
+        try:
+            A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
+        except (OSError, ValueError):
+            catalog_warning = "字幕已保存，视频目录暂时无法写入；本地播放器仍可从字幕文件读取视频。"
+            print(f"[{job.vid}] {catalog_warning}")
+    with job.cond:
+        if job.aborted:
+            return
+        job.state = "partial" if incomplete else "done"
     secs = time.time() - job.started
     tot = A.usage_total(job.usage)
+    cost = P.cost_usd(job.provider, tot, job.model, job.endpoint_id)
+    cost_label = f"≈ ${cost:.3f}（估算）" if cost is not None else "费用以服务商账单为准"
+    if tot["incomplete_calls"]:
+        cost_label = "用量记录不完整，费用以服务商账单为准"
     print(f"[{job.vid}] done in {secs:.0f}s, {sum(len(c['notes']) for c in cues)} annotations, "
           f"tokens: input {tot['input']:,} (cached {tot['cached_input']:,}), output {tot['output']:,} "
-          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {P.model()} ≈ ${P.cost_usd(P.current(), tot):.3f}")
+          f"(of which reasoning {tot['reasoning']:,}), {tot['calls']} API calls, {job.model} {cost_label}")
     if job.asr_usage:
-        sec = job.asr_usage.get("asr_seconds", 0)
-        print(f"[{job.vid}] speech recognition: {job.asr_usage.get('asr_calls', 0)} requests, "
-              f"{sec / 60:.1f} min billed (about ¥{ASR.cost_cny(sec):.2f})")
+        audio_usage = ASR.usage_snapshot(job.asr_usage)
+        sec = audio_usage["asr_seconds"]
+        estimated = audio_usage["asr_estimated_calls"] > 0
+        price_label = f" (about ¥{ASR.cost_cny(sec):.2f})" if not estimated and job.asr_model == "mimo-v2.5-asr" and job.asr_endpoint_id == P.endpoint_id(P.default_base_url("mimo")) else ""
+        print(f"[{job.vid}] speech recognition: {audio_usage['asr_calls']} requests, "
+              f"{sec / 60:.1f} min recorded{price_label}" + ("（含本地音频时长估算，费用以账单为准）" if estimated else ""))
     job.seg = None                 # free the audio samples
-    job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"]})
+    if incomplete:
+        job.emit("fail", {"msg": "部分字幕处理失败；已生成的内容已保存，重试会复用成功的缓存。",
+                          "retry": True, "partial": True, "missing": data["missing"]})
+        return
+    job.emit("done", {"file": f"{job.vid}.json", "seconds": round(secs), "usage": data["usage"], "warning": catalog_warning})
 
 
 # ------------------------------------------------- browser extension API ---
@@ -783,20 +1060,32 @@ EXT_DATA = DATA / "extension"      # results for extension videos (not listed in
 EXT_HEADER = "X-Adaptive-Subs"
 EXT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,80}")
 MAX_CUES = 6000
+MAX_CUE_CHARS = 2000
+MAX_SUBTITLE_CHARS = 1_000_000
+
+
+class SubtitleLimit(ValueError):
+    pass
 
 
 def clean_ext_cues(raw) -> list[dict]:
+    if isinstance(raw, list) and len(raw) > MAX_CUES:
+        raise SubtitleLimit(f"字幕超过 {MAX_CUES} 行，请选择较短的视频")
     cues = []
+    total_chars = 0
     for c in raw if isinstance(raw, list) else []:
         try:
             s, e = float(c["s"]), float(c["e"])
             text = A.clean(str(c["text"]))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if text and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):   # [Music]
-            cues.append({"s": round(s, 3), "e": round(max(e, s + 0.3), 3), "text": text[:400]})
+        if text and math.isfinite(s) and math.isfinite(e) and e >= s >= 0 and not re.fullmatch(r"[\[(（【][^\])）】]*[\])）】]", text):
+            total_chars += len(text)
+            if len(text) > MAX_CUE_CHARS or total_chars > MAX_SUBTITLE_CHARS:
+                raise SubtitleLimit("字幕文本过长，请使用已正确分句的字幕或选择较短的视频")
+            cues.append({"s": round(s, 3), "e": round(max(e, s + 0.3), 3), "text": text})
     cues.sort(key=lambda c: c["s"])
-    return cues[:MAX_CUES]
+    return cues
 
 
 # ----------------------------------------------------------------- http ---
@@ -814,27 +1103,26 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
 
-EXPLAIN_PROMPT = """A Chinese learner of English clicked a word in a video subtitle.
-Input: {"word": "...", "sentence": "..."} (the subtitle line the word is in).
-Give the word's meaning IN THIS SENTENCE, for a Chinese learner.
-Reply with JSON only:
-{"zh": "<the meaning here, Simplified Chinese, 2-8 characters, one sense only, no alternatives>",
- "pos": "<part of speech here: n. / v. / adj. / adv. / prep. / ...>",
- "base": "<dictionary form, e.g. 'ran' -> 'run'>",
- "note": "<optional, at most 15 Chinese characters: only if the word is part of a phrase or idiom here
-           whose meaning differs, e.g. 'give up' -> 放弃; otherwise empty>"}
-If the word is a name or not English, give its usual Chinese rendering (or a transliteration) in "zh"."""
+EXPLAIN_PROMPT = A.EXPLAIN_PROMPT
 
 STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html",
-                "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html"}
+                "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html",
+                "/privacy": "privacy.html", "/privacy.html": "privacy.html"}
 LAST_EXT = 0.0            # when the browser extension last talked to us (shown in the control panel)
 STARTED = time.time()
 LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?")
-CONFIG_KEYS = ("ANNOTATION_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY")
+CONFIG_KEYS = ("ANNOTATION_PROVIDER", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "MIMO_API_KEY",
+               "OPENAI_MODEL", "DEEPSEEK_MODEL", "MIMO_MODEL", "ASR_MODEL")
 
 
 def save_config(updates: dict):
+    with CONFIG_LOCK:
+        _save_config(updates)
+
+
+def _save_config(updates: dict):
     """Write settings into the config file, keeping every other line as it is."""
+    global SETTINGS_REV
     lines = CONFIG.read_text(encoding="utf-8").splitlines() if CONFIG.exists() else []
     out, seen = [], set()
     for ln in lines:
@@ -847,7 +1135,7 @@ def save_config(updates: dict):
             out.append(ln)
     out += [f"{k}={v}" for k, v in updates.items() if k not in seen and v]
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text("\n".join(out) + "\n", encoding="utf-8")
+    atomic_write(CONFIG, "\n".join(out) + "\n")
     for k, v in updates.items():
         if v:
             os.environ[k] = v
@@ -855,11 +1143,24 @@ def save_config(updates: dict):
             os.environ.pop(k, None)
     P.reset_clients()
     ASR.reset_client()
+    SETTINGS_REV = uuid.uuid4().hex
 
 
 def key_hint(name: str) -> str:
     k = os.environ.get(name, "")
     return f"已填写（…{k[-4:]}）" if k else ""
+
+
+def settings_payload():
+    """Return one consistent, non-secret view of saved configuration."""
+    with CONFIG_LOCK:
+        return {
+            "provider": P.current(), "config_file": str(CONFIG), "rev": SETTINGS_REV,
+            "providers": [{"id": k, "name": v["name"], "model": P.model(k), "default_model": v["model"],
+                           "note": v["note"], "price": v["price"], "key_hint": key_hint(v["key"])}
+                          for k, v in P.PROVIDERS.items()],
+            "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
+        }
 
 
 def extension_dir() -> Path:
@@ -869,32 +1170,51 @@ def extension_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "extension"
 
 
+@functools.lru_cache(maxsize=256)
+def recent_metadata(path: Path, stamp: tuple):
+    """Cache only validated metadata; the file identity and change times invalidate it."""
+    data = saved_result(path, path.stem)
+    if data is None:
+        return None
+    return {"id": path.stem, "title": (data["video"]["title"] or path.stem)[:2000]}
+
+
 def recent_videos(limit: int = 8) -> list:
-    """Videos finished before (Bilibili extension + player), newest first. Only the head of each file is read."""
-    out = []
+    """Completed video files only, newest first; unchanged files are not reparsed on every poll."""
+    if limit <= 0:
+        return []
+    candidates = []
     for folder, kind in ((EXT_DATA, "bili"), (DATA, "youtube")):
         if not folder.exists():
             continue
         for f in folder.glob("*.json"):
-            if f.name == "index.json":
+            if f.name == "index.json" or not EXT_ID_RE.fullmatch(f.stem):
                 continue
             try:
-                head = f.open(encoding="utf-8").read(600)
-                m = re.search(r'"title":"((?:[^"\\]|\\.)*)"', head) or re.search(r'"title":\s*"((?:[^"\\]|\\.)*)"', head)
-                if not m or '"video"' not in head:      # not a processed video (word lists, test bank ...)
+                f.resolve().relative_to(folder.resolve())
+                if not f.is_file():
                     continue
-                title = json.loads(f'"{m.group(1)}"')
+                stat = f.stat()
+                if stat.st_size > 32 * 1024 * 1024:
+                    continue
+                stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                candidates.append((stat.st_mtime, str(f), f, stamp, kind))
             except (OSError, ValueError):
                 continue
-            vid = f.stem
-            bv = re.match(r"bili_(BV[0-9A-Za-z]{10})", vid)
-            yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
-            url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
-                   f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or kind == "youtube" else "")
-            out.append({"id": vid, "title": title, "url": url, "asr": vid.endswith("_asr"),
-                        "mtime": f.stat().st_mtime})
-    out.sort(key=lambda x: -x["mtime"])
-    return out[:limit]
+    out = []
+    for modified, _, path, stamp, kind in sorted(candidates, key=lambda row: (-row[0], row[1])):
+        metadata = recent_metadata(path, stamp)
+        if metadata is None:
+            continue
+        vid = metadata["id"]
+        bv = re.match(r"bili_(BV[0-9A-Za-z]{10})(?:_|$)", vid)
+        yt = re.fullmatch(r"yt_([A-Za-z0-9_-]{11})_asr", vid)
+        url = (f"https://www.bilibili.com/video/{bv.group(1)}" if bv else
+               f"https://www.youtube.com/watch?v={yt.group(1) if yt else vid}" if yt or (kind == "youtube" and YT_ID_RE.fullmatch(vid)) else "")
+        out.append({**metadata, "url": url, "asr": vid.endswith("_asr"), "mtime": modified})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def app_status(port: int) -> dict:
@@ -906,17 +1226,45 @@ def app_status(port: int) -> dict:
             continue
         running.append({"id": j.vid, "title": getattr(j, "title", "") or j.vid, "state": j.state,
                         "done": j.finished, "total": j.progress_total() if j.state == "running" else j.total,
-                        "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started})
+                        "asr": bool(j.asr_url), "feeding": j.feeding, "started": j.started,
+                        "persistence_error": j.persistence_error})
+    live_ids = {j.vid for j in jobs}
+    task_issue = None
+    try:
+        saved_tasks = TASK_STORE.recent(summary=True)
+    except TaskStoreCorrupt as error:
+        saved_tasks = []
+        task_issue = {"error": str(error), "recoverable": bool(error.fingerprint), "fingerprint": error.fingerprint}
+    except (OSError, sqlite3.Error):
+        saved_tasks = []
+        task_issue = {"error": "任务记录暂时无法读取，请检查磁盘空间、文件权限或其他占用程序", "recoverable": False}
+    for saved in saved_tasks:
+        if saved["id"] in live_ids or saved["state"] == "done":
+            continue
+        p = saved["payload"]
+        running.append({"id": saved["id"], "title": p.get("title") or saved["id"],
+                        "state": "interrupted" if saved["state"] in ("running", "cancelling") else saved["state"],
+                        "done": p.get("done", 0), "total": p.get("total", 0), "asr": bool(p.get("asr_url")),
+                        "cache_update": bool(p.get("asr_url") and p.get("asr_cache_version") != ASR.TRANSCRIPT_CACHE_VERSION),
+                        "feeding": False, "started": p.get("started", saved["updated"]), "persistence_error": False})
     running.sort(key=lambda x: -x["started"])
-    prof = PROFILE.payload()
+    profile_error, profile_recoverable = None, False
+    try:
+        prof = PROFILE.payload()
+    except (PS.ProfileCorrupt, PS.LibraryUnavailable, OSError) as error:
+        profile_error = str(error) if isinstance(error, (PS.ProfileCorrupt, PS.LibraryUnavailable)) else "学习档案无法读取，请检查文件权限"
+        profile_recoverable = isinstance(error, PS.ProfileCorrupt)
+        prof = {"setup": False, "level": 3000, "test": None, "lists": [],
+                "stats": {"known": 0, "marked_known": 0, "marked_unknown": 0}}
     return {
-        "port": port, "uptime": int(time.time() - STARTED),
+        "version": VERSION, "port": port, "uptime": int(time.time() - STARTED), "runtime": RUNTIME.snapshot(),
         "provider": P.PROVIDERS[P.current()]["name"], "model": P.model(), "key": P.has_key(),
         "asr": ASR.configured(), "local_asr": LOCAL_ASR.available(),
         "ext_seen": int(time.time() - LAST_EXT) if LAST_EXT else None,
         "profile": {k: prof[k] for k in ("setup", "level", "test", "lists")} | {"known": prof["stats"]["known"],
-                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"]},
-        "jobs": running, "recent": recent_videos(),
+                    "marked": prof["stats"]["marked_known"] + prof["stats"]["marked_unknown"], "error": profile_error,
+                    "recoverable": profile_recoverable},
+        "jobs": running, "recent": recent_videos(), "task_issue": task_issue,
         "log": applog.tail(60), "home": str(HOME), "extension_dir": str(extension_dir()),
     }
 
@@ -937,6 +1285,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def serve_static(self, path: str):
         """Only the page files are served: never the project folder (which holds .env with the keys)."""
+        if path == "/data/index.json":
+            bundled = video_catalog.read(BUNDLE_DATA) if (BUNDLE_DATA / "index.json").is_file() else []
+            local = video_catalog.read(DATA)
+            rows = {row["id"]: row for row in bundled + local}
+            return self.send_json(list(rows.values()))
         if path in STATIC_PAGES:
             f, base = WEB / STATIC_PAGES[path], WEB
         elif path.startswith("/assets/"):
@@ -949,9 +1302,16 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             f = f.resolve()
             f.relative_to(base.resolve())
+            if path.startswith("/data/") and base == DATA:
+                result = saved_result(f, Path(path).stem)
+                if result is None:
+                    return self.send_json({"error": "已保存字幕不完整、已损坏或与视频不匹配，可以重新处理", "retry": True}, 409)
+                return self.send_json(result)
             body = f.read_bytes()
         except (OSError, ValueError):
             return self.send_error(404)
+        if STATIC_PAGES.get(path) == "player.html":
+            body = body.replace(b'data-player-mode="auto"', b'data-player-mode="local"', 1)
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
@@ -964,6 +1324,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")   # always serve the latest player files
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        # YouTube requires a referring origin for embedded playback (player error 153).
+        player_page = STATIC_PAGES.get(urlparse(self.path).path) == "player.html"
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin" if player_page else "no-referrer")
         super().end_headers()
 
     def send_json(self, obj, code=200):
@@ -975,15 +1340,36 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        try:
+            return self.get_request()
+        except PS.LibraryUnavailable as error:
+            return self.send_json({"error": str(error), "component": True, "recoverable": False}, 503)
+        except PS.ProfileCorrupt as error:
+            return self.profile_problem(error)
+        except TaskStoreCorrupt as error:
+            return self.send_json({"error": str(error), "task_store": True}, 503)
+        except (OSError, sqlite3.Error):
+            return self.send_json({"error": "本地数据无法读取，请检查文件权限和磁盘状态"}, 503)
+
+    def profile_problem(self, error):
+        return self.send_json({"error": str(error), "recoverable": True, "fingerprint": error.fingerprint}, 503)
+
+    def get_request(self):
         if not self.local_only():
             return
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/api/health":
             self.note_extension()
-            return self.send_json({"ok": True, "ext": 2, "asr": ASR.configured(), "provider": P.current(),
+            return self.send_json({"ok": True, "app": "adaptive-subs", "version": VERSION, "instance": INSTANCE_ID,
+                                   "instance_locked": INSTANCE_GUARD is not None, "runtime": RUNTIME.snapshot(),
+                                   "ext": 2, "asr": ASR.configured(), "provider": P.current(),
                                    "provider_name": P.PROVIDERS[P.current()]["name"], "model": P.model(),
                                    "key": P.has_key(), "setup": "/setup", "profile": "/profile"})
+        if u.path.startswith("/api/") and not self.ext_ok():
+            return
+        if u.path == "/api/profile/export":
+            return self.send_json(PROFILE.export_backup())
         if u.path == "/api/profile":
             if not self.ext_ok():
                 return
@@ -1002,31 +1388,11 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/settings":
             if not self.ext_ok():
                 return
-            return self.send_json({
-                "provider": P.current(), "config_file": str(CONFIG),
-                "providers": [{"id": k, "name": v["name"], "model": v["model"], "note": v["note"], "price": v["price"],
-                               "key_hint": key_hint(v["key"])} for k, v in P.PROVIDERS.items()],
-                "asr": {"model": os.environ.get("ASR_MODEL", "mimo-v2.5-asr"), "key_hint": key_hint("MIMO_API_KEY")},
-            })
+            return self.send_json(settings_payload())
         if u.path == "/api/open":
-            vid = parse_video_id(q.get("url", ""))
-            if not vid:
-                return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
-            if (DATA / f"{vid}.json").exists():
-                return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
-            if not P.has_key():
-                return self.send_json({"error": key_missing_msg()}, 400)
-            get_job(vid, start=True)
-            return self.send_json({"id": vid, "cached": False})
+            return self.send_json({"error": "请更新播放器：开始处理需要 POST 请求"}, 405)
         if u.path == "/api/focus":
-            job = get_job(q.get("v", ""), start=False)
-            if job:
-                try:
-                    with job.cond:
-                        job.focus = max(0.0, float(q.get("t", 0)))
-                except ValueError:
-                    pass
-            return self.send_json({"ok": True})
+            return self.send_json({"error": "use POST"}, 405)
         if u.path == "/api/stream":
             job = get_job(q.get("v", ""), start=False)
             if not job:
@@ -1044,7 +1410,7 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 since = 0
             with job.cond:
-                if since >= len(job.events) and job.state == "running":
+                if since >= len(job.events) and job.state in ("running", "cancelling"):
                     job.cond.wait(timeout=8)
                 events, nxt = job.events[since:], len(job.events)
             return self.send_json({"events": events, "next": nxt})
@@ -1056,7 +1422,12 @@ class Handler(SimpleHTTPRequestHandler):
             LAST_EXT = time.time()
 
     def ext_ok(self) -> bool:
-        if self.headers.get(EXT_HEADER) == "1":
+        origin = self.headers.get("Origin")
+        # A fixed custom header prevents ordinary cross-site requests, but it is
+        # not an identity token. Explicit foreign/null origins are rejected too.
+        valid_origin = not origin or origin == f"http://{self.headers.get('Host')}" or bool(
+            re.fullmatch(r"chrome-extension://[a-p]{32}", origin))
+        if self.headers.get(EXT_HEADER) == "1" and valid_origin:
             self.note_extension()
             return True
         self.send_json({"error": "forbidden"}, 403)
@@ -1065,47 +1436,173 @@ class Handler(SimpleHTTPRequestHandler):
     def read_body(self):
         try:
             n = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(min(n, 8_000_000)).decode("utf-8"))
+            if not 0 < n <= 8_000_000 or self.headers.get_content_type() != "application/json":
+                return None
+            body = json.loads(self.rfile.read(n).decode("utf-8"),
+                              parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+            json.dumps(body, ensure_ascii=False).encode("utf-8")  # Reject unpaired surrogate escapes before storage.
             return body if isinstance(body, dict) else None
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, RecursionError):
             return None
 
     def do_POST(self):
+        try:
+            return self.post_request()
+        except PS.LibraryUnavailable as error:
+            return self.send_json({"error": str(error), "component": True, "recoverable": False}, 503)
+        except PS.ProfileCorrupt as error:
+            return self.profile_problem(error)
+        except TaskStoreCorrupt as error:
+            return self.send_json({"error": str(error), "task_store": True}, 503)
+        except JobBusy as exc:
+            return self.send_json({"error": str(exc), "retry": True}, 409)
+        except SubtitleLimit as exc:
+            return self.send_json({"error": str(exc)}, 400)
+        except (OSError, sqlite3.Error):
+            return self.send_json({"error": "本地文件保存失败，请检查磁盘空间和文件夹权限后重试"}, 507)
+
+    def post_request(self):
         if not self.local_only():
             return
         path = urlparse(self.path).path
         if path not in ("/api/ext/open", "/api/settings", "/api/settings/test", "/api/profile", "/api/mark", "/api/explain",
-                        "/api/open-folder", "/api/quit"):
+                        "/api/open-folder", "/api/quit", "/api/open", "/api/focus", "/api/jobs/cancel", "/api/jobs/resume",
+                        "/api/profile/import/preview", "/api/profile/import", "/api/profile/clear", "/api/profile/recover",
+                        "/api/jobs/recover", "/api/runtime/check"):
             return self.send_json({"error": "not found"}, 404)
         if not self.ext_ok():
             return
         body = self.read_body()
         if body is None:
             return self.send_json({"error": "bad request"}, 400)
+        if path == "/api/runtime/check":
+            return self.send_json(RUNTIME.start())
+        if path in ("/api/profile", "/api/mark", "/api/profile/import", "/api/profile/clear"):
+            PROFILE.payload()  # Do not mutate if the updated learning state cannot be computed/returned.
+        elif path == "/api/profile/recover":
+            PS.library_known(set(), 3000)
+        if path == "/api/jobs/recover":
+            if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
+                return self.send_json({"error": "请刷新控制台后重新确认恢复"}, 400)
+            with JOBS_LOCK:
+                if any(j.state in ("running", "cancelling") or (j.thread and j.thread.is_alive()) for j in JOBS.values()):
+                    raise JobBusy("请先等待任务完成，或取消任务并等待停止后再重建")
+                try:
+                    backup_path = TASK_STORE.recover(body["fingerprint"])
+                except TaskStoreConflict as error:
+                    return self.send_json({"error": str(error)}, 409)
+            return self.send_json({"ok": True, "backup_path": backup_path})
+        if path == "/api/profile/recover":
+            if not isinstance(body.get("fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"]):
+                return self.send_json({"error": "请重新打开画像页并确认恢复"}, 400)
+            try:
+                backup_path = PROFILE.recover(body["fingerprint"])
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error)}, 409)
+            return self.send_json({"profile": PROFILE.payload(), "backup_path": backup_path})
+        if path in ("/api/profile/import/preview", "/api/profile/import", "/api/profile/clear"):
+            try:
+                if path.endswith("/preview"):
+                    p = PS.validate_backup(body.get("backup"))
+                    return self.send_json({"known": len(p.get("known", [])), "unknown": len(p.get("unknown", [])),
+                                           "test_date": (p.get("test") or {}).get("date"), "identity": PS.IDENTITIES.get(p.get("identity"), "未填写")})
+                if path.endswith("/clear"):
+                    PROFILE.clear_profile(body.get("expected_rev"))
+                else:
+                    PROFILE.import_backup(body.get("backup"), body.get("expected_rev"))
+            except PS.ProfileConflict as exc:
+                return self.send_json({"error": str(exc)}, 409)
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+            return self.send_json(PROFILE.payload())
+        if path in ("/api/jobs/cancel", "/api/jobs/resume"):
+            vid = str(body.get("id", ""))
+            if not (YT_ID_RE.fullmatch(vid) or EXT_ID_RE.fullmatch(vid)):
+                return self.send_json({"error": "bad id"}, 400)
+            if path.endswith("/cancel"):
+                job = get_job(vid, start=False)
+                if not job:
+                    return self.send_json({"error": "任务不存在或已经停止"}, 404)
+                cancel_job(job)
+                return self.send_json({"id": vid, "state": job.state})
+            saved = TASK_STORE.load(vid)
+            if not saved:
+                return self.send_json({"error": "没有找到已保存的进度，请重新打开视频"}, 404)
+            if not P.has_key():
+                return self.send_json({"error": key_missing_msg()}, 400)
+            if saved["payload"].get("asr_url") and not ASR.configured():
+                return self.send_json({"error": "请先在设置中填写语音识别 API key"}, 400)
+            if saved["state"] == "done":
+                return self.send_json({"id": vid, "state": "done"})
+            job = get_job(vid, start=True)
+            return self.send_json({"id": vid, "state": job.state})
+        if path == "/api/open":
+            vid = parse_video_id(body.get("url", "") if isinstance(body.get("url"), str) else "")
+            if not vid:
+                return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
+            if saved_result(DATA / f"{vid}.json", vid):
+                return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
+            if not P.has_key():
+                return self.send_json({"error": key_missing_msg()}, 400)
+            get_job(vid, start=True)
+            return self.send_json({"id": vid, "cached": False})
+        if path == "/api/focus":
+            try:
+                focus = float(body.get("t", 0))
+                if not math.isfinite(focus):
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                return self.send_json({"error": "invalid playback time"}, 400)
+            job = get_job(str(body.get("v", "")), start=False)
+            if job:
+                with job.cond:
+                    job.focus = max(0.0, focus)
+            return self.send_json({"ok": True})
         if path == "/api/profile":
-            if body.get("reset_marks"):
-                PROFILE.reset_marks()
-            err = PROFILE.update(body)
-            return self.send_json({"error": err}, 400) if err else self.send_json(PROFILE.payload())
+            changes = {k: v for k, v in body.items() if k != "expected_rev"}
+            needs_revision = bool(set(changes) & {"identity", "field", "exams", "test", "reset_marks"}) or "expected_rev" in body
+            try:
+                # Preserve one exact acknowledgement, even if another client writes immediately afterwards.
+                with PROFILE.lock:
+                    args = {"expected_rev": body.get("expected_rev")} if needs_revision else {}
+                    err = PROFILE.update(changes, **args)
+                    result = {"error": err} if err else PROFILE.payload()
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error), "conflict": True}, 409)
+            return self.send_json(result, 400 if err else 200)
         if path == "/api/explain":
             return self.explain(body)
         if path == "/api/open-folder":
-            folder = {"data": HOME / "data", "logs": applog.LOG_FILE.parent if applog.LOG_FILE else HOME,
-                      "extension": extension_dir()}.get(str(body.get("what")))
-            if not folder or not folder.exists():
-                return self.send_json({"error": "文件夹不存在"}, 404)
+            kind = str(body.get("what"))
+            folder = {"data": HOME / "data", "logs": applog.LOG_FILE.parent if applog.LOG_FILE else HOME / "logs",
+                      "extension": extension_dir()}.get(kind)
+            if folder is None:
+                return self.send_json({"error": "不支持这个文件夹"}, 400)
+            path = str(folder.absolute())
             try:
-                os.startfile(str(folder))          # Windows: open in File Explorer
-            except Exception as e:
-                return self.send_json({"error": short_err(e)}, 500)
+                if kind in ("data", "logs"):
+                    folder.mkdir(parents=True, exist_ok=True)
+                open_folder(folder)
+            except FolderOpenError as error:
+                return self.send_json({"error": str(error), "path": path}, 501)
+            except OSError:
+                return self.send_json({"error": "文件夹暂时无法打开，请检查路径和权限，或复制路径手动打开", "path": path}, 500)
             return self.send_json({"ok": True})
         if path == "/api/quit":
             print("  quit from the control panel")
             threading.Timer(0.3, lambda: os._exit(0)).start()
             return self.send_json({"ok": True})
         if path == "/api/mark":
-            err = PROFILE.mark(body.get("key"), body.get("state"))
-            return self.send_json({"error": err}, 400) if err else self.send_json({"ok": True, "rev": PROFILE.payload()["rev"]})
+            if "expected_state" in body and body["expected_state"] not in ("known", "unknown", "clear"):
+                return self.send_json({"error": "词义标记的原状态无效"}, 400)
+            try:
+                with PROFILE.lock:
+                    err = PROFILE.mark(body.get("key"), body.get("state"),
+                                       expected_state=body.get("expected_state"))
+                    result = {"error": err} if err else {"ok": True, **PROFILE.payload()}
+            except PS.ProfileConflict as error:
+                return self.send_json({"error": str(error), "conflict": True}, 409)
+            return self.send_json(result, 400 if err else 200)
         if path == "/api/settings":
             return self.save_settings(body)
         if path == "/api/settings/test":
@@ -1119,21 +1616,20 @@ class Handler(SimpleHTTPRequestHandler):
         if not (YT_ID_RE if youtube else EXT_ID_RE).fullmatch(vid):
             return self.send_json({"error": "bad id"}, 400)
         saved = (DATA if youtube else EXT_DATA) / f"{vid}.json"
-        if youtube and not saved.exists() and (EXT_DATA / f"yt_{vid}_asr.json").exists():
-            vid = f"yt_{vid}_asr"
-            saved = EXT_DATA / f"{vid}.json"
-        if saved.exists():          # done before: send the whole result at once
-            data = json.loads(saved.read_text(encoding="utf-8"))
+        data = saved_result(saved, vid)
+        if youtube and data is None:
+            asr_id = f"yt_{vid}_asr"
+            asr_file = EXT_DATA / f"{asr_id}.json"
+            data = saved_result(asr_file, asr_id)
+            if data is not None:
+                vid, saved = asr_id, asr_file
+        if data is not None:       # Partial/corrupt results must remain retryable.
             tags = tag_only_lines(data)
             if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there
                 for i in tags:
                     data["cues"][i].update(text="", notes=[], zh="")
-                saved.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                write_json(saved, data)
                 print(f"[{vid}] removed {len(tags)} non-speech labels (<chinese> ...) from the saved subtitles")
-            if refusal_lines(data):  # made before refusals were detected: blank them now, fix in the background
-                for i in refusal_lines(data):
-                    data["cues"][i].update(text="", notes=[], zh="")
-                threading.Thread(target=repair_saved, args=(vid, saved), daemon=True).start()
             return self.send_json({"id": vid, "cached": True, "data": data})
         if youtube and body.get("subs_only"):
             # the extension shows the plain English first; glosses are generated only after a click
@@ -1146,8 +1642,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
             duration = float(body.get("duration") or 0)
-        except (TypeError, ValueError):
-            duration = 0
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            return self.send_json({"error": "视频时长必须是有限的非负数"}, 400)
         title = str(body.get("title") or vid)[:200]
         if body.get("probe"):       # the extension asks: done before / still running? (starts nothing)
             job = get_job(vid, start=False)
@@ -1168,7 +1666,7 @@ class Handler(SimpleHTTPRequestHandler):
             if re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
                 try:
                     page = min(max(int(body.get("p") or 1), 1), 1000)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     page = 1
                 url = f"https://www.bilibili.com/video/{bvid}/?p={page}"
             elif YT_ID_RE.fullmatch(yt) and vid == f"yt_{yt}_asr":
@@ -1192,6 +1690,8 @@ class Handler(SimpleHTTPRequestHandler):
         """English subtitles of a YouTube video for the extension, without generating glosses."""
         try:
             sub = fetch_subtitles(vid)
+        except VideoAccessError as error:
+            return self.send_json({"id": vid, "error": str(error), "retry": error.retry, "code": error.code})
         except NoSubtitles:
             return self.send_json({"id": vid, "nosubs": True, "error": "这个视频没有英文字幕"})
         except FetchFailed as e:
@@ -1214,22 +1714,21 @@ class Handler(SimpleHTTPRequestHandler):
         """Meaning of a clicked word in its sentence (words the annotations didn't cover).
         The dictionary only has general senses ("ligature" = 绳); this asks the annotation model what the
         word means here. Cached on disk by call_json, so the same word in the same line costs nothing again."""
-        word = A.clean(str(body.get("word", "")))[:40]
-        sentence = A.clean(str(body.get("sentence", "")))[:400]
-        if not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", word) or not sentence:
-            return self.send_json({"error": "bad request"}, 400)
+        word, sentence = body.get("word"), body.get("sentence")
+        if (not isinstance(word, str) or not isinstance(sentence, str) or len(sentence) > MAX_CUE_CHARS
+                or not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", word)
+                or not re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", sentence, re.IGNORECASE)):
+            return self.send_json({"error": "请选择原句中的英文单词，原句不能超过 2000 个字符"}, 400)
+        sentence = A.clean(sentence)
         if not P.has_key():
             return self.send_json({"error": key_missing_msg()}, 400)
         try:
-            data = A.call_json(client(), P.model(), "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
+            with CONFIG_LOCK:
+                service, model = client(), P.model()
+            data = A.call_json(service, model, "none", EXPLAIN_PROMPT, {"word": word, "sentence": sentence})
         except Exception as e:
             return self.send_json({"error": f"查询失败：{short_err(e)[:80]}"}, 502)
-        zh = A.clean(str(data.get("zh") or ""))[:16]
-        if not zh:
-            return self.send_json({"zh": ""})
-        return self.send_json({"zh": zh, "pos": A.clean(str(data.get("pos") or ""))[:8],
-                               "base": A.clean(str(data.get("base") or ""))[:40].lower(),
-                               "note": A.clean(str(data.get("note") or ""))[:40]})
+        return self.send_json(data)
 
     def save_settings(self, body: dict):
         updates = {}
@@ -1238,6 +1737,13 @@ class Handler(SimpleHTTPRequestHandler):
             if prov not in P.PROVIDERS:
                 return self.send_json({"error": "未知的注释模型"}, 400)
             updates["ANNOTATION_PROVIDER"] = prov
+        models = body.get("models", {})
+        if not isinstance(models, dict):
+            return self.send_json({"error": "模型设置格式不正确"}, 400)
+        for pid, value in {**models, **({"asr": body["asr_model"]} if "asr_model" in body else {})}.items():
+            if pid not in (*P.PROVIDERS, "asr") or not isinstance(value, str) or (value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", value)):
+                return self.send_json({"error": "模型名称格式不正确"}, 400)
+            updates[f"{pid.upper()}_MODEL"] = value
         keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
         for pid, val in keys.items():
             if pid not in P.PROVIDERS or not isinstance(val, str):
@@ -1251,25 +1757,42 @@ class Handler(SimpleHTTPRequestHandler):
                 updates[P.PROVIDERS[pid]["key"]] = val
             else:
                 return self.send_json({"error": f"{P.PROVIDERS[pid]['name']} 的 key 格式不对（不能有空格或中文）"}, 400)
-        save_config(updates)
+        with CONFIG_LOCK:
+            if body.get("expected_rev") != SETTINGS_REV:
+                return self.send_json({"error": "设置已更新，请重新读取后再保存；当前修改尚未写入", "conflict": True}, 409)
+            save_config(updates)
+            saved = settings_payload()
         print(f"  settings saved: annotation model = {P.model()}, keys: "
               + ", ".join(f"{k}={'yes' if P.has_key(k) else 'no'}" for k in P.PROVIDERS))
-        return self.send_json({"ok": True, "provider": P.current()})
+        return self.send_json({"ok": True, "provider": saved["provider"], "settings": saved})
 
     def test_settings(self):
-        """Check each saved key with a free request (list models)."""
-        out = {}
-        for pid in P.PROVIDERS:
-            if not P.has_key(pid):
+        """Check selected services and model names without generating content."""
+        out, available = {}, {}
+        with CONFIG_LOCK:
+            selected = P.current()
+            checks = {pid: (P.client(pid) if P.has_key(pid) else None, P.model(pid)) for pid in {selected, "mimo"}}
+            asr_model = os.environ.get("ASR_MODEL", "mimo-v2.5-asr")
+        for pid, (service, model) in checks.items():
+            if service is None:
                 out[pid] = "未填写"
+                if pid == "mimo":
+                    out["asr"] = "未填写"
                 continue
             try:
-                P.client(pid).with_options(timeout=15, max_retries=0).models.list()
-                out[pid] = "ok"
+                response = service.with_options(timeout=15, max_retries=0).models.list()
+                ids = {m.id for m in response.data}
+                available[pid] = sorted(ids)[:200]
+                out[pid] = "ok" if model in ids else f"连接正常，但模型列表中没有 {model}，请核对模型名或访问权限"
+                if pid == "mimo":
+                    out["asr"] = "ok" if asr_model in ids else f"连接正常，但模型列表中没有 {asr_model}，请核对语音模型名或访问权限"
             except Exception as e:
                 code = getattr(e, "status_code", None)
-                out[pid] = "key 无效" if code in (401, 403) else f"连接失败：{short_err(e)[:80]}"
-        return self.send_json({"results": out})
+                out[pid] = "key 无效或权限不足" if code in (401, 403) else f"连接失败：{short_err(e)[:80]}"
+                if pid == "mimo":
+                    out["asr"] = out[pid]
+        return self.send_json({"results": out, "models": available, "provider": selected,
+                               "checked_models": {**{pid: model for pid, (_, model) in checks.items()}, "asr": asr_model}})
 
     def stream(self, job: Job):
         self.send_response(200)
@@ -1296,56 +1819,111 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
 
+def port_number(value):
+    try:
+        port = int(value)
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError):
+        pass
+    raise argparse.ArgumentTypeError("端口须为 1–65535 的整数")
+
+
 def main():
+    global INSTANCE_GUARD
     HOME.mkdir(parents=True, exist_ok=True)
     A.load_dotenv(CONFIG)
     A.CACHE_DIR = HOME / ".cache"
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
+    ap.add_argument("--port", type=port_number, default=os.environ.get("PORT", "8765"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="open the player in the browser once the server is up")
-    ap.add_argument("--app", action="store_true", help="packaged program: open the settings page if no key is set")
+    ap.add_argument("--app", action="store_true", help="open the control panel in the browser")
     ap.add_argument("--gui", action="store_true", help="show the control panel in a window (no console needed)")
     args = ap.parse_args()
     if args.host not in ("127.0.0.1", "localhost"):
         sys.exit("Adaptive Subs only listens on this computer (127.0.0.1): it holds your API keys.")
+    if applog.LOG_FILE is None:
+        applog.install(HOME / "logs")
     want_browser = (args.open or args.app) and not args.gui and not os.environ.get("ASUBS_NO_BROWSER")
 
     def open_browser(port):
         if not want_browser:
             return
-        page = "player.html" if args.open else ("setup" if not P.has_key() else None)   # speech recognition is optional
+        page = "player.html" if args.open else "app"
         if page:
             import webbrowser
             threading.Timer(1.0, webbrowser.open, [f"http://{args.host}:{port}/{page}"]).start()
 
-    # Port busy? If it's this server already running, just open it; if it's something else
-    # (e.g. an old plain file server, which has no live features), move to the next free port.
+    guard = InstanceLock(HOME)
+    if not guard.acquire():
+        return reuse_instance(args, open_browser, want_browser)
+    try:
+        INSTANCE_GUARD = guard
+        guard.publish(VERSION, INSTANCE_ID, args.host)
+        return serve_owned(args, open_browser, guard)
+    finally:
+        INSTANCE_GUARD = None
+        guard.close()
+
+
+def reuse_instance(args, open_browser, want_browser):
+    # A stale metadata file alone never blocks startup: only a live OS lock reaches this branch.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        info = read_instance(HOME)
+        existing = probe_server(info["host"], info["port"]) if info else None
+        if existing and existing.get("instance") == info["instance"]:
+            if existing["version"] != VERSION:
+                raise RuntimeError(f"同一数据目录正在由 Adaptive Subs {existing['version']} 使用；当前版本是 {VERSION}。"
+                                   "请先退出已运行的程序，再启动当前版本。")
+            args.host = info["host"]
+            print(f"Adaptive Subs is already running: http://{info['host']}:{info['port']}/app")
+            if args.gui:
+                return run_window(f"http://{info['host']}:{info['port']}/app", None)
+            open_browser(info["port"])
+            if want_browser:
+                time.sleep(2)
+            return
+        time.sleep(0.1)
+    raise RuntimeError("同一数据目录的程序正在启动或退出，尚未确认连接。请稍后重试；不要删除正在使用的锁文件。")
+
+
+def serve_owned(args, open_browser, guard):
+    # The directory lock excludes another modern owner of this data. Other directories
+    # can use the next port; legacy processes must be closed before upgrading.
     port, httpd = args.port, None
-    for candidate in range(args.port, args.port + 20):
+    last_port = min(args.port + 19, 65535)
+    for candidate in range(args.port, last_port + 1):
         try:
             httpd = Server((args.host, candidate), Handler)
             port = candidate
             break
         except OSError:
-            if is_live_server(args.host, candidate):
-                print(f"Adaptive Subs is already running: http://{args.host}:{candidate}/player.html")
-                if args.gui:                       # second start: just show the running program's panel
-                    return run_window(f"http://{args.host}:{candidate}/app", None)
-                open_browser(candidate)
-                if want_browser:
-                    time.sleep(2)
-                return
+            existing = probe_server(args.host, candidate)
+            if existing and existing.get("instance_locked") is not True:
+                if existing["version"] != VERSION:
+                    raise RuntimeError(f"端口 {candidate} 上运行着 Adaptive Subs {existing['version']}，当前启动的是 {VERSION}。"
+                                       "请先退出已运行的程序，再启动当前版本，避免继续使用旧版或同时写入数据。")
+                raise RuntimeError("已运行的程序未启用同目录保护，请先退出，再启动当前版本。")
             print(f"  port {candidate} is in use by another program, trying {candidate + 1}…")
     if httpd is None:
-        sys.exit(f"No free port between {args.port} and {args.port + 19}.")
+        sys.exit(f"No free port between {args.port} and {last_port}.")
 
-    # warm up spaCy + the frequency list in the background, so the first video starts faster
-    def warm():
-        with NLP_LOCK:
-            A.nlp()
-        A.load_ranks()
-    threading.Thread(target=warm, daemon=True).start()
+    try:
+        guard.publish(VERSION, INSTANCE_ID, args.host, port)
+        return run_server(httpd, args, port, open_browser)
+    finally:
+        httpd.server_close()
+
+
+def run_server(httpd, args, port, open_browser):
+    try:
+        TASK_STORE.mark_interrupted()
+    except (TaskStoreCorrupt, OSError, sqlite3.Error) as error:
+        print(f"任务记录暂不可用，控制台仍可打开：{short_err(error)}")
+
+    RUNTIME.start()  # Check locally before permitting new generation work.
 
     key = "yes" if P.has_key() else "NO"
     asr = "yes" if ASR.configured() else "NO"
@@ -1413,13 +1991,35 @@ def dark_mode() -> bool:
         return False
 
 
-def is_live_server(host: str, port: int) -> bool:
+def valid_health(value):
+    """Identify the product, including its legacy health shape; this is not authentication."""
+    return (isinstance(value, dict) and value.get("ok") is True
+            and value.get("app", "adaptive-subs") == "adaptive-subs"
+            and isinstance(value.get("version"), str)
+            and re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", value["version"]) is not None
+            and len(value["version"]) <= 80 and type(value.get("ext")) is int and value["ext"] >= 1
+            and value.get("setup") == "/setup" and value.get("profile") == "/profile")
+
+
+def probe_server(host: str, port: int):
     import urllib.request
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=1.5) as r:
-            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(f"http://{host}:{port}/api/health", timeout=1.5) as r:
+            raw = r.read(16385)
+            if r.status != 200 or len(raw) > 16384:
+                return None
+            value = json.loads(raw)
+            return value if valid_health(value) else None
     except Exception:
-        return False
+        return None
+
+
+def is_live_server(host: str, port: int) -> bool:
+    return probe_server(host, port) is not None
 
 
 if __name__ == "__main__":

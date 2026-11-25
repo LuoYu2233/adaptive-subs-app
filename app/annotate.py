@@ -14,7 +14,7 @@ Pipeline:
   3. LLM: keep/drop candidates, add idioms / phrasal verbs / uncommon senses,
      short Chinese gloss for this context, difficulty level per item
   4. LLM: natural Chinese translation of every line (for the bilingual comparison mode)
-  5. post-process: locate spans, normalise glosses, lemma keys, one gloss per key
+  5. post-process: locate spans, normalise each context's gloss, assign lemma keys
 Output: data/ID.json (read by player.html)
 """
 
@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -35,8 +36,12 @@ import threading
 import time
 
 import srt
+from storage import atomic_write_bytes, write_json
+from result_validation import valid_result, utf8_json
+from usage_accounting import TOKEN_FIELDS as USAGE_FIELDS, token_record, token_totals
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).parent          # app/: data/ next to the code
 PROJECT = ROOT.parent                 # repository root: .env and the API cache when run from source
@@ -89,6 +94,17 @@ def load_ranks(n: int = 100_000) -> dict[str, int]:
 
 
 def find_candidates(texts: list[str]) -> list[list[dict]]:
+    """Analyze bounded windows with neighboring cues so long videos do not exceed spaCy's limit."""
+    results = []
+    for start in range(0, len(texts), 100):
+        end = min(len(texts), start + 100)
+        lo, hi = max(0, start - 1), min(len(texts), end + 1)
+        batch = _find_candidates(texts[lo:hi])
+        results.extend(batch[start - lo:end - lo])
+    return results
+
+
+def _find_candidates(texts: list[str]) -> list[list[dict]]:
     """For each cue: [{word, lemma, rank}] content words rarer than MIN_RANK."""
     ranks = load_ranks()
     big = 10**9
@@ -207,6 +223,17 @@ Reply with JSON only: {"items": [{"id": 0, "zh": "...", "level": 6000}]}"""
 
 FALLBACK_RANK = 4000   # rare candidates the annotation step skipped get a second, focused pass
 
+EXPLAIN_PROMPT = """A Chinese learner of English clicked a word in a video subtitle.
+Input: {"word": "...", "sentence": "..."} (the subtitle line the word is in).
+Give the word's meaning IN THIS SENTENCE, for a Chinese learner.
+Reply with JSON only:
+{"zh": "<the meaning here, Simplified Chinese, 2-8 characters, one sense only, no alternatives>",
+ "pos": "<part of speech here: n. / v. / adj. / adv. / prep. / ...>",
+ "base": "<dictionary form, e.g. 'ran' -> 'run'>",
+ "note": "<optional, at most 15 Chinese characters: only if the word is part of a phrase or idiom here
+           whose meaning differs, e.g. 'give up' -> 放弃; otherwise empty>"}
+If the word is a name or not English, give its usual Chinese rendering (or a transliteration) in "zh"."""
+
 
 def missing_candidates(texts: list[str], ids, cands: list[list[dict]], placed: dict) -> list[tuple[int, str]]:
     """Rare candidate words (rank >= FALLBACK_RANK) that no annotation on their line covers."""
@@ -220,7 +247,7 @@ def missing_candidates(texts: list[str], ids, cands: list[list[dict]], placed: d
 
 
 def gloss_missing(client, model: str, effort: str, texts: list[str], missing: list[tuple[int, str]],
-                  usage: dict | None = None) -> dict[int, list[dict]]:
+                  usage: dict | None = None, cancelled=None) -> dict[int, list[dict]]:
     """Second chance for skipped rare words -> extra raw notes per line {line id: [note, ...]}."""
     extra: dict[int, list[dict]] = {}
     for k0 in range(0, len(missing), 40):
@@ -229,7 +256,7 @@ def gloss_missing(client, model: str, effort: str, texts: list[str], missing: li
         for k, (i, w) in enumerate(chunk):
             ctx = context_item(texts, i)
             payload.append({"id": k, "word": w, "prev": ctx["prev"], "line": ctx["line"], "next": ctx["next"]})
-        data = call_json(client, model, effort, GLOSS_PROMPT, payload, usage=usage)
+        data = call_json(client, model, effort, GLOSS_PROMPT, payload, usage=usage, cancelled=cancelled)
         for it in data.get("items", []):
             try:
                 k = int(it["id"])
@@ -253,24 +280,16 @@ Reply with JSON only: {"items": [{"id": <line id>, "src": "first four words", "z
 
 
 _usage_lock = threading.Lock()
-USAGE_FIELDS = ("calls", "input", "cached_input", "output", "reasoning")
 
 
 def record_usage(resp, model: str, effort: str, label: str, sink: dict | None) -> None:
     """Token usage of one API call -> .cache/usage.jsonl, and summed into sink[label] if given.
     'output' includes 'reasoning' (gpt-5 models bill their hidden reasoning as output tokens)."""
-    u = getattr(resp, "usage", None)
-    if not u:
-        return
-    din, dout = getattr(u, "prompt_tokens_details", None), getattr(u, "completion_tokens_details", None)
-    cached = getattr(din, "cached_tokens", 0) or getattr(u, "prompt_cache_hit_tokens", 0) or 0   # DeepSeek: the latter
-    rec = {"calls": 1, "input": u.prompt_tokens or 0, "cached_input": cached,
-           "output": u.completion_tokens or 0, "reasoning": getattr(dout, "reasoning_tokens", 0) or 0}
+    rec = token_record(resp)
     with _usage_lock:
         if sink is not None:
-            acc = sink.setdefault(label, dict.fromkeys(USAGE_FIELDS, 0))
-            for k in USAGE_FIELDS:
-                acc[k] += rec[k]
+            acc = token_totals(sink.get(label, {}))
+            sink[label] = {k: acc[k] + rec[k] for k in USAGE_FIELDS}
         CACHE_DIR.mkdir(exist_ok=True)
         with open(CACHE_DIR / "usage.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": model, "effort": effort,
@@ -278,40 +297,177 @@ def record_usage(resp, model: str, effort: str, label: str, sink: dict | None) -
 
 
 def usage_total(sink: dict) -> dict:
-    return {k: sum(v.get(k, 0) for v in sink.values()) for k in USAGE_FIELDS}
+    with _usage_lock:
+        records = [token_totals(v) for v in sink.values()]
+        return {k: sum(v[k] for v in records) for k in USAGE_FIELDS}
 
 
-def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None) -> dict:
-    blob = json.dumps([model, effort, system, payload], ensure_ascii=False)
-    cache_file = CACHE_DIR / f"{hashlib.sha256(blob.encode()).hexdigest()[:24]}.json"
+def usage_snapshot(sink: dict) -> dict:
+    with _usage_lock:
+        return {k: token_totals(v) for k, v in sink.items()}
+
+
+class ModelResponseError(RuntimeError):
+    """A generation failed; it must never be confused with an empty annotation."""
+
+
+class GenerationCancelled(ModelResponseError):
+    pass
+
+
+MODEL_SLOTS = threading.BoundedSemaphore(8)
+_cache_locks = [threading.Lock() for _ in range(64)]
+
+
+@contextmanager
+def request_slot(lock, cancelled=None):
+    while True:
+        if cancelled and cancelled():
+            raise GenerationCancelled("任务已取消")
+        if lock.acquire(timeout=0.1):
+            break
+    try:
+        if cancelled and cancelled():
+            raise GenerationCancelled("任务已取消")
+        yield
+    finally:
+        lock.release()
+
+
+def validate_response(data, system: str, payload) -> dict:
+    if not isinstance(data, dict):
+        raise ModelResponseError("模型返回格式错误：需要 JSON 对象")
+    if not utf8_json(data):
+        raise ModelResponseError("模型返回了无效的文本字符或数值")
+    if system == EXPLAIN_PROMPT:
+        result = {}
+        for field, limit in (("zh", 40), ("pos", 16), ("base", 40), ("note", 80)):
+            value = data.get(field, "" if field == "note" else None)
+            if not isinstance(value, str) or len(value) > limit or (field != "note" and not value.strip()):
+                raise ModelResponseError("模型返回了无效或不完整的语境释义")
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ModelResponseError("模型返回了无效的释义字符") from None
+            result[field] = clean(value)
+        if not re.fullmatch(r"[A-Za-z][A-Za-z'’-]{0,39}", result["base"]):
+            raise ModelResponseError("模型返回了无效的词典词形")
+        result["base"] = result["base"].lower()
+        return result
+    if system in (ANNOTATE_PROMPT, GLOSS_PROMPT, TRANSLATE_PROMPT):
+        items = data.get("items")
+        if not isinstance(items, list) or any(not isinstance(it, dict) for it in items):
+            raise ModelResponseError("模型返回格式错误：缺少字幕结果列表")
+        expected = {it["id"] for it in payload}
+        originals = {it["id"]: it for it in payload}
+        seen = set()
+        for item in items:
+            i = item.get("id")
+            if type(i) is not int or i not in expected or i in seen:
+                raise ModelResponseError("模型返回了无效或重复的字幕编号")
+            seen.add(i)
+            if system == ANNOTATE_PROMPT:
+                notes = item.get("notes")
+                if not isinstance(notes, list) or len(notes) > 64 or any(
+                    not isinstance(n, dict) or not isinstance(n.get("span"), str)
+                    or not n["span"].strip() or not isinstance(n.get("zh"), str)
+                    or not n["zh"].strip() for n in notes
+                ):
+                    raise ModelResponseError("模型返回了不完整的词义注释")
+                for note in notes:
+                    line = originals[i].get("line", "")
+                    if (note.get("kind") not in ("word", "phrase", "sense") or not clean_zh(note["zh"])
+                            or len(note["zh"]) > 200 or not re.search(r"(?<!\w)" + re.escape(note["span"].strip()) + r"(?!\w)", line, re.IGNORECASE)):
+                        raise ModelResponseError("模型注释没有对应原句中的词或词义格式无效")
+                    validate_level(note.get("level"))
+            elif system == GLOSS_PROMPT:
+                if "skip" in item and type(item["skip"]) is not bool:
+                    raise ModelResponseError("模型返回了无效的跳过标记")
+                if not item.get("skip"):
+                    if not isinstance(item.get("zh"), str) or not clean_zh(item["zh"]) or len(item["zh"]) > 200:
+                        raise ModelResponseError("模型遗漏了候选词释义")
+                    validate_level(item.get("level"))
+            elif not isinstance(item.get("src"), str) or not isinstance(item.get("zh"), str) or not item["zh"].strip():
+                raise ModelResponseError("模型返回了无效的翻译文本")
+            elif system == TRANSLATE_PROMPT:
+                words = lambda s: re.findall(r"[a-z0-9']+", s.lower().replace("’", "'"))[:3]
+                if words(item["src"]) != words(originals[i].get("line", "")):
+                    raise ModelResponseError("模型翻译与原句没有正确对齐")
+        if seen != expected:
+            raise ModelResponseError("模型遗漏了部分字幕，请重试")
+    return data
+
+
+def validate_level(value):
+    import math
+    try:
+        if isinstance(value, bool) or not math.isfinite(float(value)) or not 1 <= float(value) <= 100000:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ModelResponseError("模型返回了无效的词汇难度") from None
+
+
+def call_json(client, model: str, effort: str, system: str, payload, usage: dict | None = None,
+              cancelled=None) -> dict:
+    import providers
+    blob = json.dumps([2, providers.endpoint_id(getattr(client, "base_url", "")), model, effort, system, payload], ensure_ascii=False)
+    digest = hashlib.sha256(blob.encode()).hexdigest()
+    cache_file = CACHE_DIR / f"{digest[:24]}.json"
+    # Coalesce simultaneous identical requests; the bounded lock table cannot grow with usage.
+    with request_slot(_cache_locks[int(digest[:2], 16) % len(_cache_locks)], cancelled):
+        return _call_json(client, model, effort, system, payload, usage, cache_file, cancelled)
+
+
+def _call_json(client, model, effort, system, payload, usage, cache_file, cancelled):
     if cache_file.exists():
-        return json.loads(cache_file.read_text(encoding="utf-8"))   # cached: costs nothing
-    label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss"}.get(system, "other")
+        try:
+            return validate_response(json.loads(cache_file.read_text(encoding="utf-8")), system, payload)
+        except (OSError, ValueError, RecursionError, ModelResponseError):
+            pass  # Interrupted/obsolete cache: regenerate, and replace it atomically on success.
+    label = {ANNOTATE_PROMPT: "annotate", TRANSLATE_PROMPT: "translate", GLOSS_PROMPT: "gloss", EXPLAIN_PROMPT: "explain"}.get(system, "other")
     import providers
     extra = providers.chat_options(model, effort)    # GPT reasoning effort / DeepSeek & MiMo thinking switch
     last_err = None
     for _ in range(2):
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                **extra,
-            )
-            record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
+            with request_slot(MODEL_SLOTS, cancelled):
+                resp = client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                    **extra,
+                )
+            try:
+                record_usage(resp, model, effort, label, usage)   # billed even if the JSON turns out bad
+            except Exception:
+                if usage is not None:
+                    with _usage_lock:
+                        acc = token_totals(usage.get(label, {}))
+                        # The exception may have occurred before or after the counters
+                        # changed. Mark uncertainty without guessing another call count.
+                        acc["incomplete_calls"] = max(1, acc["incomplete_calls"])
+                        usage[label] = acc
+                print("用量记录失败；本次请求结果仍会保留，费用以服务商账单为准")
             text = (resp.choices[0].message.content or "").strip()
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)  # some models wrap JSON in a code fence
-            data = json.loads(text)
-            CACHE_DIR.mkdir(exist_ok=True)
-            cache_file.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            return data
+            data = validate_response(json.loads(text), system, payload)
+        except GenerationCancelled:
+            raise
         except Exception as e:  # malformed JSON or transient API error: retry once
             last_err = e
-    print(f"  ! batch failed: {last_err}", flush=True)
-    return {"items": []}
+            if getattr(e, "status_code", None) in (400, 401, 403, 404):
+                break  # Retrying an invalid key/model/request only wastes time.
+            continue
+        # A disk failure must not cause another billable model request.
+        try:
+            write_json(cache_file, data)
+        except OSError:
+            print("模型缓存写入失败；本次结果可用，重启后可能需要重新生成")
+        return data
+    raise ModelResponseError("模型请求失败，已生成的结果会保留，请检查连接或设置后重试") from last_err
 
 
 RUN_USAGE: dict = {}   # token usage of this command-line run
@@ -432,6 +588,10 @@ def unify_glosses(cues: list[dict]) -> None:
                 first[k] = n
 
 
+# ECMAScript whitespace matches shared/learning.js (Python's \s also includes extra controls).
+JS_SPACE = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
 def visible_notes(cues: list[dict], level: int, max_repeat: int = 2, per_line: int = 3) -> list[list[dict]]:
     """Same rule as the web player: level filter, repeat cap, per-line cap (hardest first)."""
     count: dict[str, int] = {}
@@ -448,6 +608,35 @@ def visible_notes(cues: list[dict], level: int, max_repeat: int = 2, per_line: i
     return out
 
 
+def export_srt(data: dict, destination: Path, level: int) -> int:
+    if type(level) is not int or not 1 <= level <= 100000:
+        raise ValueError("导出词汇量必须为 1 到 100000 的整数")
+    if not valid_result(data):
+        raise ValueError("字幕结果不完整或格式无效，请完成生成后再导出")
+    shown = visible_notes(data["cues"], level)
+    subs = []
+    for i, (cue, notes) in enumerate(zip(data["cues"], shown), 1):
+        text = cue["text"]
+        for note in sorted(notes, key=lambda n: n["e"], reverse=True):
+            text = text[:note["e"]] + f"({note['zh']})" + text[note["e"]:]
+        try:
+            subs.append(srt.Subtitle(i, srt.timedelta(seconds=cue["s"]), srt.timedelta(seconds=cue["e"]), text))
+        except OverflowError:
+            raise ValueError("字幕时间超出可导出范围") from None
+    atomic_write_bytes(destination, srt.compose(subs).encode("utf-8-sig"))
+    return sum(map(len, shown))
+
+
+def export_level(value):
+    try:
+        number = int(value)
+        if not 1 <= number <= 100000:
+            raise ValueError
+        return number
+    except ValueError:
+        raise argparse.ArgumentTypeError("导出词汇量必须为 1 到 100000 的整数") from None
+
+
 def load_dotenv(path: Path) -> None:
     if not path.exists():
         return
@@ -460,15 +649,8 @@ def load_dotenv(path: Path) -> None:
 
 
 def update_index(data_dir: Path, video_id: str, title: str, file: str) -> None:
-    idx_path = data_dir / "index.json"
-    try:
-        idx = json.loads(idx_path.read_text(encoding="utf-8"))
-        if not isinstance(idx, list) or (idx and not isinstance(idx[0], dict)):
-            idx = []
-    except (OSError, json.JSONDecodeError):
-        idx = []
-    idx = [v for v in idx if v.get("id") != video_id] + [{"id": video_id, "title": title, "file": file}]
-    idx_path.write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
+    from video_catalog import update
+    update(data_dir, video_id, title, file)
 
 
 # -------------------------------------------------------------------- main ---
@@ -482,28 +664,26 @@ def main():
     ap.add_argument("--effort", default="medium",
                     help="reasoning effort for the annotation step (gpt-5 / o-series); translation uses low")
     ap.add_argument("--dry-run", action="store_true", help="frequency step only, no API calls")
-    ap.add_argument("--export-srt", type=int, metavar="LEVEL", help="write an .srt for one level from the JSON")
+    ap.add_argument("--export-srt", type=export_level, metavar="LEVEL", help="write an .srt for one level from the JSON")
     args = ap.parse_args()
 
     src = Path(args.srt_file)
     video_id = src.name.split(".")[0]
     out_json = src.with_name(f"{video_id}.json")
 
-    if args.export_srt:
-        data = json.loads(out_json.read_text(encoding="utf-8"))
-        shown = visible_notes(data["cues"], args.export_srt)
-        subs = []
-        for i, (c, notes) in enumerate(zip(data["cues"], shown), 1):
-            t = c["text"]
-            for n in sorted(notes, key=lambda n: n["e"], reverse=True):
-                t = t[:n["e"]] + f"({n['zh']})" + t[n["e"]:]
-            subs.append(srt.Subtitle(i, srt.timedelta(seconds=c["s"]), srt.timedelta(seconds=c["e"]), t))
+    if args.export_srt is not None:
         out = src.with_name(f"{video_id}.v{args.export_srt}.srt")
-        out.write_text(srt.compose(subs), encoding="utf-8-sig")
-        print(f"wrote {out} ({sum(map(len, shown))} annotations)")
+        try:
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+            count = export_srt(data, out, args.export_srt)
+        except (OSError, ValueError) as e:
+            sys.exit(f"导出失败，原有文件未改变：{e}")
+        print(f"wrote {out} ({count} annotations)")
         return
 
     raw = list(srt.parse(src.read_text(encoding="utf-8-sig")))
+    if not raw or not any(clean(c.content) for c in raw):
+        sys.exit("字幕文件为空，未开始生成")
     texts = [clean(c.content) for c in raw]
     print(f"{len(raw)} cues")
     cands = find_candidates(texts)
@@ -558,9 +738,12 @@ def main():
         "model": None if args.dry_run else args.model,
         "cues": cues,
     }
-    out_json.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    write_json(out_json, data)
     if not args.dry_run:
-        update_index(src.parent, video_id, data["video"]["title"], out_json.name)
+        try:
+            update_index(src.parent, video_id, data["video"]["title"], out_json.name)
+        except (OSError, ValueError):
+            print("字幕 JSON 已保存，视频目录暂时无法写入；无需重新生成。", file=sys.stderr)
 
     total = sum(len(c["notes"]) for c in cues)
     kinds = {k: sum(n["kind"] == k for c in cues for n in c["notes"]) for k in ("word", "phrase", "sense")}
@@ -573,6 +756,8 @@ def main():
         t = usage_total(RUN_USAGE)
         print(f"tokens: input {t['input']:,} (cached {t['cached_input']:,}), output {t['output']:,} "
               f"(of which reasoning {t['reasoning']:,}), {t['calls']} API calls")
+        if t["incomplete_calls"]:
+            print("部分请求未提供完整用量，以上不是完整账单。")
     print(f"wrote {out_json}")
 
 
