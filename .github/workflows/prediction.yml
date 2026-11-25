@@ -1,0 +1,28 @@
+name: Vocabulary prediction
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/prediction.yml'
+      - 'app/web/assets/prediction.js'
+      - 'app/web/assets/app.js'
+      - 'app/web/player.html'
+      - 'extension/prediction.js'
+      - 'extension/content.js'
+      - 'extension/manifest.json'
+      - 'tools/build_site.py'
+      - 'tests/prediction.test.cjs'
+jobs:
+  prediction:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/prediction.test.cjs
+      - run: node --check app/web/assets/app.js
+      - run: node --check extension/content.js
+      - run: python tools/build_site.py

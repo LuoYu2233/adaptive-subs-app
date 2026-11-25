@@ -10,11 +10,7 @@
   // How eagerly to gloss. Default "more": better a few known words glossed than unknown ones missed.
   //   factor: a note shows when its level > your vocabulary × factor
   //   perLine / repeat: max glosses per line / times the same word is glossed per video
-  const PREFS = {
-    more: { factor: 0.7, perLine: 4, repeat: 3 },
-    normal: { factor: 1.0, perLine: 3, repeat: 2 },
-    less: { factor: 1.3, perLine: 2, repeat: 1 },
-  };
+  const PREFS = AdaptivePrediction.preferences;
   const STORE_KEY = "adaptive-subs:v2";
   const KIND_LABEL = { word: "单词", phrase: "短语", sense: "熟词僻义" };
 
@@ -47,10 +43,8 @@
     statusMsg: "",                           // message shown before subtitles arrive
   };
   const isDone = (ci) => !S.annDone || S.annDone.has(ci);
-  const isHard = (n) => n.lv > S.level * PREFS[S.pref].factor;   // above the viewer's level?
-  // marks / known-word library are keyed by word; phrases and special senses get their own keys,
-  // so knowing a word never hides its uncommon meaning
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptivePrediction.markKey;
+  const noteState = n => AdaptivePrediction.classify(n, S.known, S.unknown, S.level * PREFS[S.pref].factor);
   // Opened from the local program: the profile (level + known-word library + marks) lives there,
   // shared with the Bilibili extension and the profile page. On GitHub Pages: this browser only.
   let shared = null;
@@ -80,25 +74,7 @@
   // ------------------------------------------------ visibility (core rule) ---
   function computeVisible() {
     const count = new Map();
-    S.visible = S.cues.map((c) => {
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const mk = markKey(n);
-        const forced = S.unknown.has(mk);
-        if (!forced && S.known.has(mk)) return;
-        if (forced || isHard(n)) cand.push({ i, forced, lv: n.lv, key: mk });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= PREFS[S.pref].perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= PREFS[S.pref].repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
-    });
+    S.visible = S.cues.map(c => AdaptivePrediction.selectNotes(c.notes, noteState, PREFS[S.pref], count));
   }
 
   // ---------------------------------------------------------- rendering ---
@@ -259,7 +235,8 @@
     const agg = new Map();
     S.cues.forEach((c, ci) => c.notes.forEach((n) => {
       const mk = markKey(n);
-      if ((S.known.has(mk) && !S.unknown.has(mk)) || !(isHard(n) || S.unknown.has(mk))) return;
+      const state = noteState(n);
+      if (state !== "forced" && state !== "hard") return;
       let a = agg.get(mk);
       if (!a) agg.set(mk, (a = { key: mk, zh: n.zh, kind: n.kind, lv: n.lv, count: 0, first: ci, n }));
       a.count++;
@@ -448,7 +425,7 @@
           : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">标为生词，总是提示</button>`;
       const why = shown
         ? (S.unknown.has(key) ? "你标记过这个词，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
-        : S.known.has(key) ? (shared && note.kind === "word" ? "在你的熟词库里（考试词表 / 常见词 / 测试 / 你的标记），所以不提示" : "你标记过认识，所以不提示") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
+        : S.known.has(key) ? (shared && note.kind === "word" ? "在你的熟词库里（考试词表 / 常见词 / 测试 / 你的标记），所以不提示" : "你标记过认识，所以不提示") : noteState(note) === "easy" ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
       main = `
         <div class="wc-head"><span class="wc-term">${esc(term)}</span>
           <span class="tag ${note.kind !== "word" ? `tag-${note.kind}` : ""}">${KIND_LABEL[note.kind]}</span>
