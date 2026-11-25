@@ -1,18 +1,19 @@
 // Offline evaluation of annotations the shipped player actually displays.
 const fs = require("node:fs");
+const LabelWindow = require("../extension/label-window.js");
 const { classify, preferences, selectNotes } = require("../app/web/assets/prediction.js");
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function prepare(result) {
+function prepare(result, range) {
   const { video, cues, status } = result;
   check(status == null || status === "complete", "需要已完成的字幕");
   check(typeof video?.id === "string" && video.id.trim() && Number.isFinite(video.duration) && video.duration > 0,
     "视频缺少标识或有效时长");
   check(Array.isArray(cues) && cues.length, "视频没有字幕");
-  return {
+  const full = {
     version: 1, video: video.id, duration: video.duration,
     cues: cues.map(({ text, s, e, notes }, i) => {
       check(typeof text === "string" && Number.isFinite(s) && Number.isFinite(e) && s >= 0 && e > s &&
@@ -28,6 +29,9 @@ function prepare(result) {
       return { s, e, text, unknown: null };
     }),
   };
+  if (range === undefined) return full;
+  const selected = LabelWindow.indices(cues, video.duration, range);
+  return { ...full, version: 2, window: { start: range.start, end: range.end }, cues: selected.map(i => full.cues[i]) };
 }
 
 function labelSpan(sentence, label) {
@@ -57,8 +61,11 @@ const spanKey = ({ s, e }) => `${s}:${e}`;
 
 function evaluate(result, labels, profile, preset, classifyNote) {
   const expected = prepare(result);
-  check(labels?.version === 1 && labels.video === expected.video && labels.duration === expected.duration &&
-    Array.isArray(labels.cues) && labels.cues.length === expected.cues.length, "标注与视频不匹配");
+  const range = labels?.window;
+  const selected = LabelWindow.indices(expected.cues, expected.duration, range);
+  const duration = range === undefined ? expected.duration : range.end - range.start;
+  check(labels?.version === (range === undefined ? 1 : 2) && labels.video === expected.video && labels.duration === expected.duration &&
+    Array.isArray(labels.cues) && labels.cues.length === selected.length, "标注与视频不匹配");
   check(Number.isFinite(profile?.level) && profile.level > 0 &&
     [profile.known, profile.unknown].every(list => Array.isArray(list) && list.every(k => typeof k === "string")),
     "需要 level、known 和 unknown 的观看前画像快照");
@@ -69,16 +76,19 @@ function evaluate(result, labels, profile, preset, classifyNote) {
   const repetitions = new Map();
   let hits = 0, extra = 0, noCandidate = 0, belowThresholdOrKnown = 0, displayLimit = 0;
 
+  let cursor = 0;
   expected.cues.forEach(({ s, e, text }, i) => {
-    const answer = labels.cues[i];
+    if (cursor === selected.length) return;
+    const notes = result.cues[i].notes;
+    const indices = selectNotes(notes, state, preference, repetitions);
+    if (i !== selected[cursor]) return;  // Earlier displays consume repeats just as they do in the player.
+    const answer = labels.cues[cursor++];
     check(answer?.text === text && answer.s === s && answer.e === e, `第 ${i + 1} 句与原字幕不匹配`);
     check(Array.isArray(answer.unknown), `第 ${i + 1} 句尚未标注；若全部认识请填 []`);
     const spans = answer.unknown.map(label => labelSpan(text, label)).sort((a, b) => a.s - b.s);
     check(spans.every((span, j) => !j || spans[j - 1].e <= span.s), `第 ${i + 1} 句含重复或交叠的标注`);
     const truth = new Set(spans.map(spanKey));
-    const notes = result.cues[i].notes;
     const candidates = new Map(notes.map(note => [spanKey(note), note]));
-    const indices = selectNotes(notes, state, preference, repetitions);
     const displayed = new Set([...indices].map(index => spanKey(notes[index])));
     for (const key of displayed) {
       if (truth.has(key)) hits++;
@@ -94,8 +104,9 @@ function evaluate(result, labels, profile, preset, classifyNote) {
   });
   const missed = noCandidate + belowThresholdOrKnown + displayLimit;
   return {
-    video: expected.video, preset, durationSeconds: expected.duration, evaluatedCues: expected.cues.length,
-    ...displayMetrics(hits, missed, extra, expected.duration),
+    video: expected.video, preset, durationSeconds: duration, evaluatedCues: selected.length,
+    ...(range === undefined ? {} : { window: { start: range.start, end: range.end } }),
+    ...displayMetrics(hits, missed, extra, duration),
     missedByReason: { noCandidate, belowThresholdOrKnown, displayLimit },
   };
 }
@@ -114,13 +125,14 @@ function load(file) {
 
 function main(args) {
   const [command, video, labels, profile, preset] = args;
-  if (command === "prepare" && args.length === 3) {
-    const sheet = prepare(load(video));
+  if (command === "prepare" && (args.length === 3 || args.length === 5)) {
+    const range = args.length === 5 ? { start: LabelWindow.seconds(profile), end: LabelWindow.seconds(preset) } : undefined;
+    const sheet = prepare(load(video), range);
     fs.writeFileSync(labels, JSON.stringify(sheet, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
   } else if (command === "score" && args.length === 5) {
     console.log(JSON.stringify(evaluate(load(video), load(labels), load(profile), preset), null, 2));
   } else {
-    throw new Error("用法：prepare VIDEO.json LABELS.json | score VIDEO.json LABELS.json PROFILE.json more|normal|less");
+    throw new Error("用法：prepare VIDEO.json LABELS.json [START END] | score VIDEO.json LABELS.json PROFILE.json more|normal|less");
   }
 }
 

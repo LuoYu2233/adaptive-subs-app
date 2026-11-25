@@ -2,6 +2,7 @@
 const { evaluate, labelSpan, spanKey, load } = require("./evaluate_prediction.cjs");
 const { classify, markKey, preferences } = require("../app/web/assets/prediction.js");
 
+const LabelWindow = require("../extension/label-window.js");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 
@@ -101,21 +102,26 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
   const oldState = note => classify(note, known, unknown, profile.level * preferences[preset].factor);
   const modeled = [], coverage = { classified: 0, profileOverride: 0, missingWord: 0, otherKind: 0 };
   let overlappingLabels = 0;
+  const selected = LabelWindow.indices(video.cues, video.video.duration, labels.window);
+  let cursor = 0;
   video.cues.forEach((cue, i) => {
-    const spans = labels.cues[i].unknown.map(label => labelSpan(cue.text, label));
+    if (cursor === selected.length) return;
+    const reviewed = i === selected[cursor];
+    const spans = reviewed ? labels.cues[cursor++].unknown.map(label => labelSpan(cue.text, label)) : [];
     const truth = new Set(spans.map(spanKey));
     for (const note of cue.notes) {
       const key = markKey(note);
-      if (overrides.has(key)) coverage.profileOverride++;
-      else if (note.kind !== "word") coverage.otherKind++;
-      else if (!Object.hasOwn(table.words, note.key)) coverage.missingWord++;
-      else {
-        coverage.classified++;
-        // An unknown phrase does not tell us whether the learner knows its constituent words.
+      let kind = "classified";
+      if (overrides.has(key)) kind = "profileOverride";
+      else if (note.kind !== "word") kind = "otherKind";
+      else if (!Object.hasOwn(table.words, note.key)) kind = "missingWord";
+      if (reviewed) coverage[kind]++;
+      if (kind === "classified") {
         const exact = truth.has(spanKey(note));
         const ambiguous = !exact && spans.some(s => s.s < note.e && note.s < s.e);
         if (ambiguous) overlappingLabels++;
-        modeled.push({ note, row: table.words[note.key], truth: ambiguous ? null : exact });
+        // Prefix decisions affect the player's repeat allowance but provide no observations.
+        modeled.push({ note, row: table.words[note.key], truth: !reviewed || ambiguous ? null : exact });
       }
     }
   });

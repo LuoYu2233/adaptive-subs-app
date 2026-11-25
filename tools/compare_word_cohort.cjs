@@ -47,18 +47,22 @@ function cohort(manifestPath, tableFile, preset) {
     if (typeof file !== "string" || !file.trim()) throw new Error("缺少本地文件路径");
     return load(path.resolve(directory, file));
   };
-  const seen = new Set();
+  const seen = new Map();
   const sessions = manifest.sessions.map((row, index) => {
     try {
       if (![row?.learner, row?.domain].every(s => typeof s === "string" && s.trim() && s === s.trim()))
         throw new Error("需要匿名学习者代号与片段领域");
       const video = read(row.video), samples = {};
       const id = JSON.stringify([row.learner, video.video?.id]);
-      if (seen.has(id)) throw new Error("同一学习者和视频重复列入");
-      seen.add(id);
       const report = compare(video, read(row.labels), read(row.profile), preset, table,
         row.parameters === undefined ? {} : read(row.parameters),
         { tableSha256, onSamples: (field, values) => { samples[field] = values; } });
+      const range = report.baseline.window ?? { start: 0, end: video.video.duration };
+      const existing = seen.get(id) || [];
+      if (existing.some(r => r.start < range.end && range.start < r.end))
+        throw new Error("同一学习者的视频片段重复或重叠");
+      existing.push(range);
+      seen.set(id, existing);
       return { learner: row.learner, domain: row.domain, report, samples };
     } catch (error) { throw new Error(`第 ${index + 1} 组会话：${error.message}`); }
   });

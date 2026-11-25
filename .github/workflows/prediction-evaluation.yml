@@ -4,6 +4,7 @@ on:
     paths:
       - 'app/web/assets/prediction.js'
       - 'tools/evaluate_prediction.cjs'
+      - 'extension/label-window.js'
       - 'tests/evaluate_prediction.test.cjs'
       - '.github/workflows/prediction-evaluation.yml'
 jobs:
