@@ -42,6 +42,8 @@ function advance() {
   el("choices").replaceChildren(...question.choices.map((text, i) => {
     const button = document.createElement("button");
     button.textContent = text;
+    button.dataset.key = String(i + 1);
+    button.setAttribute("aria-keyshortcuts", button.dataset.key);
     button.onclick = () => submit(i);
     return button;
   }));
@@ -60,6 +62,12 @@ el("begin").onclick = () => {
   advance();
 };
 el("skip").onclick = () => submit(null);
+document.addEventListener("keydown", event => {
+  if (el("quiz").hidden || event.repeat || event.isComposing || event.ctrlKey || event.altKey ||
+      event.metaKey || event.shiftKey || !/^[0-4]$/.test(event.key)) return;
+  event.preventDefault();
+  submit(event.key === "0" ? null : Number(event.key) - 1);
+});
 
 function save(name, content) {
   const link = document.createElement("a");

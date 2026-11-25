@@ -38,11 +38,12 @@ def check(table=None):
                 assert word not in [r[0] for r in expected] and len(expected) < 40
                 if len(expected) % 3 == 0:
                     expected.append((word, None))
-                    page.locator("#skip").click()
+                    page.keyboard.press("0")
                 else:
                     choice = page.locator("#choices button").first
                     expected.append((word, choice.inner_text()))
-                    choice.click()
+                    if len(expected) % 2: choice.click()
+                    else: page.keyboard.press("1")
             expect(page.locator("#done")).to_be_visible()
             results = {}
             for which in ("parameters", "record"):
