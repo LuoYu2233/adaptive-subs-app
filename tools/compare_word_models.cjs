@@ -2,15 +2,11 @@
 const { evaluate, labelSpan, spanKey, load } = require("./evaluate_prediction.cjs");
 const { classify, markKey, preferences } = require("../app/web/assets/prediction.js");
 
+const LabelWindow = require("../extension/label-window.js");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 
-const thresholds = { more: 0.3, normal: 0.5, less: 0.7 };
-
-function sigmoid(logit) {
-  const small = Math.exp(-Math.abs(logit));
-  return logit >= 0 ? 1 / (1 + small) : small / (1 + small);
-}
+const { thresholds, sigmoid, checkedRows, parameters, unknownLogit } = require("../extension/word-irt.js");
 
 // Invert the expected vocabulary sum to put an old level estimate on this particular table's scale.
 function abilityForLevel(difficulties, level, a) {
@@ -65,27 +61,8 @@ function probabilityMetrics(samples) {
 
 function compare(video, labels, profile, preset, table, config = {}, { tableSha256, onSamples } = {}) {
   const baseline = evaluate(video, labels, profile, preset);
-  if (table?.version !== 1 || table.scale !== "natural-log lemma rank" || !table.words || Array.isArray(table.words) ||
-      typeof table.words !== "object" || !Object.keys(table.words).length)
-    throw new Error("需要 P1 生成的 v1 词难度表");
-  const numeric = ["theta", "discrimination", "viewingDiscount", "domainBias"];
-  if (!config || typeof config !== "object" || Array.isArray(config) || Object.keys(config).some(k =>
-    numeric.includes(k) ? !Number.isFinite(config[k]) : !["thetaByField", "tableSha256"].includes(k)))
-    throw new Error("IRT 参数名或数值无效");
-  const { discrimination: a = 2, viewingDiscount = 0, domainBias = 0 } = config;
-  if (a <= 0 || viewingDiscount < 0) throw new Error("区分度须为正，观看折扣不可为负");
-  const calibrated = Object.hasOwn(config, "thetaByField") || Object.hasOwn(config, "tableSha256");
-  if (calibrated) {
-    const byField = config.thetaByField;
-    if (config.theta !== undefined || !byField || typeof byField !== "object" || Object.keys(byField).length !== 2 ||
-        ![byField.b_initial, byField.b_frequency].every(Number.isFinite))
-      throw new Error("分量尺能力参数须同时提供两套 theta");
-    if (typeof config.tableSha256 !== "string" || !/^[a-f0-9]{64}$/.test(config.tableSha256) ||
-        tableSha256 !== config.tableSha256) throw new Error("难度表指纹与测量参数不一致");
-  }
-  const rows = Object.values(table.words);
-  if (rows.some(r => !Number.isFinite(r?.b_frequency) || !Number.isFinite(r?.b_initial)))
-    throw new Error("词难度表包含无效的难度");
+  const rows = checkedRows(table);
+  const { a, viewingDiscount, domainBias, calibrated } = parameters(config, tableSha256);
   const known = new Set(profile.known), unknown = new Set(profile.unknown);
   let overrides;
   if (profile.marks == null) {
@@ -101,21 +78,26 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
   const oldState = note => classify(note, known, unknown, profile.level * preferences[preset].factor);
   const modeled = [], coverage = { classified: 0, profileOverride: 0, missingWord: 0, otherKind: 0 };
   let overlappingLabels = 0;
+  const selected = LabelWindow.indices(video.cues, video.video.duration, labels.window);
+  let cursor = 0;
   video.cues.forEach((cue, i) => {
-    const spans = labels.cues[i].unknown.map(label => labelSpan(cue.text, label));
+    if (cursor === selected.length) return;
+    const reviewed = i === selected[cursor];
+    const spans = reviewed ? labels.cues[cursor++].unknown.map(label => labelSpan(cue.text, label)) : [];
     const truth = new Set(spans.map(spanKey));
     for (const note of cue.notes) {
       const key = markKey(note);
-      if (overrides.has(key)) coverage.profileOverride++;
-      else if (note.kind !== "word") coverage.otherKind++;
-      else if (!Object.hasOwn(table.words, note.key)) coverage.missingWord++;
-      else {
-        coverage.classified++;
-        // An unknown phrase does not tell us whether the learner knows its constituent words.
+      let kind = "classified";
+      if (overrides.has(key)) kind = "profileOverride";
+      else if (note.kind !== "word") kind = "otherKind";
+      else if (!Object.hasOwn(table.words, note.key)) kind = "missingWord";
+      if (reviewed) coverage[kind]++;
+      if (kind === "classified") {
         const exact = truth.has(spanKey(note));
         const ambiguous = !exact && spans.some(s => s.s < note.e && note.s < s.e);
         if (ambiguous) overlappingLabels++;
-        modeled.push({ note, row: table.words[note.key], truth: ambiguous ? null : exact });
+        // Prefix decisions affect the player's repeat allowance but provide no observations.
+        modeled.push({ note, row: table.words[note.key], truth: !reviewed || ambiguous ? null : exact });
       }
     }
   });
@@ -125,8 +107,7 @@ function compare(video, labels, profile, preset, table, config = {}, { tableSha2
     if (!Number.isFinite(theta)) throw new Error("无法在当前尺度上计算有限的能力值");
     const decisions = new Map(), samples = [];
     for (const { note, row, truth } of modeled) {
-      const logit = a * (row[field] - (theta + domainBias - viewingDiscount));
-      if (!Number.isFinite(logit)) throw new Error("参数超出可计算的范围");
+      const logit = unknownLogit(row[field], theta, a, domainBias, viewingDiscount);
       decisions.set(note, sigmoid(logit) >= threshold ? "hard" : "easy");
       if (truth !== null) samples.push({ logit, unknown: truth });
     }

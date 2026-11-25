@@ -21,6 +21,7 @@
       ],
       "js": [
         "md5.js",
+        "word-irt.js",
         "prediction.js",
         "label-playback.js",
         "content.js"

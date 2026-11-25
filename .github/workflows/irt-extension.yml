@@ -1,0 +1,33 @@
+name: Measured word prediction in Chromium
+on:
+  pull_request:
+    paths:
+      - 'extension/**'
+      - 'tests/check_irt_extension.py'
+      - 'tools/compare_word_models.cjs'
+      - 'tools/evaluate_prediction.cjs'
+      - '.github/workflows/irt-extension.yml'
+permissions:
+  contents: read
+jobs:
+  extension:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install playwright==1.65.2
+      - if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: python -m playwright install chromium
+      - run: node --test tests/compare_word_models.test.cjs
+      - run: python tests/check_irt_extension.py

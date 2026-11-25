@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRT 判词试用 · Adaptive Subs</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f1;color:#202b23;font:17px/1.6 "Source Sans 3","Microsoft YaHei",system-ui,sans-serif}
+main{max-width:43rem;margin:clamp(1rem,7vh,4rem) auto;padding:clamp(1rem,5vw,3rem);background:white;border:1px solid #c5cdc6;border-radius:12px}
+h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0}h2{font-size:1.15rem;margin:1rem 0 .4rem}label{display:block;margin:.8rem 0 .2rem}
+button,select,input{font:inherit;max-width:100%}button,select{padding:.4rem .7rem;border:1px solid #75857a;border-radius:5px;background:white}
+button{cursor:pointer}button:disabled{opacity:.6;cursor:default}.primary{background:#265d44;color:white}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #996d12;outline-offset:3px}section{padding-bottom:1rem;border-bottom:1px solid #cbd5ce}
+.actions{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}[role=alert]{color:#882c23}p:empty{display:none}
+</style>
+</head><body><main>
+<h1>IRT 判词试用</h1>
+<p>用单词能力试测的结果，在本浏览器的 B 站和 YouTube 字幕中试用概率判词。文件保存在本机。请为当前观看者导入自己的参数。</p>
+<section aria-labelledby="state"><h2 id="state">当前设置</h2><p id="status" role="status">正在读取本机设置…</p>
+<div class="actions"><button id="toggle" hidden></button><button id="remove" hidden>移除试用数据</button></div></section>
+<form id="import"><h2>导入试测结果</h2>
+<label for="table">试测使用的词难度表</label><input id="table" type="file" accept=".json,application/json" required>
+<label for="parameters">试测导出的判词参数</label><input id="parameters" type="file" accept=".json,application/json" required>
+<label for="field">难度模型</label><select id="field"><option value="b_initial">词频和考纲</option><option value="b_frequency">仅词频</option></select>
+<div class="actions"><button class="primary" id="apply">导入并启用</button></div>
+</form>
+<p id="error" role="alert"></p>
+<p>已手动标记的词继续按你的选择显示。短语、特殊义项和表外词沿用现有规则。已有视频可直接切换，不消耗模型额度。</p>
+<script src="word-irt.js"></script><script src="irt-settings.js"></script>
+</main></body></html>

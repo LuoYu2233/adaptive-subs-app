@@ -22,6 +22,7 @@
     57, 62, 11, 36, 20, 34, 44, 52];
 
   let cfg = { ...DEFAULTS };
+  let trialModel = null, trialEnabled = false;
   const S = {
     key: null,        // "BV…/p" of the page the subtitles belong to
     gen: 0,           // bumped on every new video, so stale async work can tell it's outdated
@@ -295,7 +296,7 @@
   }
 
   function follow(gen, id, msg) {
-    S.id = id;
+    S.id = id; S.finished = false; S.savedVideo = null;
     S.since = 0;
     S.annDone = new Set();
     pill(msg);
@@ -367,7 +368,16 @@
 
   // ------------------------------------------- which glosses to show (core) ---
   // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
+  const trialThreshold = () => AdaptiveWordIRT.thresholds[cfg.pref] ?? AdaptiveWordIRT.thresholds.more;
+
+  function trialProbability(n) {
+    if (!trialEnabled || !trialModel || !PF.ok || n?.kind !== "word" || n.local || PF.marks.has(n.key)) return null;
+    return Object.hasOwn(trialModel.probabilities, n.key) ? trialModel.probabilities[n.key] : null;
+  }
+
   function noteState(n) {
+    const probability = trialProbability(n);
+    if (probability !== null) return probability >= trialThreshold() ? "hard" : "easy";
     const pref = PREFS[cfg.pref] || PREFS.more;
     return AdaptivePrediction.classify(n, PF.known, PF.unknown, effLevel() * pref.factor);
   }
@@ -428,7 +438,7 @@
     if (r.rev !== PF.rev || !PF.ok) loadProfile();
   }
 
-  async function mark(key, state, word, zhShort) {
+  async function mark(key, state, word, zhShort, observation) {
     if (state === "unknown" && zhShort && !defs[key]) {
       defs[key] = zhShort;
       chrome.storage.local.set({ asubsDefs: defs });
@@ -440,6 +450,8 @@
     computeVisible();
     const r = await bg({ type: "mark", payload: { key, state } });
     if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
+    if (r.ok && observation && ["known", "unknown"].includes(state))
+      sendStudyRows(observation.id, observation.cue, [{ ...observation.row, event: state }]);
     const shown = key.replace(/^(sense|phrase):/, "");
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
@@ -684,6 +696,62 @@
     for (const ev of ["mousedown", "mouseup", "click", "dblclick"]) ui.box.addEventListener(ev, (e) => e.stopPropagation());
   }
 
+  // A study is bound to this document, video and imported model. It starts only from the extension page.
+  let study = null, pendingStudy = Promise.resolve();
+  let observedFrame = null;
+  function studyReady() {
+    return !!((S.savedVideo || S.finished) && S.key && S.cues.length && !S.annDone && trialEnabled && trialModel && PF.ok &&
+      cfg.enabled && cfg.mode === "adaptive" && !document.documentElement.classList.contains("asubs-labeling"));
+  }
+  function endStudy() {
+    const old = study;
+    study = observedFrame = null;
+    if (old) pendingStudy.then(() => bg({ type: "studyStop", id: old.id }));
+  }
+  function canObserve() {
+    return study && study.gen === S.gen && studyReady() && !document.hidden && S.cur >= 0 &&
+      !ui.box.hidden && !ui.root.classList.contains("asubs-ad") && ui.zh.hidden &&
+      findVideo()?.currentTime <= S.cues[S.cur].e;
+  }
+  function studyWord(tok) {
+    if (!canObserve() || tok.dataset.n == null) return null;
+    const n = S.cues[S.cur].notes[+tok.dataset.n], pUnknown = trialProbability(n);
+    if (pUnknown === null) return null;
+    const rect = tok.getBoundingClientRect();
+    if (!rect.width || !rect.height || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return null;
+    const text = S.cues[S.cur].text;
+    const start = [...text.slice(0, n.s)].length, end = [...text.slice(0, n.e)].length;
+    return { start, end, word: n.key, shown: !!tok.querySelector(".asubs-w"), pUnknown, event: "none" };
+  }
+  function sendStudyRows(id, cue, rows) {
+    if (!rows.length) return;
+    pendingStudy = pendingStudy.then(async () => {
+      const reply = await bg({ type: "studyObserve", id, cue, rows });
+      if (study?.id === id && (reply.error || reply.stopped)) {
+        endStudy();
+        toast(reply.error ? "观看记录写入失败，已停止。请在扩展中检查已保存记录。" : "本次观看记录已停止。");
+      }
+    });
+  }
+  function sampleScreen(video, i, time) {
+    if (!canObserve() || video.paused || video.seeking || video.ended) { observedFrame = null; return; }
+    const now = performance.now(), prev = observedFrame;
+    const elapsed = prev ? (now - prev.wall) / 1000 : 0;
+    const advance = prev ? time - prev.time : 0;
+    if (!prev || prev.i !== i || elapsed > 0.6 || advance < 0 || advance > elapsed * (video.playbackRate || 1) + 0.12) {
+      observedFrame = { i, time, wall: now, live: 0, sent: false };
+      return;
+    }
+    prev.time = time; prev.wall = now;
+    if (advance <= 0) { prev.live = 0; return; }
+    prev.live += Math.min(elapsed, advance / (video.playbackRate || 1));
+    if (prev.sent || prev.live < 0.35) return;
+    prev.sent = true;
+    const rows = Array.from(ui.line.querySelectorAll(".asubs-t[data-n]"), studyWord).filter(Boolean);
+    sendStudyRows(study.id, i, rows);
+  }
+  window.addEventListener("pagehide", endStudy);
+
   // ---------------------------------------------------------- word card ---
   // Click a word: pause, show its meaning and why it is / isn't glossed, mark 认识 / 不认识.
   const CARD = { open: false, paused: false, key: "", word: "", zh: "", short: "", note: null, ci: -1, defReq: 0 };
@@ -698,8 +766,11 @@
     if (CARD.open && CARD.key === key) return closeCard();
     const v = findVideo();
     if (!CARD.open && v && !v.paused) { v.pause(); CARD.paused = true; }
+    const row = studyWord(tok);
+    const observation = row ? { id: study.id, cue: S.cur, row } : null;
+    if (observation) sendStudyRows(observation.id, observation.cue, [{ ...row, event: row.shown ? "none" : "lookup" }]);
     const looking = !note || note.local;
-    Object.assign(CARD, { open: true, key, word, note, ci: S.cur, zh: note && !note.local ? note.zh : "", short: note ? note.zh : "",
+    Object.assign(CARD, { open: true, observation, key, word, note, ci: S.cur, zh: note && !note.local ? note.zh : "", short: note ? note.zh : "",
       lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "" });
     renderCard();
     placeCard(tok);
@@ -735,6 +806,13 @@
     if (!PF.ok) return "打开 Adaptive Subs 程序后可以标记";
     if (mk === "unknown") return "你标记过「不认识」，所以总会注释";
     if (mk === "known") return "你标记过「认识」，所以不注释";
+    const probability = trialProbability(n);
+    if (probability !== null) {
+      const threshold = trialThreshold();
+      const display = S.visible[CARD.ci]?.has(S.cues[CARD.ci]?.notes.indexOf(n));
+      const verdict = probability < threshold ? "低于当前提示阈值" : display ? "达到阈值，已提示" : "达到阈值，受本句或重复次数上限限制";
+      return `IRT 试用估计不认识概率为 ${(probability * 100).toFixed(1)}%，${verdict}（${Math.round(threshold * 100)}%）`;
+    }
     if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
     if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
     if (!n) return "这一集没有给它注释";
@@ -808,7 +886,7 @@
     const st = act === "clear" ? "clear" : PF.marks.get(CARD.key) === act ? "clear" : act;
     // gloss shown later for a word marked 不认识: its meaning in the line where it was met, else the dictionary's
     const short = (CARD.ctx && CARD.ctx.zh) || (CARD.dict && CARD.dict.short) || CARD.short;
-    mark(CARD.key, st, CARD.word, short);
+    mark(CARD.key, st, CARD.word, short, CARD.observation);
     closeCard();
   }
 
@@ -1020,6 +1098,7 @@
     labelPlayback.tick();
     const k = pageKey();
     if ((k && k.str) !== S.key) {           // both sites change video / part without reloading the page
+      endStudy();
       if (k) load(k); else { S.key = null; S.gen++; S.cues = []; }
     }
     if (YOUTUBE && k && S.owner == null) {
@@ -1033,7 +1112,7 @@
     // YouTube plays ads in the same <video>: its time is the ad's, so nothing of ours shows meanwhile
     const ad = YOUTUBE && ui.host.classList.contains("ad-showing");
     ui.root.classList.toggle("asubs-ad", ad);
-    if (ad) return;
+    if (ad) { observedFrame = null; return; }
     layout(video);
     const t = video.currentTime || 0;
     const i = S.cues.length ? cueAt(t) : -1;
@@ -1050,6 +1129,7 @@
       S.cur = live; S.dirty = false;
       renderLine(live);
     }
+    if (study) sampleScreen(video, live, t);
     // while glosses are being generated, tell the server where the viewer is (after a jump, or every 20 s)
     if (S.annDone && S.id) {
       const jumped = Math.abs(t - S.lastT) > 3;
@@ -1062,7 +1142,9 @@
   }
 
   // ------------------------------------------------------------ settings ---
-  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover", "asubsKeysHint"], (r) => {
+  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover", "asubsKeysHint", "irtPreview", "irtEnabled"], (r) => {
+    trialModel = AdaptiveWordIRT.validPreview(r?.irtPreview) ? r.irtPreview : null;
+    trialEnabled = r?.irtEnabled === true;
     keysHint = !!(r && r.asubsKeysHint);
     POS = (r && r.asubsPos) || {};
     COVER = (r && r.asubsCover) || {};
@@ -1078,6 +1160,22 @@
   // the popup asks whose video this is, and turns the cover board on / off for that UP 主 / channel
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (sender.id !== chrome.runtime.id || !msg) return;
+    if (msg.type === "studyReady") { reply({ ready: studyReady() }); return; }
+    if (msg.type === "studyStart") {
+      if (!studyReady() || study) { reply({ error: "请启用 IRT、载入完整字幕，再开始记录" }); return; }
+      const gen = S.gen, model = trialModel;
+      bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint }).then(r => {
+        if (r.id) {
+          study = { id: r.id, gen }; observedFrame = null;
+          if (gen !== S.gen || model !== trialModel || !studyReady()) {
+            endStudy(); reply({ error: "视频或试用模型已切换，请重新开始" }); return;
+          }
+          toast("本视频的单词观看记录已开始");
+        }
+        reply(r);
+      });
+      return true;
+    }
     if (msg.type === "where") {
       const send = () => reply({ videoPage: !!pageKey(), canLabel: !!labelAvailable(), here: SITE.here,
         owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
@@ -1100,6 +1198,14 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    if (study && changes.wordStudyDraft && !changes.wordStudyDraft.newValue?.recording) study = observedFrame = null;
+    if (changes.irtPreview || changes.irtEnabled) {
+      endStudy();
+      if (changes.irtPreview) trialModel = AdaptiveWordIRT.validPreview(changes.irtPreview.newValue) ? changes.irtPreview.newValue : null;
+      if (changes.irtEnabled) trialEnabled = changes.irtEnabled.newValue === true;
+      computeVisible();
+      if (CARD.open) renderCard();
+    }
     if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
     if (changes.asubsCover) { COVER = changes.asubsCover.newValue || {}; lastLayout = ""; }
     if (!changes.settings) return;
