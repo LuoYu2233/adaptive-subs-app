@@ -12,13 +12,12 @@
   if (window.__adaptiveSubs) return;
   window.__adaptiveSubs = true;
 
-  const LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000];
   const PREFS = {
     more: { factor: 0.7, perLine: 4, repeat: 3 },
     normal: { factor: 1.0, perLine: 3, repeat: 2 },
     less: { factor: 1.3, perLine: 2, repeat: 1 },
   };
-  const DEFAULTS = { enabled: true, level: 3000, pref: "more", mode: "adaptive", gloss: "over", hideNative: true, pos: "bottom", cover: "on" };
+  const DEFAULTS = AdaptiveSettings.DEFAULTS;
   const GAP_GRACE = 0.5;     // a line stays this long after it ends, then the box disappears
   // Bilibili request signature ("WBI"): fixed shuffle of the two keys published by /nav
   const MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28,
@@ -69,7 +68,7 @@
   // never hides its uncommon meaning.
   const PF = { ok: false, rev: -1, level: 0, known: new Set(), unknown: new Set(), marks: new Map(), lastCheck: 0 };
   let defs = {};    // key -> short Chinese meaning, for words marked 不认识 that had no annotation
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptiveLearning.key;
   const effLevel = () => (PF.ok && PF.level) || cfg.level;
 
   // ------------------------------------------------------------ helpers ---
@@ -179,7 +178,7 @@
   // as plain English, and the glosses are generated only after a click — like speech recognition. A video
   // done (or started) before just loads.
   function offerGloss(gen, payload, label) {
-    pill(`${label} · 生词注释按你的 key 计费（10 分钟约 ¥0.1–0.3）`, {
+    pill(`${label} · 生词注释按所选模型和实际用量计费`, {
       sticky: true,
       action: { label: "生成注释", fn: () => startGloss(gen, payload, label) },
     });
@@ -307,7 +306,7 @@
   }
 
   function setCues(cues) {
-    S.cues = cues.map((c) => ({ s: c.s, e: c.e, text: c.text, zh: c.zh || "", notes: c.notes || [] }));
+    S.cues = cues.map((c) => ({ s: c.s, e: c.e, text: c.text, zh: c.zh || "", notes: AdaptiveLearning.clientNotes(c.text, c.notes || []) }));
     computeVisible();
   }
 
@@ -337,7 +336,9 @@
           });
           S.dirty = true;
         } else if (type === "ann") {
-          for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = notes; S.annDone && S.annDone.add(+k); }
+          for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) {
+            S.cues[+k].notes = AdaptiveLearning.clientNotes(S.cues[+k].text, notes); S.annDone && S.annDone.add(+k);
+          }
         } else if (type === "zh") {
           for (const [k, z] of Object.entries(d)) if (S.cues[+k]) S.cues[+k].zh = z;
         } else if (type === "text") {           // speech recognition: a line's words arrived
@@ -366,11 +367,8 @@
   // ------------------------------------------- which glosses to show (core) ---
   // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
   function noteState(n) {
-    const mk = markKey(n);
-    if (PF.unknown.has(mk)) return "forced";
-    if (PF.known.has(mk)) return "known";
     const pref = PREFS[cfg.pref] || PREFS.more;
-    return n.lv > effLevel() * pref.factor ? "hard" : "easy";
+    return AdaptiveLearning.state(n, PF.known, PF.unknown, effLevel() * pref.factor);
   }
 
   // rough base forms of a word as written, to match the library's lemma keys ("decided" -> "decide")
@@ -396,7 +394,7 @@
       const s = m.index, e = s + m[0].length;
       if (c.notes.some((n) => n.s < e && s < n.e)) continue;
       const key = lemmaGuesses(m[0]).find((k) => PF.unknown.has(k) && defs[k]);
-      if (key) extra.push({ s, e, zh: defs[key], lv: 99999, kind: "word", key, local: true });
+      if (key) extra.push({ s, e, zh: defs[key], lv: 99999, kind: "word", key, local: true, offsets: "utf16" });
     }
     if (extra.length) c.notes = c.notes.concat(extra).sort((a, b) => a.s - b.s);
   }
@@ -406,33 +404,33 @@
     const count = new Map();
     S.visible = S.cues.map((c) => {
       addMarkedWords(c);
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const st = noteState(n);
-        if (st === "forced" || st === "hard") cand.push({ i, lv: n.lv, key: markKey(n), forced: st === "forced" });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= pref.perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= pref.repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
+      return AdaptiveLearning.select(c.notes, PF.known, PF.unknown, effLevel() * pref.factor, pref, count);
     });
     S.dirty = true;
   }
 
   // ------------------------------------------------------------- profile ---
+  const profileSync = AdaptiveProfileSync.create({
+    read: async () => {
+      const r = await bg({ type: "profile" });
+      if (r.error) throw new Error(serverMsg(r));
+      return r;
+    },
+    write: async op => {
+      const r = await bg({ type: "mark", payload: { key: op.key, state: op.state } });
+      if (r.error) throw new Error(serverMsg(r));
+      return r;
+    },
+    apply: r => {
+      Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
+        marks: new Map([...r.marks.known.map(k => [k, "known"]), ...r.marks.unknown.map(k => [k, "unknown"])]) });
+      computeVisible();
+    },
+  });
   async function loadProfile() {
-    const r = await bg({ type: "profile" });
     PF.lastCheck = Date.now();
-    if (r.error || !Array.isArray(r.known)) { PF.ok = false; computeVisible(); return; }
-    Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
-      marks: new Map([...r.marks.known.map((k) => [k, "known"]), ...r.marks.unknown.map((k) => [k, "unknown"])]) });
-    computeVisible();
+    try { await profileSync.refresh(); }
+    catch { PF.ok = false; computeVisible(); }
   }
 
   async function checkProfile() {          // the profile page or the popup may have changed it
@@ -443,22 +441,22 @@
     if (r.rev !== PF.rev || !PF.ok) loadProfile();
   }
 
+  let markNotice = 0;
   async function mark(key, state, word, zhShort) {
+    const notice = ++markNotice;
+    try {
+      await profileSync.mutate({ type: "mark", key, state });
+    } catch (e) {
+      return pill(`标记保存未确认：${e.message}；已恢复到最近确认的记录，请重试`, { hideAfter: 6000 });
+    }
     if (state === "unknown" && zhShort && !defs[key]) {
       defs[key] = zhShort;
       chrome.storage.local.set({ asubsDefs: defs });
     }
-    // update right away, then let the server recompute the library
-    PF.known.delete(key); PF.unknown.delete(key); PF.marks.delete(key);
-    if (state === "known") { PF.known.add(key); PF.marks.set(key, "known"); }
-    if (state === "unknown") { PF.unknown.add(key); PF.marks.set(key, "unknown"); }
-    computeVisible();
-    const r = await bg({ type: "mark", payload: { key, state } });
-    if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
-    const shown = key.replace(/^(sense|phrase):/, "");
+    if (notice !== markNotice) return;
+    const shown = AdaptiveLearning.label(key);
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
-    loadProfile();
   }
 
   // ------------------------------------------------------------ overlay ---
@@ -711,27 +709,31 @@
     const word = note ? c.text.slice(note.s, note.e) : tok.dataset.w;
     const key = note ? markKey(note) : (lemmaGuesses(word).find((k) => PF.known.has(k) || PF.unknown.has(k)) || word.toLowerCase());
     if (CARD.open && CARD.key === key) return closeCard();
+    const req = ++CARD.defReq;  // Switching to an annotated card also invalidates pending lookups.
     const v = findVideo();
     if (!CARD.open && v && !v.paused) { v.pause(); CARD.paused = true; }
     const looking = !note || note.local;
     Object.assign(CARD, { open: true, key, word, note, ci: S.cur, zh: note && !note.local ? note.zh : "", short: note ? note.zh : "",
-      lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "" });
+      lists: null, dict: null, dictState: looking ? "loading" : "", ctx: null, ctxState: looking ? "loading" : "", ctxError: "" });
     renderCard();
     placeCard(tok);
     if (!looking) return;
     // A word without an annotation: dictionary meaning (instant, general) + its meaning in this line
     // (asks the annotation model, 1-2 s) — the dictionary alone can be wrong here ("ligature" = 绳 in a video on fonts)
-    const req = ++CARD.defReq;
     const live = () => req === CARD.defReq && CARD.open;
     (async () => {
       let d = await bg({ type: "define", word });
+      if (!live()) return;
+      let resolvedKey = key;
       if (!d.zh) {                               // try base forms ("decided" -> "decide")
         for (const g of lemmaGuesses(word).slice(1)) {
           const r2 = await bg({ type: "define", word: g });
-          if (r2.zh) { d = r2; if (!note) CARD.key = g; break; }
+          if (!live()) return;
+          if (r2.zh) { d = r2; if (!note) resolvedKey = g; break; }
         }
       }
       if (!live()) return;
+      CARD.key = resolvedKey;
       CARD.dict = d.zh ? d : null;
       CARD.dictState = d.zh ? "done" : "none";
       CARD.lists = d.lists || null;
@@ -759,7 +761,7 @@
 
   function renderCard() {
     const n = CARD.note, mk = PF.marks.get(CARD.key);
-    const known = n && n.kind !== "word" ? "我懂这个意思" : "我认识";
+    const known = "我认识";
     const dim = (t) => h("div", "asubs-card-dim", t);
     const zhLine = (pos, zh) => h("div", "asubs-card-zh", pos ? h("span", "asubs-card-pos", pos) : null, zh);
     let meaning;
@@ -1047,8 +1049,7 @@
     keysHint = !!(r && r.asubsKeysHint);
     POS = (r && r.asubsPos) || {};
     COVER = (r && r.asubsCover) || {};
-    cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
-    if (!LEVELS.includes(cfg.level)) cfg.level = DEFAULTS.level;
+    cfg = AdaptiveSettings.normalize(r?.settings);
     defs = (r && r.asubsDefs) || {};
     computeVisible();
     loadProfile();
@@ -1069,11 +1070,11 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
+    if (changes.profileRev) loadProfile();      // Other settings may change in the same storage event.
     if (changes.asubsCover) { COVER = changes.asubsCover.newValue || {}; lastLayout = ""; }
     if (!changes.settings) return;
     const wasOn = cfg.enabled;
-    cfg = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
+    cfg = AdaptiveSettings.normalize(changes.settings.newValue);
     lastLayout = "";
     computeVisible();
     showPill();

@@ -40,7 +40,8 @@ def main():
     shutil.copytree(WEB / "assets", SITE / "assets")
     # cache-busting: browsers / GitHub Pages' CDN must not serve an old app.js with a new page
     html = (WEB / "player.html").read_text(encoding="utf-8")
-    for name in ("app.js", "style.css"):
+    html = html.replace('data-player-mode="auto"', 'data-player-mode="static"', 1)
+    for name in ("app.js", "style.css", "api-events.js", "learning.js", "wordbook.js", "player-store.js", "profile-sync.js"):
         digest = hashlib.sha1((WEB / "assets" / name).read_bytes()).hexdigest()[:8]
         html = html.replace(f'assets/{name}"', f'assets/{name}?v={digest}"')
     (SITE / "index.html").write_text(html, encoding="utf-8")

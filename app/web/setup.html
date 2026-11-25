@@ -28,7 +28,7 @@
   .prov { display: grid; gap: 10px; }
   .opt { display: block; border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 14px; cursor: pointer; }
   .opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
-  .opt-head { display: flex; align-items: center; gap: 10px; }
+  .opt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; overflow-wrap: anywhere; }
   .opt-head input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
   .opt-name { font-weight: 700; }
   .tag { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: #1b1300; font-weight: 600; }
@@ -50,7 +50,8 @@
   button:disabled { opacity: 0.6; cursor: default; }
   #msg { font-size: 14px; }
   #msg.ok { color: var(--ok); } #msg.bad { color: var(--bad); }
-  .results { margin-top: 10px; font-size: 13px; display: grid; gap: 2px; }
+  .results { margin-top: 10px; font-size: 13px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+  .results .ok { color: var(--ok); } .results .bad { color: var(--bad); }
   .foot { color: var(--ink-2); font-size: 12px; margin-top: 18px; }
   code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
 
@@ -77,26 +78,30 @@
 
   <section>
     <h2>1. 注释模型</h2>
-    <p class="sub">负责判断哪些词你可能不认识、写中文释义和整句翻译。三家都按用量计费，一集 10 分钟的视频大约几毛钱。</p>
+    <p class="sub">负责判断哪些词你可能不认识、写中文释义和整句翻译。按服务商和模型的用量计费，生成结果保存在本机供下次使用。</p>
     <div class="prov" id="prov"></div>
   </section>
 
   <section>
     <h2>2. 语音识别：小米 MiMo（固定）</h2>
-    <p class="sub">视频没有英文字幕时，用它把英语语音转成字幕（10 分钟约 ¥0.1）。有英文字幕的视频用不到。</p>
+    <p class="sub">视频没有英文字幕时，用它把英语语音转成字幕，按使用的语音模型计费。有英文字幕的视频用不到。</p>
     <div id="asrBox">
       <label class="k" for="key-mimo-asr">小米 MiMo API key</label>
       <input type="password" id="key-mimo-asr" autocomplete="off" spellcheck="false" placeholder="sk-…">
       <div class="hint" id="hint-mimo-asr"></div>
+      <details><summary>语音模型名称</summary><label class="k" for="model-asr">模型 ID</label><input id="model-asr" type="text" maxlength="120" spellcheck="false"></details>
       <div class="hint">在 <a href="https://platform.xiaomimimo.com" target="_blank" rel="noopener">platform.xiaomimimo.com</a> 注册后创建 API key。注释模型也选 MiMo 的话，两边共用这一个 key。</div>
     </div>
   </section>
 
   <div class="actions">
-    <button class="primary" id="save" type="button">保存并测试</button>
+    <button class="primary" id="save" type="button" disabled>保存并测试</button>
+    <button id="checkSaved" type="button" disabled>检查已保存的模型</button>
+    <button id="reloadSettings" type="button" title="重新读取会清除当前未保存的填写内容">重新读取设置</button>
     <span id="msg" role="status"></span>
   </div>
   <div class="results" id="results"></div>
+  <p class="hint">模型检查只读取服务商的模型列表，不生成内容；通过检查不代表实际生成能力或剩余额度。</p>
 
   <p class="foot">保存位置：<code id="cfg"></code><br>留空的输入框表示保留已保存的 key。设置好后，打开带英文字幕（或英语语音）的 B 站或 YouTube 视频即可。</p>
 </main>
@@ -114,11 +119,50 @@
   const TAGS = { deepseek: "推荐" };
   const ORDER = ["deepseek", "mimo", "openai"];
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let state = null;
+  let state = null, busy = false, conflicted = false;
 
-  async function load() {
-    const r = await fetch("/api/settings", { headers: H });
-    state = await r.json();
+  function working(value) {
+    busy = value;
+    $("#save").disabled = value || !state || conflicted;
+    $("#checkSaved").disabled = value || !state;
+    $("#reloadSettings").disabled = value;
+    document.querySelectorAll("#prov input, #asrBox input").forEach(el => { el.disabled = value || !state; });
+  }
+
+  async function request(path, body, timeout = 10000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(path, { headers: H, signal: controller.signal,
+        ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) });
+      let value;
+      try { value = await response.json(); }
+      catch (error) { if (controller.signal.aborted) throw error; throw new Error("本地程序返回了无法读取的响应"); }
+      if (!response.ok) {
+        const error = new Error(typeof value?.error === "string" ? value.error : `本地程序返回错误（${response.status}）`);
+        error.conflict = response.status === 409 && value?.conflict === true;
+        throw error;
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("本地程序返回的格式不正确");
+      if (value.error) throw new Error(String(value.error));
+      return value;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("请求超时，请确认本地程序仍在运行");
+      if (error instanceof TypeError) throw new Error("连不上本地程序，请确认程序仍在运行");
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
+  function render(value) {
+    if (!value || !ORDER.includes(value.provider) || typeof value.config_file !== "string"
+        || typeof value.rev !== "string" || !/^[a-f0-9]{32}$/.test(value.rev)
+        || !Array.isArray(value.providers) || value.providers.length !== ORDER.length
+        || !ORDER.every(id => value.providers.filter(p => p?.id === id).length === 1)
+        || !value.providers.every(p => ["name", "model", "default_model", "note", "key_hint"].every(k => typeof p[k] === "string"))
+        || typeof value.asr?.model !== "string" || typeof value.asr?.key_hint !== "string") {
+      throw new Error("设置响应不完整，请重新读取");
+    }
+    state = value;
     $("#cfg").textContent = state.config_file;
     const byId = Object.fromEntries(state.providers.map((p) => [p.id, p]));
     $("#prov").innerHTML = ORDER.filter((id) => byId[id]).map((id) => {
@@ -135,47 +179,90 @@
           <span class="opt-name">${esc(p.name)}</span><span class="hint" style="margin:0">${esc(p.model)}</span>
           ${TAGS[id] ? `<span class="tag">${TAGS[id]}</span>` : ""}</span>
         <div class="opt-note">${esc(p.note)}</div>
-        <div class="keyrow">${keyField}</div>
+        <div class="keyrow">${keyField}<details><summary>更改注释模型</summary>
+          <label class="k" for="model-${id}">模型 ID</label><input id="model-${id}" type="text" value="${esc(p.model)}" maxlength="120" spellcheck="false">
+          <div class="hint">默认 ${esc(p.default_model)}；需支持文字对话和 JSON 输出。保存后会核对模型列表，不生成收费内容。</div></details></div>
       </label>`;
     }).join("");
     const asr = $("#hint-mimo-asr");
     asr.textContent = state.asr.key_hint || "还没填写";
     asr.className = "hint" + (state.asr.key_hint ? " ok" : "");
+    $("#model-asr").value = state.asr.model;
+    $("#key-mimo-asr").value = "";
+    working(busy);
+  }
+
+  async function load() {
+    if (busy) return;
+    state = null; conflicted = false; working(true);
+    const msg = $("#msg");
+    msg.className = ""; msg.textContent = "正在读取设置…";
+    $("#results").innerHTML = "";
+    try {
+      render(await request("/api/settings"));
+      msg.textContent = "已读取保存的设置";
+    } catch (error) { msg.className = "bad"; msg.textContent = `读取设置失败：${error.message}。可以重新读取设置。`; }
+    finally { working(false); }
+  }
+
+  async function checkModels(savedNow) {
+    const msg = $("#msg");
+    const prefix = savedNow ? "设置已保存；" : "";
+    msg.className = ""; msg.textContent = prefix + "正在检查已保存的模型…";
+    // The server checks at most two providers, each with a 15 second timeout.
+    const result = await request("/api/settings/test", {}, 40000);
+    const provider = result.provider, needed = [provider, "asr"];
+    if (!ORDER.includes(provider) || !needed.every(id => typeof result.results?.[id] === "string"
+        && typeof result.checked_models?.[id] === "string")) throw new Error("模型检查响应不完整");
+    const names = Object.fromEntries(state.providers.map(p => [p.id, p.name]));
+    $("#results").innerHTML = needed.map(id => `<div>${esc(id === "asr" ? "小米 MiMo（语音识别）" : names[id] + "（注释）")}
+      · ${esc(result.checked_models[id])}：<span class="${result.results[id] === "ok" ? "ok" : "bad"}">${esc(result.results[id] === "ok" ? "模型列表中可见" : result.results[id])}</span></div>`).join("");
+    const bad = needed.filter(id => result.results[id] !== "ok");
+    msg.className = bad.includes(provider) ? "bad" : "ok";
+    msg.textContent = prefix + (!bad.length ? "模型列表检查通过，实际生成能力和额度需以使用结果为准。"
+      : bad.length === 1 && bad[0] === "asr" ? "注释模型在列表中可见；语音模型尚未通过检查，只影响需要语音识别的视频。"
+      : "还有设置需要检查，见下方");
   }
 
   async function save() {
-    const btn = $("#save"), msg = $("#msg");
-    btn.disabled = true;
+    if (busy || !state || conflicted) return;
+    working(true);
+    const msg = $("#msg");
     msg.className = ""; msg.textContent = "正在保存…";
     $("#results").innerHTML = "";
-    const provider = (document.querySelector('input[name="prov"]:checked') || {}).value || state.provider;
-    const keys = { mimo: $("#key-mimo-asr").value.trim() };
-    for (const id of ["deepseek", "openai"]) { const el = $(`#key-${id}`); if (el) keys[id] = el.value.trim(); }
+    let saved = false;
     try {
-      const r = await (await fetch("/api/settings", { method: "POST", headers: H, body: JSON.stringify({ provider, keys }) })).json();
-      if (r.error) { msg.className = "bad"; msg.textContent = r.error; return; }
-      msg.textContent = "已保存，正在测试 key…";
-      const t = await (await fetch("/api/settings/test", { method: "POST", headers: H, body: "{}" })).json();
-      await load();
-      const name = Object.fromEntries(state.providers.map((p) => [p.id, p.name]));
-      const res = t.results || {};
-      const needed = [provider, "mimo"];
-      const bad = needed.filter((id) => res[id] !== "ok");
-      $("#results").innerHTML = needed.filter((v, i, a) => a.indexOf(v) === i).map((id) =>
-        `<div>${esc(id === "mimo" ? "小米 MiMo（语音识别" + (provider === "mimo" ? " + 注释" : "") + "）" : name[id] + "（注释）")}：${res[id] === "ok" ? '<span style="color:var(--ok)">连接正常</span>' : `<span style="color:var(--bad)">${esc(res[id] || "未测试")}</span>`}</div>`).join("");
-      if (!bad.length) { msg.className = "ok"; msg.textContent = "都设置好了，可以去 B 站或 YouTube 看视频了"; }
-      else if (bad.length === 1 && bad[0] === "mimo" && provider !== "mimo") { msg.className = "ok"; msg.textContent = "注释可以用了；语音识别还没设置好（只影响没有英文字幕的视频）"; }
-      else { msg.className = "bad"; msg.textContent = "还有 key 没设置好，见下方"; }
-      document.querySelectorAll('input[type="password"]').forEach((el) => { el.value = ""; });
-    } catch (e) {
-      msg.className = "bad"; msg.textContent = "连不上本地程序：请确认 Adaptive Subs 的窗口还开着";
-    } finally {
-      btn.disabled = false;
-    }
+      const provider = document.querySelector('input[name="prov"]:checked')?.value || state.provider;
+      const keys = { mimo: $("#key-mimo-asr").value.trim() };
+      const models = Object.fromEntries(ORDER.map(id => [id, $(`#model-${id}`).value.trim()]));
+      for (const id of ["deepseek", "openai"]) keys[id] = $(`#key-${id}`).value.trim();
+      const response = await request("/api/settings", { expected_rev: state.rev, provider, keys, models, asr_model: $("#model-asr").value.trim() });
+      if (response.ok !== true) throw new Error("本地程序没有确认保存结果");
+      saved = true;
+      document.querySelectorAll('input[type="password"]').forEach(el => { el.value = ""; });
+      render(response.settings);
+      await checkModels(true);
+    } catch (error) {
+      msg.className = "bad";
+      conflicted = error.conflict === true;
+      msg.textContent = conflicted ? "设置已被其他窗口更新或程序已重启，当前修改没有写入。请重新读取设置后再修改；重新读取会清除当前填写。"
+        : saved ? `设置已保存；后续检查未完成：${error.message}。可以单独检查已保存的模型。`
+        : `未确认设置是否保存：${error.message}。请重新读取设置后核对；没有自动重试。`;
+    } finally { working(false); }
+  }
+
+  async function recheck() {
+    if (busy || !state) return;
+    working(true); $("#results").innerHTML = "";
+    try { await checkModels(false); }
+    catch (error) { $("#msg").className = "bad"; $("#msg").textContent = `模型检查未完成：${error.message}。已保存的设置保持不变，可以重试检查。`; }
+    finally { working(false); }
   }
 
   $("#save").addEventListener("click", save);
-  load().catch(() => { $("#msg").className = "bad"; $("#msg").textContent = "读取设置失败：请确认 Adaptive Subs 的窗口还开着"; });
+  $("#checkSaved").addEventListener("click", recheck);
+  $("#reloadSettings").addEventListener("click", load);
+  load();
 })();
 </script>
 <script>

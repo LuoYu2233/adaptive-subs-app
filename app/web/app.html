@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Adaptive Subs</title>
 <script>
-  // the intro plays once per launch; reduced motion skips it (set before first paint: no flash)
+  // Keep setup immediately usable; the full introduction can be opened explicitly with ?intro=1.
   try {
-    if (sessionStorage.getItem("asubsIntro") || matchMedia("(prefers-reduced-motion: reduce)").matches)
+    if (new URLSearchParams(location.search).get("intro") !== "1" || sessionStorage.getItem("asubsIntro") || matchMedia("(prefers-reduced-motion: reduce)").matches)
       document.documentElement.classList.add("no-intro");
     else document.documentElement.classList.add("intro-on");
   } catch (e) { document.documentElement.classList.add("no-intro"); }
@@ -100,12 +100,12 @@
   .live.down { background: rgba(208, 96, 26, 0.12); } .live.down i { background: var(--warn); } .live.down i::after { border-color: var(--warn); }
 
   /* ---------- the stage: a film still with the state as a subtitle ---------- */
-  .stage { position: relative; height: 188px; border-radius: 18px; overflow: hidden; background: #05070f; box-shadow: var(--shadow); isolation: isolate; }
+  .stage { position: relative; min-height: 188px; border-radius: 18px; overflow: hidden; background: #05070f; box-shadow: var(--shadow); isolation: isolate; }
   .still { position: absolute; right: 0; top: 0; width: 52%; height: 100%; object-fit: cover; object-position: 50% 34%;
            transform: translate(calc(var(--px, 0) * -14px), calc(var(--py, 0) * -10px)) scale(1.08); transition: transform 0.6s var(--ease); z-index: -2; }
   .shade { position: absolute; inset: 0; z-index: -1;
            background: linear-gradient(90deg, #05070f 38%, rgba(5, 7, 15, 0.82) 55%, rgba(5, 7, 15, 0.15) 85%), linear-gradient(0deg, rgba(5, 7, 15, 0.6), transparent 45%); }
-  .stage-body { position: absolute; left: 34px; right: 46%; top: 50%; transform: translateY(-46%); color: #fff; }
+  .stage-body { position: relative; width: 56%; padding: 24px 34px; color: #fff; }
   .kicker { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #b9c6e6; margin-bottom: 24px; }
   .kicker i { width: 6px; height: 6px; border-radius: 50%; background: var(--gloss); box-shadow: 0 0 10px var(--gloss); }
   .line { font: 650 28px/1.3 var(--display); letter-spacing: 0.002em; }
@@ -175,6 +175,8 @@
 
   /* videos */
   .videos { padding: 0 8px; }
+  #taskIssue { margin: 8px 18px 14px; padding: 12px; border: 1px solid rgba(180, 116, 20, 0.35); border-radius: 12px; }
+  #taskIssue p { margin: 0 0 10px; line-height: 1.65; }
   .vid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 9px 10px; border-radius: 12px; align-items: center; transition: background 0.2s, transform 0.2s var(--ease); }
   .vid:hover { background: rgba(125, 184, 255, 0.1); transform: translateX(3px); }
   .vid-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -268,7 +270,7 @@
 
   @media (max-width: 780px) {
     .grid { grid-template-columns: 1fr; }
-    .stage-body { right: 24px; } .still { width: 100%; opacity: 0.35; }
+    .stage-body { width: 100%; padding: 24px; } .still { width: 100%; opacity: 0.35; }
     ol.ready li { grid-template-columns: 20px 22px minmax(0, 1fr); }
     ol.ready li .btn { grid-column: 3; justify-self: start; }
   }
@@ -316,7 +318,12 @@
         <li><span class="st" id="s2"></span><div class="what"><b>浏览器插件</b><span id="d2"></span></div><button class="btn" type="button" id="extHelp">安装方法</button></li>
         <li><span class="st" id="s3"></span><div class="what"><b>英语画像</b><span id="d3"></span></div><a class="btn" href="/profile?app=1" id="b3">打开</a></li>
         <li><span class="st" id="s4"></span><div class="what"><b>语音识别<span class="opt">可选</span></b><span id="d4"></span></div><a class="btn" href="/setup?app=1">更改</a></li>
+        <li><span class="st" id="s5"></span><div class="what"><b>本地英语组件</b><span id="d5"></span></div><button class="btn" type="button" id="runtimeRetry">重新检查</button></li>
       </ol>
+      <div id="runtimeHelp" hidden style="padding:10px 18px;color:var(--ink-2)">
+        <p>源码运行：在运行程序的 Python 环境中重新安装 <code>requirements.txt</code> 的依赖。打包版：先退出，再重新解压完整程序；不要只复制可执行文件。</p>
+        <p>修复后点击「重新检查」。检查只加载本机组件，不下载模型、不调用付费服务；已有字幕和无密钥示例仍可打开。</p>
+      </div>
     </section>
 
     <section class="glass panel spot" style="--i:1">
@@ -326,6 +333,11 @@
 
     <section class="glass panel spot" style="--i:2">
       <div class="head"><h2>最近的视频</h2></div>
+      <div id="taskIssue" hidden>
+        <p id="taskIssueText"></p>
+        <p>已经生成的字幕和英语画像仍然保留。重建会先保存任务库原文件，再建立空任务记录；未完成的视频需要重新发起处理。</p>
+        <button class="btn" id="recoverTasks" type="button">保留副本并重建任务记录</button>
+      </div>
       <div class="videos" id="videos"></div>
     </section>
 
@@ -340,6 +352,7 @@
   </div>
 
   <footer style="--i:3">
+    <span id="appVersion"></span><a href="/privacy">数据与隐私</a>
     <span class="grow">看视频时让程序保持运行，可以最小化窗口</span>
     <button class="btn" type="button" id="quit">退出程序</button>
   </footer>
@@ -362,11 +375,23 @@
   </div>
 </dialog>
 
+<dialog id="folderDlg">
+  <h3>手动打开文件夹</h3>
+  <p id="folderMessage" role="status"></p>
+  <p><label for="folderPath">文件夹路径</label></p>
+  <input id="folderPath" readonly style="width:100%;box-sizing:border-box;padding:10px;font:13px var(--mono);border:1px solid var(--rule);border-radius:8px">
+  <div class="dlg-actions">
+    <button class="btn" type="button" id="copyFolder">复制路径</button>
+    <button class="btn primary" type="button" data-close>关闭</button>
+  </div>
+</dialog>
+
 <dialog id="quitDlg">
   <h3>退出 Adaptive Subs？</h3>
   <p>退出后浏览器插件就不能生成注释了。只是不想看到这个窗口的话，把它最小化就好。</p>
+  <p id="quitError" role="status"></p>
   <div class="dlg-actions">
-    <button class="btn" type="button" data-close>取消</button>
+    <button class="btn" type="button" id="quitCancel" data-close>取消</button>
     <button class="btn primary" type="button" id="quitYes">退出程序</button>
   </div>
 </dialog>
@@ -382,6 +407,8 @@
   const ago = (s) => s < 60 ? "刚刚" : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let disconnected = false, refreshing = false;
+  const pendingTasks = new Set();
 
   // ------------------------------------------------------------------ intro ---
   // film frame -> frosted board covers the Chinese caption -> English line types in -> 枯燥 pops above "boring"
@@ -437,19 +464,9 @@
     stage.style.setProperty("--py", Math.max(-0.6, Math.min(0.6, (e.clientY - st.top) / st.height - 0.5)).toFixed(3));
   });
 
-  function countUp(el, to, suffix) {
+  function showVocab(el, to, suffix) {
     if (!el) return;
-    const from = el.dataset.v != null ? +el.dataset.v : Math.round(to * 0.6);
-    if (el.dataset.v != null && from === to) return;
-    el.dataset.v = to;
-    if (REDUCED) { el.innerHTML = `≈ ${fmt(to)}${suffix}`; return; }
-    const t0 = performance.now() + (introDone ? 150 : 4300), dur = 1100;
-    const tick = (t) => {
-      const k = Math.max(0, Math.min(1, (t - t0) / dur)), e = 1 - Math.pow(1 - k, 3);
-      el.innerHTML = `≈ ${fmt(Math.round((from + (to - from) * e) / 10) * 10)}${suffix}`;
-      if (k < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+    el.innerHTML = `≈ ${fmt(to)}${suffix}`;
   }
   function growBars(delay) {
     setTimeout(() => document.querySelectorAll(".bands span").forEach((el, i) => setTimeout(() => { el.style.height = `${el.dataset.h}%`; }, i * 60)), delay);
@@ -492,11 +509,19 @@
   let lastVideos = "", lastVocab = "";
 
   function render(s) {
+    $("#appVersion").textContent = s.version ? `v${s.version}` : "";
     $("#live").className = "live";
     $("#live span").textContent = "运行中";
 
     const job = s.jobs.find((j) => j.state === "running");
-    if (!s.key) {
+    const runtime = s.runtime || {state: "unchecked", message: "本地英语组件尚未检查"};
+    if (runtime.state === "error") {
+      stage("runtimeerror", `<div class="kicker"><i></i>本地组件需要修复</div><div class="line">暂时无法开始新的生成</div>
+        <div class="sub">已有字幕仍保留。请查看下方本地英语组件的修复说明。</div><a class="btn" href="/player.html">查看已有字幕</a>`, null);
+    } else if (runtime.state !== "ready") {
+      stage("runtimechecking", `<div class="kicker"><i></i>正在准备本地组件</div><div class="line">正在加载英语处理能力</div>
+        <div class="sub">完成后即可开始生成。</div><a class="btn" href="/player.html">查看已有字幕</a>`, null);
+    } else if (!s.key) {
       stage("nokey", `<div class="kicker"><i></i>还差一步</div>
         <div class="line">${gl("", "Set up", "设置", " a model key to begin.")}</div>
         <div class="sub">先填写注释模型的 API key，插件才能生成注释</div>
@@ -507,6 +532,14 @@
         <div class="line">${gl("", "Annotating", "正在注释", " this video…")}</div>
         <div class="sub" id="jobTitle"></div>`, pct);
       $("#jobTitle").textContent = `${job.title}  ${pct}%`;
+    } else if (s.profile.error) {
+      stage(`profileerror:${s.profile.recoverable}:${s.profile.error}`, `<div class="kicker"><i></i>画像暂不可用</div>
+        <div class="line">学习记录暂时无法读取</div><div class="sub">${esc(s.profile.error)}</div>
+        <a class="btn primary" href="/profile?app=1">${s.profile.recoverable ? "恢复画像" : "查看画像"}</a>`, null);
+    } else if (s.task_issue) {
+      stage("ready", `<div class="kicker"><i></i>任务记录需要检查</div>
+        <div class="line">已生成的字幕和画像仍可使用</div><div class="sub">查看最近视频区域的错误说明，再继续处理新视频。</div>
+        <a class="btn primary" href="#taskIssue">查看任务记录</a>`, null);
     } else {
       stage("ready", `<div class="kicker"><i></i>一切就绪</div>
         <div class="line">${gl("", "Ready", "准备好了", " when you are.")}</div>
@@ -517,25 +550,29 @@
     const seen = s.ext_seen;
     status(2, seen != null ? "ok" : "idle", seen == null ? "还没连接过。装好后打开一个 B 站或 YouTube 视频，这里会变成已连接" : `已连接，最近一次联系是${ago(seen)}`);
     const p = s.profile;
-    status(3, p.setup ? "ok" : "idle", p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
-      : "还没建立。做个 3 分钟的词汇测试，注释会准很多");
-    $("#b3").textContent = p.setup ? "打开" : "开始";
+    status(3, p.error ? "warn" : p.setup ? "ok" : "idle", p.error || (p.setup ? `约 ${fmt(p.level)} 词，熟词库 ${fmt(p.known)} 词${p.test ? "" : "，还没做词汇测试"}`
+      : "还没建立。做个 3 分钟的词汇测试，注释会准很多"));
+    $("#b3").textContent = p.error ? (p.recoverable ? "恢复画像" : "查看") : p.setup ? "打开" : "开始";
     $("#b3").className = p.setup ? "btn" : "btn primary";
     status(4, s.asr ? "ok" : "idle", (s.asr ? "小米 MiMo，没有英文字幕的视频也能用" : "没设置，只影响没有英文字幕的视频") +
-      (s.local_asr ? "；接口拒绝的句子由本机模型补上" : ""));
-    const todo = [!s.key, seen == null, !p.setup].filter(Boolean).length;
+      (s.local_asr ? "；接口未识别的句子可尝试本机识别" : ""));
+    status(5, runtime.state === "ready" ? "ok" : runtime.state === "error" ? "warn" : "idle", runtime.message || "本地英语组件已就绪");
+    $("#runtimeRetry").hidden = runtime.state === "ready";
+    $("#runtimeRetry").disabled = runtime.state === "checking";
+    $("#runtimeHelp").hidden = runtime.state !== "error";
+    const todo = [!s.key, seen == null, !p.setup, runtime.state !== "ready"].filter(Boolean).length;
     $("#readyNote").textContent = todo ? `还有 ${todo} 项没完成` : "都准备好了";
 
     // vocabulary (number counts up; bars grow when drawn)
     const bands = (p.test && p.test.bands) || [];
     const labels = ["1k", "2k", "3k", "4.5k", "6k", "8k", "11k", "15k", "20k"];
-    const sig = JSON.stringify([p.setup, p.test && p.test.date, bands, p.known, p.marked]);
+    const sig = JSON.stringify([p.setup, p.test && p.test.date, bands, p.known, p.marked, p.error, p.recoverable]);
     if (sig !== lastVocab) {
       const first = !lastVocab;
       lastVocab = sig;
       $("#vocab").innerHTML = `
         <div class="num" id="num"></div>
-        <div class="facts">${p.setup
+        <div class="facts">${p.error ? `<span>${esc(p.error)}</span>` : p.setup
           ? `<span>${p.test ? `来自 ${esc(p.test.date)} 的词汇测试` : "按考试成绩和身份估计"}</span>
              <span>熟词库 <strong>${fmt(p.known)}</strong> 词，看视频时标记过 <strong>${p.marked}</strong> 个</span>`
           : `<span>还没有建立英语画像，现在按默认水平注释</span>`}</div>
@@ -543,18 +580,26 @@
             `<div title="${labels[i] || ""}：${Math.round(b * 100)}%"><span data-h="${Math.max(4, b * 100)}"></span></div>`).join("")}</div>
           <div class="band-x">${bands.map((_, i) => `<span>${labels[i] || ""}</span>`).join("")}</div>
           <div class="cap">每一栏是一个词频段里你认识的比例，越往右越难</div>`
-          : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
+          : `<div><a class="btn ${p.setup ? "" : "primary"}" href="/profile?app=1">${p.error ? (p.recoverable ? "恢复画像" : "查看画像") : p.setup ? "做词汇测试" : "建立英语画像"}</a></div>`}`;
       if (introDone || !first) growBars(first ? 400 : 60);
     }
-    countUp($("#num"), p.level, "<small>词</small>");
+    if (p.error) $("#num").textContent = p.recoverable ? "需恢复" : "暂不可用";
+    else showVocab($("#num"), p.level, "<small>词</small>");
 
     // videos (redrawn only when they change)
+    $("#taskIssue").hidden = !s.task_issue;
+    $("#taskIssueText").textContent = s.task_issue?.error || "";
+    $("#recoverTasks").hidden = !s.task_issue?.recoverable;
+    $("#recoverTasks").dataset.fingerprint = s.task_issue?.fingerprint || "";
     const rows = [];
     for (const j of s.jobs) {
       const pct = j.total ? Math.min(100, Math.round((100 * j.done) / j.total)) : 0;
       rows.push(`<div class="vid"><div class="vid-t" title="${esc(j.title)}">${esc(j.title)}${j.asr ? '<span class="badge">语音识别</span>' : ""}</div>
-        <div class="vid-m">${j.state === "running" ? `${pct}%` : j.state === "error" ? "出错了" : "完成"}</div>
-        ${j.state === "running" ? `<div class="bar-p"><span style="width:${pct}%"></span></div>` : ""}</div>`);
+        <div class="vid-m">${j.persistence_error ? "进度未能保存" : j.state === "running" ? `${pct}%` : ({ error: "出错了", partial: "部分完成", cancelled: "已取消", cancelling: "正在停止", interrupted: "待恢复", done: "完成" }[j.state] || j.state)}
+          ${j.state === "running" ? `<button class="btn" data-job="cancel" data-id="${esc(j.id)}" data-label="取消" ${pendingTasks.has(j.id) ? "disabled" : ""}>${pendingTasks.has(j.id) ? "提交中…" : "取消"}</button>`
+            : ["error", "partial", "cancelled", "interrupted"].includes(j.state) ? `<button class="btn" data-job="resume" data-id="${esc(j.id)}" data-label="${j.asr ? "重试识别" : "继续处理"}" ${pendingTasks.has(j.id) ? "disabled" : ""}>${pendingTasks.has(j.id) ? "提交中…" : j.asr ? "重试识别" : "继续处理"}</button>` : ""}</div>
+        ${j.state === "running" ? `<div class="bar-p"><span style="width:${pct}%"></span></div>` : ""}
+        ${j.cache_update ? '<p class="sub">旧版语音缓存无法确认结果完整性。重试会重新识别相关片段，可能产生新的语音用量。</p>' : ""}</div>`);
     }
     const running = new Set(s.jobs.map((j) => j.id));
     for (const v of s.recent) {
@@ -573,41 +618,148 @@
   }
 
   async function refresh() {
+    if (disconnected || refreshing) return;
+    refreshing = true;
     try {
-      const r = await fetch("/api/status", { headers: H, cache: "no-store" });
-      render(await r.json());
+      const r = await fetch("/api/status", { headers: H, cache: "no-store", signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error("Status unavailable");
+      const status = await r.json();
+      if (!disconnected) render(status);
     } catch {
+      if (disconnected) return;
       $("#live").className = "live down";
       $("#live span").textContent = "程序没有响应";
+    } finally { refreshing = false; }
+  }
+
+  async function changeTask(task) {
+    const id = task.dataset.id, action = task.dataset.job;
+    if (disconnected || pendingTasks.has(id) || !["cancel", "resume"].includes(action)) return;
+    pendingTasks.add(id);
+    task.disabled = true;
+    task.textContent = "提交中…";
+    try {
+      const response = await fetch(`/api/jobs/${action}`, { method: "POST", headers: H,
+        body: JSON.stringify({ id }), signal: AbortSignal.timeout(10000) });
+      const result = await response.json();
+      if (!response.ok || result?.error) throw new Error(typeof result?.error === "string" ? result.error : `本地程序返回错误（${response.status}）`);
+      const messages = { running: "任务正在处理", cancelling: "正在停止，已经发出的请求会先完成",
+        cancelled: "任务已停止", done: "任务已经完成", partial: "任务仍有未完成内容，请查看任务状态", error: "任务处理失败，请查看任务状态与日志" };
+      if (result?.id !== id || typeof result.state !== "string" || !Object.hasOwn(messages, result.state) || (action === "cancel" && result.state === "running")) {
+        throw new Error("本地程序没有返回匹配的操作结果");
+      }
+      if (!disconnected) toast(messages[result.state]);
+    } catch (error) {
+      const reason = ["TimeoutError", "AbortError"].includes(error.name) ? "请求超时"
+        : error instanceof SyntaxError ? "程序返回了无法读取的响应"
+        : error instanceof TypeError ? "连不上本地程序" : error.message || "连接失败";
+      if (!disconnected) toast(`未确认操作结果：${reason}。请核对任务状态；没有自动重试。`);
+    } finally {
+      pendingTasks.delete(id);
+      document.querySelectorAll("[data-job]").forEach(button => {
+        if (button.dataset.id === id) { button.disabled = false; button.textContent = button.dataset.label; }
+      });
+      if (!disconnected) await refresh();
     }
   }
 
   document.addEventListener("click", async (e) => {
+    const task = e.target.closest("[data-job]");
+    if (task) {
+      await changeTask(task);
+    }
     const f = e.target.closest("[data-folder]");
     if (f) {
-      const r = await fetch("/api/open-folder", { method: "POST", headers: H, body: JSON.stringify({ what: f.dataset.folder }) })
-        .then((x) => x.json()).catch(() => ({ error: "连不上程序" }));
-      toast(r.error ? `打不开：${r.error}` : "已在文件资源管理器中打开");
+      f.disabled = true;
+      const r = await fetch("/api/open-folder", { method: "POST", headers: H, body: JSON.stringify({ what: f.dataset.folder }), signal: AbortSignal.timeout(5000) })
+        .then(async response => {
+          const result = await response.json();
+          return response.ok && result.ok === true ? result : {error: result.error || "系统未确认打开请求，请稍后重试", path: result.path};
+        }).catch(() => ({ error: "未能确认打开结果，请稍后重试" }));
+      f.disabled = false;
+      if (disconnected) return;
+      if (r.error && typeof r.path === "string") {
+        $("#folderMessage").textContent = r.error;
+        $("#folderPath").value = r.path;
+        $("#folderDlg").showModal();
+      } else toast(r.error ? `打不开：${r.error}` : "已请求系统打开文件夹");
     }
     const c = e.target.closest("[data-close]");
     if (c) c.closest("dialog").close();
   });
+  $("#recoverTasks").onclick = async () => {
+    const button = $("#recoverTasks");
+    const fingerprint = button.dataset.fingerprint;
+    if (!fingerprint || !confirm("先保存原任务库副本，再重建空任务记录？已经生成的字幕和画像不变，未完成视频需要重新处理，可能产生新的模型用量。")) return;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/jobs/recover", { method: "POST", headers: H, body: JSON.stringify({ fingerprint }) });
+      const result = await response.json();
+      toast(result.error || "任务记录已重建；原文件保留在数据目录 recovery 文件夹中");
+    } catch { toast("恢复结果未确认，请刷新控制台查看，暂勿重复操作"); }
+    finally { button.disabled = false; await refresh(); }
+  };
+  $("#runtimeRetry").onclick = async () => {
+    $("#runtimeRetry").disabled = true;
+    try {
+      const response = await fetch("/api/runtime/check", {method: "POST", headers: H, body: "{}", signal: AbortSignal.timeout(5000)});
+      const result = await response.json();
+      toast(result.error || result.message || "已开始检查本地组件");
+    } catch { toast("检查结果未确认，请刷新控制台查看"); }
+    finally { await refresh(); }
+  };
   $("#extHelp").onclick = () => $("#extDlg").showModal();
+  $("#copyFolder").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("#folderPath").value);
+      $("#folderMessage").textContent = "路径已复制，可以在文件管理器中粘贴打开。";
+    } catch {
+      $("#folderPath").focus(); $("#folderPath").select();
+      $("#folderMessage").textContent = "自动复制未完成，路径已选中，请手动复制。";
+    }
+  };
   $("#copyUrl").onclick = async () => {
     try { await navigator.clipboard.writeText("chrome://extensions"); toast("已复制，粘贴到浏览器地址栏"); }
     catch { toast("复制失败，请手动输入 chrome://extensions"); }
   };
-  $("#quit").onclick = () => $("#quitDlg").showModal();
+  $("#quit").onclick = () => { $("#quitError").textContent = ""; $("#quitDlg").showModal(); };
+  $("#quitDlg").addEventListener("cancel", event => { if ($("#quitYes").disabled) event.preventDefault(); });
   $("#quitYes").onclick = async () => {
-    $("#quitDlg").close();
-    $("#shell").innerHTML = '<section class="stage"><div class="shade"></div><div class="stage-body"><div class="line">Adaptive Subs 已退出</div><div class="sub">可以关掉这个窗口了</div></div></section>';
-    try { await fetch("/api/quit", { method: "POST", headers: H, body: "{}" }); } catch {}
+    const button = $("#quitYes"), cancel = $("#quitCancel"), message = $("#quitError");
+    button.disabled = cancel.disabled = true;
+    button.textContent = "正在退出…";
+    message.textContent = "正在发送退出请求…";
+    try {
+      const response = await fetch("/api/quit", { method: "POST", headers: H, body: "{}", signal: AbortSignal.timeout(5000) });
+      const result = await response.json();
+      if (!response.ok || result.ok !== true) throw new Error(result.error || "退出请求未被确认，请稍后重试");
+      message.textContent = "退出请求已确认，正在等待连接断开…";
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(300);
+        try {
+          await fetch("/api/health", { cache: "no-store", signal: AbortSignal.timeout(700) });
+        } catch {
+          disconnected = true;
+          clearInterval(refreshTimer);
+          $("#quitDlg").close();
+          $("#shell").innerHTML = '<section class="stage"><div class="shade"></div><div class="stage-body"><div class="line">已与程序断开连接</div><div class="sub">可以关闭这个窗口了。再次使用时，请打开 Adaptive Subs。</div></div></section>';
+          return;
+        }
+      }
+      message.textContent = "程序仍在响应，尚未确认退出。可稍后重试，或取消并查看任务情况。";
+    } catch (error) {
+      message.textContent = error.name === "TypeError" || error.name === "TimeoutError"
+        ? "退出结果未确认，请检查程序状态后重试。" : error.message;
+    } finally {
+      button.disabled = cancel.disabled = false;
+      button.textContent = "退出程序";
+    }
   };
 
   if (introDone) $("#shell").classList.add("enter");
   playIntro();
   refresh();
-  setInterval(refresh, 2000);
+  const refreshTimer = setInterval(refresh, 2000);
 })();
 </script>
 </body>

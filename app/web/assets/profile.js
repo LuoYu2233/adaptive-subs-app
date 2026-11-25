@@ -13,18 +13,57 @@
                  ["kaoyan", "考研英语", 100, 1], ["ielts", "雅思", 9, 0.5], ["toefl", "托福", 120, 1]];
   let P = null;          // server payload
   let identity = null;
+  let recoveryFingerprint = null;
+  let profileReady = false, profileLoading = false;
+  let formRevision = null, formConflict = false;
+
+  function setProfileReady(ready) {
+    profileReady = ready;
+    for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = !ready;
+    for (const id of ["saveProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = !ready;
+    if (ready) $("#profileConnection").hidden = true;
+  }
+
+  function validProfile(p) {
+    const count = n => Number.isSafeInteger(n) && n >= 0;
+    return p && count(p.rev) && Number.isFinite(p.level) && Number.isFinite(p.prior)
+      && typeof p.setup === "boolean" && p.profile && typeof p.profile === "object" && !Array.isArray(p.profile)
+      && p.stats && ["known", "unknown", "marked_known", "marked_unknown", "exams", "freq_cut"].every(k => count(p.stats[k]))
+      && Array.isArray(p.lists) && p.lists.every(v => typeof v === "string")
+      && p.marks && [p.marks.known, p.marks.unknown].every(a => Array.isArray(a) && a.every(v => typeof v === "string"));
+  }
 
   async function api(path, body) {
-    const r = await fetch(path, body ? { method: "POST", headers: H, body: JSON.stringify(body) } : { headers: H });
+    let r;
+    try {
+      r = await fetch(path, { ...(body ? { method: "POST", headers: H, body: JSON.stringify(body) } : { headers: H }),
+        cache: "no-store", signal: AbortSignal.timeout(10000) });
+    } catch (error) {
+      throw new Error(error.name === "TimeoutError" || error.name === "AbortError"
+        ? "请求超时，请核对本机画像后重试" : "连接中断，请确认本地程序正在运行");
+    }
     const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-    if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+    if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("本地程序响应不完整，请重新读取画像");
+    if (!r.ok || j.error) {
+      const error = new Error(j.error || `HTTP ${r.status}`);
+      error.details = j;
+      if (j.recoverable) showRecovery(error);
+      throw error;
+    }
+    if (["/api/profile", "/api/mark", "/api/profile/import", "/api/profile/clear"].includes(path) && !validProfile(j))
+      throw new Error("画像响应不完整，请重新读取核对");
     return j;
   }
 
   // ------------------------------------------------------------ steps 1–2 ---
   function renderForm() {
+    formRevision = P?.rev ?? null;
+    formConflict = false;
+    $("#reloadProfileForm").hidden = true;
+    $("#msg1").className = "msg";
+    $("#msg1").textContent = "";
     const prof = (P && P.profile) || {};
-    identity = prof.identity || identity;
+    identity = prof.identity || null;
     $("#identity").innerHTML = IDENTITIES.map(([id, name]) =>
       `<button type="button" class="chip" data-id="${id}" aria-pressed="${identity === id}">${name}</button>`).join("");
     $("#field").value = prof.field || "";
@@ -43,6 +82,7 @@
   });
 
   $("#saveProfile").addEventListener("click", async () => {
+    if (!profileReady || formConflict) return;
     const msg = $("#msg1"), btn = $("#saveProfile");
     const exams = {};
     for (const [id] of EXAMS) { const v = $(`#ex-${id}`).value.trim(); if (v !== "") exams[id] = v; }
@@ -51,24 +91,31 @@
     }
     btn.disabled = true; msg.className = "msg"; msg.textContent = "正在保存…";
     try {
-      P = await api("/api/profile", { identity, field: $("#field").value, exams });
+      P = await api("/api/profile", { identity, field: $("#field").value, exams, expected_rev: formRevision });
+      formRevision = P.rev;
       msg.className = "msg ok";
       msg.textContent = P.lists.length
         ? `已保存。按你的成绩，${P.lists.join("、")}词表算作已认识（共约 ${fmt(P.stats.exams)} 词），词汇量先估计为 ≈ ${fmt(P.prior)}`
         : `已保存。词汇量先估计为 ≈ ${fmt(P.prior)}`;
       renderSummary();
-      if (!T || T.stage === "intro" || T.stage === "result") { T = null; renderTest(); }
+      if (!T || T.stage === "intro" || (T.stage === "result" && !T.saveError)) { T = null; renderTest(); }
       $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e) {
       msg.className = "msg bad"; msg.textContent = e.message;
+      if (e.details?.conflict) {
+        formConflict = true;
+        msg.textContent = "画像已在其他页面更新，本次未保存；当前填写已保留，请核对后读取最新画像再修改。";
+        $("#reloadProfileForm").hidden = false;
+      }
     } finally {
-      btn.disabled = false;
+      btn.disabled = !profileReady || formConflict;
     }
   });
 
   // -------------------------------------------------------------- summary ---
   function renderSummary() {
     const box = $("#summary");
+    if (P) renderMarks();
     if (!P || !P.setup) { box.hidden = true; return; }
     box.hidden = false;
     const ident = (IDENTITIES.find(([id]) => id === P.profile.identity) || [0, ""])[1];
@@ -84,7 +131,6 @@
           <div>看视频时标记：认识 <b>${P.stats.marked_known}</b> 个，不认识 <b>${P.stats.marked_unknown}</b> 个</div>
         </div>
       </div>`;
-    renderMarks();
   }
 
   function renderMarks() {
@@ -92,7 +138,7 @@
     const m = P.marks, n = m.known.length + m.unknown.length;
     box.hidden = !n;
     if (!n) return;
-    const chip = (k, state) => `<span class="mk">${esc(k.replace(/^(sense|phrase):/, ""))}${/^sense:/.test(k) ? '<small class="muted">（特殊意思）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(k)}">×</button></span>`;
+    const chip = (k) => `<span class="mk">${esc(k.replace(/^(sense|phrase):/, ""))}${/^sense:/.test(k) ? '<small class="muted">（特殊意思）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(k)}">×</button></span>`;
     $("#marks").innerHTML = `
       ${m.unknown.length ? `<div class="muted">我不认识（总是注释）</div><div class="marks">${m.unknown.map((k) => chip(k)).join("")}</div>` : ""}
       ${m.known.length ? `<div class="muted" style="margin-top:12px">我认识（不再注释）</div><div class="marks">${m.known.map((k) => chip(k)).join("")}</div>` : ""}
@@ -103,11 +149,102 @@
     const b = e.target.closest("[data-clear]");
     try {
       if (b) { await api("/api/mark", { key: b.dataset.clear, state: "clear" }); }
-      else if (e.target.id === "resetMarks") { await api("/api/profile", { reset_marks: true }); }
+      else if (e.target.id === "resetMarks") {
+        if (!confirm("清空全部认识 / 不认识标记？身份、成绩和词汇测试仍会保留。")) return;
+        await api("/api/profile", { reset_marks: true, expected_rev: P.rev });
+      }
       else return;
       P = await api("/api/profile");
       renderSummary();
     } catch (err) { alert(err.message); }
+  });
+
+  // Portable backups contain the saved learner profile, never service credentials.
+  let pendingBackup = null, pendingRev = null;
+  const dataMessage = (text, bad = false) => {
+    $("#dataMessage").textContent = text;
+    $("#dataMessage").className = "msg " + (bad ? "bad" : "ok");
+  };
+  function cancelRestore() {
+    pendingBackup = null; pendingRev = null;
+    $("#restorePreview").hidden = true;
+    $("#backupFile").value = "";
+  }
+  async function refreshProfile(value) {
+    if (!validProfile(value)) throw new Error("画像响应不完整，请重新读取核对");
+    P = value; T = null;
+    setProfileReady(true);
+    renderForm(); renderSummary(); await renderTest();
+  }
+  function showRecovery(error) {
+    setProfileReady(false);
+    $("#profileConnection").hidden = true;
+    recoveryFingerprint = error.details.fingerprint;
+    $("#recoveryPanel").hidden = false;
+    $("#recoveryMessage").textContent = error.message;
+    for (const id of ["s1", "s2", "s3", "s4", "summary"]) $("#" + id).hidden = true;
+    for (const id of ["exportProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = true;
+  }
+  $("#rebuildProfile").addEventListener("click", async () => {
+    if (!recoveryFingerprint || !confirm("先完整保留原始文件，再重建为空画像？重建后可以导入有效备份。")) return;
+    const button = $("#rebuildProfile"); button.disabled = true;
+    try {
+      const result = await api("/api/profile/recover", { fingerprint: recoveryFingerprint });
+      if (!validProfile(result.profile) || typeof result.backup_path !== "string") throw new Error("恢复响应不完整，请刷新后核对原始备份及画像");
+      recoveryFingerprint = null; $("#recoveryPanel").hidden = true;
+      for (const id of ["s1", "s2", "s3"]) $("#" + id).hidden = false;
+      for (const id of ["exportProfile", "chooseBackup", "clearProfile"]) $("#" + id).disabled = false;
+      await refreshProfile(result.profile);
+      dataMessage(`原始文件已保留在 ${result.backup_path}。画像已重建，可选择有效备份恢复。`);
+    } catch (error) { $("#recoveryMessage").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  $("#exportProfile").addEventListener("click", async () => {
+    try {
+      const backup = await api("/api/profile/export");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = `adaptive-subs-profile-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      dataMessage("备份已交给浏览器下载，请检查下载列表。");
+    } catch (e) { dataMessage(e.message, true); }
+  });
+  $("#chooseBackup").addEventListener("click", () => { if (profileReady) $("#backupFile").click(); });
+  $("#cancelRestore").addEventListener("click", cancelRestore);
+  $("#backupFile").addEventListener("change", async () => {
+    const file = $("#backupFile").files[0];
+    cancelRestore();
+    if (!file || !profileReady) return;
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error("备份超过 5 MB，请检查是否选对了文件");
+      const backup = JSON.parse(await file.text());
+      const summary = await api("/api/profile/import/preview", { backup });
+      P = await api("/api/profile");
+      pendingBackup = backup; pendingRev = P.rev;
+      $("#restoreSummary").textContent = `${summary.identity}；认识 ${summary.known} 条，不认识 ${summary.unknown} 条；${summary.test_date ? "测试日期 " + summary.test_date : "没有词汇测试"}。`;
+      $("#restorePreview").hidden = false;
+      dataMessage("文件校验通过，尚未修改当前画像。");
+    } catch (e) { dataMessage(e instanceof SyntaxError ? "文件不是有效的 JSON 备份" : e.message, true); }
+  });
+  $("#restoreProfile").addEventListener("click", async () => {
+    if (!pendingBackup || !profileReady) return;
+    const btn = $("#restoreProfile"); btn.disabled = true;
+    try {
+      const value = await api("/api/profile/import", { backup: pendingBackup, expected_rev: pendingRev });
+      cancelRestore(); await refreshProfile(value);
+      dataMessage("画像已恢复。播放器和插件会在下次读取画像时更新。");
+    } catch (e) { dataMessage(e.message, true); }
+    finally { btn.disabled = false; }
+  });
+  $("#clearProfile").addEventListener("click", async () => {
+    if (!profileReady || !P || !confirm("清除本机的身份、成绩、词汇测试和全部认识 / 不认识标记？仅能用你保存的备份恢复。")) return;
+    const btn = $("#clearProfile"); btn.disabled = true;
+    try {
+      const value = await api("/api/profile/clear", { expected_rev: P.rev });
+      cancelRestore(); await refreshProfile(value);
+      dataMessage("本机画像和标记已清除。");
+    } catch (e) { dataMessage(e.message, true); }
+    finally { btn.disabled = false; }
   });
 
   // ---------------------------------------------------- adaptive test -----
@@ -140,7 +277,7 @@
   function newTest() {
     bank.bands.forEach((b) => { b.pool = shuffle(b.words); });
     const prior = (P && P.prior) || 3000;
-    T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior };
+    T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior, revision: P.rev };
     const items = [];
     for (const b of bank.bands) items.push(...takeWords(b, b.hi <= prior * 0.5 ? 3 : 5));
     T.items = sprinkle(items, takeNon(4), 3);
@@ -276,7 +413,7 @@
       const r = T.result;
       box.innerHTML = `
         <div class="big">≈ ${fmt(r.est)}<small>词</small></div>
-        <p class="muted" style="margin:4px 0 0">${P && P.prior ? `按考试成绩 / 身份的估计是 ≈ ${fmt(P.prior)}。` : ""}结果已保存，字幕从现在起按它来判断。</p>
+        <p class="muted" style="margin:4px 0 0">${P && P.prior ? `按考试成绩 / 身份的估计是 ≈ ${fmt(P.prior)}。` : ""}${T.saveError ? "" : "结果已保存，字幕从现在起按它来判断。"}</p>
         <div class="bands">${r.bands.map((x) => `<div class="band" title="${Math.round(x * 100)}%"><div class="band-bar" style="height:${Math.max(2, x * 100)}%"></div></div>`).join("")}</div>
         <div class="band-labels">${bank.bands.map((b) => `<span>${bandLabel(b)}</span>`).join("")}</div>
         <div class="note">每根柱子是一个词频段里你大概认识的比例，越往右越难。<br>
@@ -318,7 +455,7 @@
     T.result = score();
     T.stage = "result";
     try {
-      P = await api("/api/profile", { test: { est: T.result.est, bands: T.result.bands, known: T.result.known, unknown: T.result.unknown } });
+      P = await api("/api/profile", { expected_rev: T.revision, test: { est: T.result.est, bands: T.result.bands, known: T.result.known, unknown: T.result.unknown } });
       renderSummary();
     } catch (e) {
       T.saveError = e.message;
@@ -329,15 +466,28 @@
   }
 
   // ------------------------------------------------------------------ boot ---
-  (async () => {
+  async function initializeProfile() {
+    if (profileLoading) return;
+    profileLoading = true;
+    setProfileReady(false);
+    $("#profileConnection").hidden = false;
+    $("#reloadProfile").disabled = true;
+    $("#profileConnectionMessage").className = "msg";
+    $("#profileConnectionMessage").textContent = "正在读取本机画像，请稍候…";
     try {
       P = await api("/api/profile");
+      setProfileReady(true);
+      renderForm(); renderSummary(); await renderTest();
     } catch (e) {
-      $("#msg1").className = "msg bad";
-      $("#msg1").textContent = "连不上本地程序：请确认 Adaptive Subs 的窗口还开着，然后刷新本页";
+      if (e.details?.recoverable) { showRecovery(e); return; }
+      $("#profileConnectionMessage").className = "msg bad";
+      $("#profileConnectionMessage").textContent = `暂时无法读取画像：${e.message}。现有记录未改动，请恢复后重新读取；画像备份仍可尝试下载。`;
+    } finally {
+      profileLoading = false;
+      $("#reloadProfile").disabled = false;
     }
-    renderForm();
-    renderSummary();
-    renderTest();
-  })();
+  }
+  $("#reloadProfile").addEventListener("click", initializeProfile);
+  $("#reloadProfileForm").addEventListener("click", initializeProfile);
+  initializeProfile();
 })();

@@ -22,6 +22,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; width: 340px; background: var(--bg); color: var(--ink);
          font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif; }
   button { font: inherit; }
@@ -61,6 +62,8 @@
   .scale { display: flex; justify-content: space-between; color: var(--ink-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
   .profile { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-2); }
   .profile > div { flex: 1; min-width: 0; line-height: 1.45; }
+  .profile.unavailable { flex-wrap: wrap; }
+  .profile.unavailable > div { flex-basis: 100%; overflow-wrap: anywhere; }
   .profile.todo { flex-direction: column; align-items: stretch; gap: 8px; }
   .profile b { color: var(--ink); font-weight: 650; }
   .profile.todo { color: var(--ink); }
@@ -111,10 +114,13 @@
   <div class="card">
     <div class="level-head"><label class="k" for="level">你的词汇量</label><span class="big" id="levelValue"></span></div>
     <div class="note" id="levelNote"></div>
-    <input type="range" id="level" min="0" max="11" step="1">
+    <div class="note" id="saveStatus" role="status"></div>
+    <div class="note" id="settingsIssue" role="status" hidden></div>
+    <input type="range" id="level" min="0" max="11" step="1" disabled>
     <div class="scale"><span>1.5k</span><span>4k</span><span>8k</span><span>15k</span></div>
     <div class="profile" id="profileBox" hidden>
       <div id="profileText"></div>
+      <button type="button" class="btn" id="retryProfile" hidden>重新读取</button>
       <button type="button" class="btn" id="openProfile">英语画像 ›</button>
     </div>
   </div>
@@ -165,6 +171,7 @@
   <span>点字幕里的单词可以标「认识 / 不认识」</span>
   <button type="button" class="link" id="openSetup" hidden>程序设置 ›</button>
 </footer>
+<script src="settings.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

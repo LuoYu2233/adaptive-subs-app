@@ -114,9 +114,20 @@
   <p class="lead">告诉 Adaptive Subs 你的英语背景，再做一次词汇测试。字幕会据此判断哪些词你已经认识、不再注释。<br>
   看视频时点任意单词，可以随时标「我认识」或「我不认识」，画像会越用越准。</p>
 
+  <section id="profileConnection">
+    <h2>读取英语画像</h2>
+    <p id="profileConnectionMessage" class="msg" role="status">正在读取本机画像，请稍候…</p>
+    <button class="btn" id="reloadProfile" type="button" disabled>重新读取画像</button>
+  </section>
+  <section id="recoveryPanel" hidden>
+    <h2>画像需要恢复</h2>
+    <p id="recoveryMessage" role="alert"></p>
+    <p class="sub">重建会先把原文件完整保留在本机 recovery 文件夹，再创建空画像。之后可以选择有效备份恢复。原文件中可能仍有可找回的记录，请保留副本。</p>
+    <button class="btn" id="rebuildProfile" type="button">保留原文件并重建画像</button>
+  </section>
   <section id="summary" hidden></section>
 
-  <section id="s1">
+  <section id="s1" hidden>
     <h2><span class="step">1</span>你现在是</h2>
     <p class="sub">没填考试成绩时，用它推测你学过哪些词表。</p>
     <div class="chips" id="identity"></div>
@@ -129,17 +140,18 @@
     </datalist>
   </section>
 
-  <section id="s2">
+  <section id="s2" hidden>
     <h2><span class="step">2</span>考过的英语考试</h2>
     <p class="sub">填你考过的（填最高的一次），没考过的空着。成绩决定哪些考试词表直接算作"已认识"。</p>
     <div class="exams" id="exams"></div>
     <div class="actions">
-      <button class="btn primary" id="saveProfile" type="button">保存，下一步：词汇测试</button>
+      <button class="btn primary" id="saveProfile" type="button" disabled>保存，下一步：词汇测试</button>
       <span class="msg" id="msg1" role="status"></span>
+      <button class="btn" id="reloadProfileForm" type="button" hidden>读取最新画像（替换当前填写）</button>
     </div>
   </section>
 
-  <section id="s3">
+  <section id="s3" hidden>
     <h2><span class="step">3</span>词汇测试</h2>
     <div id="test"></div>
   </section>
@@ -149,7 +161,30 @@
     <p class="sub">这些标记优先于画像和测试。点 × 恢复成按画像判断。</p>
     <div id="marks"></div>
   </section>
+  <section id="dataTools">
+    <h2>备份与管理画像</h2>
+    <p class="sub">备份包含身份、成绩、词汇测试和「认识 / 不认识」标记。换电脑时可恢复。文件含个人学习记录，请妥善保存。</p>
+    <p class="sub">此处不包含 API key、视频字幕、任务历史或浏览器内的生词本与显示设置。</p>
+    <div class="actions">
+      <button class="btn" id="exportProfile" type="button">下载画像备份</button>
+      <button class="btn" id="chooseBackup" type="button" disabled>选择备份恢复</button>
+      <input id="backupFile" type="file" accept=".json,application/json" hidden>
+    </div>
+    <div id="restorePreview" hidden>
+      <p id="restoreSummary"></p>
+      <p class="sub">恢复将替换当前画像和全部标记。建议先下载当前备份。</p>
+      <div class="actions"><button class="btn primary" id="restoreProfile" type="button">确认替换画像</button>
+        <button class="btn" id="cancelRestore" type="button">取消</button></div>
+    </div>
+    <p class="msg" id="dataMessage" role="status"></p>
+    <details><summary>清除本机画像</summary>
+      <p class="sub">删除身份、成绩、词汇测试和全部标记。字幕、任务历史、API key 和浏览器生词本仍会保留；仅能用你保存的备份恢复画像。</p>
+      <button class="btn" id="clearProfile" type="button" disabled>清除画像与标记</button>
+    </details>
+    <p class="sub"><a href="/privacy">了解数据保存位置与对外请求</a></p>
+  </section>
 </main>
+<script src="/assets/learning.js"></script>
 <script src="/assets/profile.js"></script>
 <script>
   if (new URLSearchParams(location.search).has("app")) document.getElementById("backToApp").hidden = false;

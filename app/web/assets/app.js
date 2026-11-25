@@ -23,11 +23,14 @@
   const params = new URLSearchParams(location.search);
 
   // ------------------------------------------------------------- state ---
+  const playerStore = AdaptivePlayerStore.create();
+  let storageIssue = null;
   const saved = loadStore();
+  let previewLevel = null, localLevel = saved.level || 5000;
   const S = {
     video: null,
     cues: [],
-    level: LEVELS.includes(saved.level) ? saved.level : 5000,
+    level: saved.level || 5000,
     mode: saved.mode || "adaptive",          // adaptive | plain | bilingual
     gloss: saved.gloss || "over",            // over | paren
     pref: PREFS[saved.pref] ? saved.pref : "more",   // more | normal | less (how many glosses)
@@ -38,7 +41,7 @@
     book: Array.isArray(saved.book) ? saved.book : [],
     introSeen: !!saved.introSeen,
     test: saved.test || null,
-    tab: saved.tab || "transcript",
+    tab: ["transcript", "preview", "book"].includes(saved.tab) ? saved.tab : "transcript",
     visible: [],                             // per cue: Set of note indices shown
     cur: -1,                                 // current cue index
     gap: false,                              // true during a silence after the current line
@@ -50,23 +53,68 @@
   const isHard = (n) => n.lv > S.level * PREFS[S.pref].factor;   // above the viewer's level?
   // marks / known-word library are keyed by word; phrases and special senses get their own keys,
   // so knowing a word never hides its uncommon meaning
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptiveLearning.key;
+  const noteState = n => AdaptiveLearning.state(n, S.known, S.unknown, S.level * PREFS[S.pref].factor);
   // Opened from the local program: the profile (level + known-word library + marks) lives there,
   // shared with the Bilibili extension and the profile page. On GitHub Pages: this browser only.
-  let shared = null;
+  let shared = null, profileProblem = "", profileLoading = false;
   let bookKeys = new Set(S.book.map((b) => b.key));
 
   function loadStore() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
+    try { return playerStore.read(); }
+    catch (e) { storageIssue = e; return {}; }
   }
-  function save() {
+  function applyLocalStore(value) {
+    S.book = value.book || []; bookKeys = new Set(S.book.map(b => b.key));
+    if (live === false) {
+      S.known = new Set(value.known || []); S.unknown = new Set(value.unknown || []);
+      localLevel = value.level || 5000;
+      S.level = previewLevel ?? localLevel; S.test = value.test || null;
+    }
+    storageIssue = null;
+    renderStorageNotice(); renderAll(false);
+  }
+  function refreshLocalStore() {
+    try { applyLocalStore(playerStore.read()); }
+    catch (e) { storageIssue = e; renderStorageNotice(); }
+  }
+  async function persist(edit) {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({
-        level: S.level, pref: S.pref, mode: S.mode, gloss: S.gloss, subPos: S.subPos, autoPause: S.autoPause,
-        known: [...S.known], unknown: [...S.unknown], book: S.book,
-        introSeen: S.introSeen, test: S.test, tab: S.tab,
-      }));
-    } catch { /* storage unavailable: settings just won't persist */ }
+      const committed = await playerStore.update(edit);
+      applyLocalStore(playerStore.read());
+      return committed;
+    } catch (e) {
+      const problem = e instanceof AdaptivePlayerStore.StorageProblem;
+      if (problem) { storageIssue = e; renderStorageNotice(); }
+      toast(problem ? e.message : `浏览器存储不可用，未保存本次更改：${e.message || "请检查存储空间"}`);
+      return null;
+    }
+  }
+  async function save(fields) { return !!(await persist(current => ({ ...current, ...fields }))); }
+  function renderStorageNotice() {
+    const damaged = storageIssue?.code === "damaged";
+    $("#storageNotice").hidden = !storageIssue;
+    $("#storageMessage").textContent = storageIssue ? `${storageIssue.message}。原始记录不会被普通保存覆盖。` : "";
+    $("#downloadStorage").hidden = !damaged;
+    $("#recoverStorage").hidden = !damaged;
+    try { $("#storageRecovery").hidden = !playerStore.recoveryCopies().length; }
+    catch { $("#storageRecovery").hidden = true; }
+  }
+  async function recoverLocalStore() {
+    if (storageIssue?.code !== "damaged") return;
+    const original = storageIssue.raw;
+    if (!confirm("将先在浏览器中保留原始数据副本，再重建播放器的生词本和显示设置。之后可导入有效生词本备份。程序中的画像不受影响。继续？")) return;
+    $("#recoverStorage").disabled = true;
+    try { await playerStore.recover(original); location.reload(); }
+    catch (e) { toast(`重建失败，原始记录已保留：${e.message}`); }
+    finally { $("#recoverStorage").disabled = false; }
+  }
+  function downloadStorageCopies(originalOnly = false) {
+    try {
+      const copies = originalOnly ? [{ key: STORE_KEY, raw: storageIssue.raw }] : playerStore.recoveryCopies();
+      downloadBook(JSON.stringify({ format: "adaptive-subs-player-recovery", version: 1, copies }, null, 2),
+        "application/json;charset=utf-8", "adaptive-subs-player-original.json");
+    } catch (e) { toast(`下载失败：${e.message}`); }
   }
 
   // ----------------------------------------------------------- helpers ---
@@ -80,25 +128,8 @@
   // ------------------------------------------------ visibility (core rule) ---
   function computeVisible() {
     const count = new Map();
-    S.visible = S.cues.map((c) => {
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const mk = markKey(n);
-        const forced = S.unknown.has(mk);
-        if (!forced && S.known.has(mk)) return;
-        if (forced || isHard(n)) cand.push({ i, forced, lv: n.lv, key: mk });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= PREFS[S.pref].perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= PREFS[S.pref].repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
-    });
+    S.visible = S.cues.map(c => AdaptiveLearning.select(c.notes, S.known, S.unknown,
+      S.level * PREFS[S.pref].factor, PREFS[S.pref], count));
   }
 
   // ---------------------------------------------------------- rendering ---
@@ -125,14 +156,14 @@
     c.notes.forEach((n, i) => {
       html += wrapWords(t.slice(pos, n.s), ci);
       const word = esc(t.slice(n.s, n.e));
-      const extra = (S.unknown.has(markKey(n)) ? " forced" : "") + (bookKeys.has(n.key) ? " inbook" : "");
+      const extra = (noteState(n) === "forced" ? " forced" : "") + (bookKeys.has(markKey(n)) || bookKeys.has(n.key) ? " inbook" : "");
       const attrs = `data-c="${ci}" data-n="${i}"`;
       if (style !== "none" && vis.has(i)) {
         html += style === "over"
           ? `<span class="tok g${extra}" ${attrs}><span class="w">${word}</span><span class="zh">${esc(n.zh)}</span></span>`
           : `<span class="tok p${extra}" ${attrs}><span class="w">${word}</span><span class="pz">(${esc(n.zh)})</span></span>`;
       } else {
-        html += `<span class="tok${bookKeys.has(n.key) ? " inbook" : ""}" ${attrs}>${word}</span>`;
+        html += `<span class="tok${bookKeys.has(markKey(n)) || bookKeys.has(n.key) ? " inbook" : ""}" ${attrs}>${word}</span>`;
       }
       pos = n.e;
     });
@@ -158,7 +189,7 @@
     const ci = S.cur;
     // inside the video, show the box only while a line is being spoken (not during silences),
     // or while a new video's subtitles are still being fetched (progress / error + retry)
-    const loading = !S.cues.length && !!S.statusMsg && !!S.video;
+    const loading = !S.cues.length && !!S.statusMsg;
     $("#overlaySubs").hidden = !(subsInside() && ((ci >= 0 && S.cues[ci] && !S.gap) || loading));
     if (ci >= 0 && S.cues[ci] && S.gap) {          // silence after a line: show nothing
       line.className = "line";
@@ -170,9 +201,9 @@
     if (ci < 0 || !S.cues[ci]) {
       line.className = "line";
       line.innerHTML = `<span class="placeholder">${esc(S.cues.length ? "▶ 播放视频，字幕会显示在这里" : S.statusMsg || "正在加载字幕…")}</span>`
-        + (S.retryId && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">重试</button>` : "");
+        + ((S.retryId || S.retrySaved) && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">${S.retrySaved ? "重新读取字幕" : "重试"}</button>` : "");
       const rb = $(".retry-btn", line);
-      if (rb) rb.onclick = () => openVideo(S.retryId);
+      if (rb) rb.onclick = () => S.retrySaved ? loadSaved(S.retrySaved.entry, ++navigation, S.retrySaved.replayAt) : openVideo(S.retryId, true);
       zh.hidden = true;
       meta.textContent = S.cues.length ? `共 ${S.cues.length} 句` : "";
       return;
@@ -198,9 +229,15 @@
         ? `<span class="gen done"><span class="gen-bar"><span style="width:100%"></span></span>注释已全部生成${p.seconds ? `（用时 ${p.seconds} 秒）` : ""}</span>`
         : `<span class="gen"><span class="gen-bar"><span style="width:${pct}%"></span></span>注释生成中 ${pct}% · 优先处理你正在看的位置</span>`;
     }
+    if (S.retryId) html += '<button type="button" class="btn btn-primary" data-generation="retry">继续处理缺失字幕</button>';
+    else if (es) html += '<button type="button" class="btn btn-ghost" data-generation="cancel">取消生成</button>';
     $("#density").innerHTML = html;
-    $("#levelValue").textContent = `≈ ${fmtNum(S.level)} 词`;
-    $("#levelRange").value = LEVELS.indexOf(S.level);
+    $("#profileIssue").hidden = !profileProblem;
+    $("#profileMessage").textContent = profileProblem;
+    $("#levelRange").disabled = live === null || (live && (!shared || !!profileProblem));
+    $("#levelValue").textContent = live === null || (live && !shared)
+      ? (profileProblem ? "画像暂不可用" : "读取中…") : `≈ ${fmtNum(S.level)} 词`;
+    $("#levelRange").value = LEVELS.indexOf(nearestLevel(S.level));
     $("#levelRange").setAttribute("aria-valuetext", `${S.level} 词`);
   }
 
@@ -231,13 +268,22 @@
     return html + plain(c.text.slice(pos));
   }
 
+  let transcriptRows = [], transcriptVideo = null;
   function renderTranscript(scrollToActive = true) {
     const panel = $("#tab-transcript");
-    panel.innerHTML = S.cues.map((c, ci) => `
+    const rows = S.cues.map((c, ci) => `
       <div class="tr-row${isDone(ci) ? "" : " pending"}" data-c="${ci}">
         <span class="tr-time">${fmtTime(c.s)}</span>
         <div><div class="tr-text">${trText(ci)}</div>${S.mode === "bilingual" && c.zh ? `<div class="tr-zh">${esc(c.zh)}</div>` : ""}</div>
-      </div>`).join("");
+      </div>`);
+    const changed = rows.flatMap((html, i) => html === transcriptRows[i] ? [] : [i]);
+    const videoId = S.video && S.video.id;
+    if (videoId !== transcriptVideo || rows.length !== transcriptRows.length || changed.length > rows.length / 3) {
+      panel.innerHTML = rows.join("");
+    } else {
+      for (const i of changed) panel.children[i].outerHTML = rows[i];
+    }
+    transcriptRows = rows; transcriptVideo = videoId;
     markActiveRow(scrollToActive);
   }
 
@@ -259,7 +305,7 @@
     const agg = new Map();
     S.cues.forEach((c, ci) => c.notes.forEach((n) => {
       const mk = markKey(n);
-      if ((S.known.has(mk) && !S.unknown.has(mk)) || !(isHard(n) || S.unknown.has(mk))) return;
+      if (!["hard", "forced"].includes(noteState(n))) return;
       let a = agg.get(mk);
       if (!a) agg.set(mk, (a = { key: mk, zh: n.zh, kind: n.kind, lv: n.lv, count: 0, first: ci, n }));
       a.count++;
@@ -278,10 +324,10 @@
       <p class="panel-intro">按你现在的词汇量（<b>≈ ${fmtNum(S.level)}</b>），这集最值得先认识的 ${Math.min(15, total)} 个词。已经认识的点「认识」，看的时候就不再提示。</p>
       ${list.slice(0, 15).map((a) => `
         <div class="wrow">
-          <div><div class="w-term">${esc(a.key)}</div><div class="w-zh">${esc(a.zh)}</div></div>
+          <div><div class="w-term">${esc(a.n.key)}</div><div class="w-zh">${esc(a.zh)}</div></div>
           <div class="w-actions">
             <button class="btn btn-ghost btn-sm" data-act="know" data-key="${esc(a.key)}">认识</button>
-            <button class="btn btn-ghost btn-sm" data-act="book" data-c="${a.first}" data-key="${esc(a.key)}">${bookKeys.has(a.key) ? "✓ 已收藏" : "+ 生词本"}</button>
+            <button class="btn btn-ghost btn-sm" data-act="book" data-c="${a.first}" data-key="${esc(a.key)}">${bookKeys.has(a.n.key) ? "✓ 已收藏" : "+ 生词本"}</button>
           </div>
           <div class="w-meta">
             ${a.kind !== "word" ? `<span class="tag tag-${a.kind}">${KIND_LABEL[a.kind]}</span>` : ""}
@@ -293,26 +339,48 @@
   }
 
   // wordbook
+  const BOOK_PAGE_SIZE = 50;
+  let bookPage = 0, bookQuery = "";
   function renderBook() {
     const panel = $("#tab-book");
-    if (!S.book.length) {
-      panel.innerHTML = `<div class="empty"><div class="empty-title">生词本还是空的</div>点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存，之后可以一键回到原片段重听。</div>`;
-      return;
+    if (!$("#bookSearch", panel)) {
+      panel.innerHTML = `<div class="book-controls">
+        <div class="panel-foot book-tools"><span>保存在这个浏览器中，请定期备份</span><button class="btn btn-ghost btn-sm" data-act="backup-book">备份 JSON</button><button class="btn btn-ghost btn-sm" data-act="import-book">恢复备份</button><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（Anki）</button></div>
+        <div class="book-search"><label for="bookSearch">搜索生词本</label><input id="bookSearch" type="search" maxlength="200" placeholder="词语、释义或原句" autocomplete="off"></div>
+        <div class="book-pagination"><span id="bookPageSummary" role="status"></span><button class="btn btn-ghost btn-sm" id="bookPrev" data-act="book-prev" aria-label="生词本上一页">上一页</button><button class="btn btn-ghost btn-sm" id="bookNext" data-act="book-next" aria-label="生词本下一页">下一页</button></div>
+      </div><div id="bookList"></div>`;
+      $("#bookSearch").value = bookQuery;
+      $("#bookSearch").addEventListener("input", event => { bookQuery = event.target.value; bookPage = 0; renderBook(); });
     }
-    const items = S.book.map((b, i) => ({ b, i })).reverse();
-    panel.innerHTML = items.map(({ b, i }) => {
-      const sameVideo = S.video && b.vid === S.video.id;
+    const normalize = value => value.normalize("NFKC").toLowerCase();
+    const query = normalize(bookQuery.trim());
+    const matches = S.book.filter(b => !query || [b.term, b.zh, b.sentence].some(value => normalize(value).includes(query))).reverse();
+    const pages = Math.max(1, Math.ceil(matches.length / BOOK_PAGE_SIZE));
+    bookPage = Math.min(bookPage, pages - 1);
+    $("#bookPageSummary").textContent = `${query ? `找到 ${matches.length} 条 / 全部 ${S.book.length} 条` : `共 ${S.book.length} 条`} · 第 ${bookPage + 1} / ${pages} 页`;
+    $("#bookPrev").disabled = bookPage === 0;
+    $("#bookNext").disabled = bookPage >= pages - 1;
+    const items = matches.slice(bookPage * BOOK_PAGE_SIZE, (bookPage + 1) * BOOK_PAGE_SIZE);
+    const available = new Set(index.map(video => video.id));
+    $("#bookList").innerHTML = items.length ? items.map(b => {
+      const sameVideo = b.vid === S.video?.id;
+      const replay = sameVideo || available.has(b.vid)
+        ? `<button class="time-link" data-act="seekt" data-vid="${esc(b.vid)}" data-t="${b.t}">▶ ${sameVideo ? "回到" : "打开原视频"} ${fmtTime(b.t)} 重听</button>`
+        : /^[A-Za-z0-9_-]{11}$/.test(b.vid)
+          ? `<a class="time-link" href="https://www.youtube.com/watch?v=${b.vid}&amp;t=${Math.floor(b.t)}s" target="_blank" rel="noopener">在 YouTube 重听 ${fmtTime(b.t)} ↗</a>` : "";
       return `
       <div class="wrow">
         <div><div class="w-term">${esc(b.term)}</div>${b.zh ? `<div class="w-zh">${esc(b.zh)}</div>` : ""}</div>
-        <div class="w-actions"><button class="x-btn" data-act="unbook" data-i="${i}" aria-label="从生词本删除" title="删除">×</button></div>
+        <div class="w-actions"><button class="x-btn" data-act="unbook" data-key="${esc(b.key)}" aria-label="从生词本删除" title="删除">×</button></div>
         <div class="w-sent">${markTerm(b.sentence, b.term)}</div>
         <div class="w-meta">
           ${b.kind && b.kind !== "word" ? `<span class="tag tag-${b.kind}">${KIND_LABEL[b.kind]}</span>` : ""}
-          ${sameVideo ? `<button class="time-link" data-act="seekt" data-t="${b.t}">▶ 回到 ${fmtTime(b.t)} 重听</button>` : ""}
+          ${replay}
         </div>
       </div>`;
-    }).join("") + `<div class="panel-foot"><span>保存在这台设备的浏览器里</span><button class="btn btn-ghost btn-sm" data-act="export">导出 CSV（可导入 Anki）</button></div>`;
+    }).join("") : `<div class="empty"><div class="empty-title">${query ? "没有匹配的记录" : "生词本还是空的"}</div>${query
+      ? '试试其他词语、中文释义或原句。<button class="link-btn" data-act="book-clear">清除搜索</button>'
+      : '点击字幕里的词，选「加入生词本」。单词会连同原句和时间点一起保存。'}</div>`;
   }
 
   function markTerm(sentence, term) {
@@ -326,59 +394,114 @@
     renderControls();
     renderDensity();
     renderStage();
-    renderTranscript(scrollTranscript);
-    renderPreview();
-    renderBook();
+    renderActivePanel(scrollTranscript);
+  }
+
+  function renderActivePanel(scrollTranscript = false) {
+    if (S.tab === "transcript") renderTranscript(scrollTranscript);
+    else if (S.tab === "preview") renderPreview();
+    else if (S.tab === "book") renderBook();
   }
 
   // ------------------------------------------------------ personal marks ---
-  const shownKey = (k) => k.replace(/^(sense|phrase):/, "");
-  function markKnown(key, silent) {
-    S.known.add(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "known");
-    if (!silent) toast(`已标为认识：${shownKey(key)}，之后不再提示`, () => { S.known.delete(key); save(); renderAll(); pushMark(key, "clear"); });
+  const shownKey = AdaptiveLearning.label;
+  let markNotice = 0;
+  function explicitMark(key) {
+    if (live) return shared?.marks.known.includes(key) ? "known" : shared?.marks.unknown.includes(key) ? "unknown" : "clear";
+    return S.known.has(key) ? "known" : S.unknown.has(key) ? "unknown" : "clear";
   }
-  function markUnknown(key) {
-    S.unknown.add(key); S.known.delete(key); save(); renderAll(); pushMark(key, "unknown");
-    toast(`以后总是提示：${shownKey(key)}`, () => { S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); });
+  async function markWord(key, state) {
+    const notice = ++markNotice, before = explicitMark(key), label = shownKey(key);
+    if (!await pushMark(key, state, before) || notice !== markNotice) return;
+    const message = state === "known" ? `已标为认识：${label}，之后不再提示`
+      : state === "unknown" ? `以后总是提示：${label}` : `已恢复：${label}`;
+    toast(message, before === state ? null : async () => {
+      if (await pushMark(key, before, state)) toast(`已撤销：${label}`);
+    });
   }
-  function restore(key) { S.known.delete(key); S.unknown.delete(key); save(); renderAll(); pushMark(key, "clear"); toast(`已恢复：${shownKey(key)}`); }
 
   // ------------------------------------------------- shared profile (local program) ---
   const API_H = { "X-Adaptive-Subs": "1", "Content-Type": "application/json" };
-  async function loadShared() {
-    try {
-      const r = await fetch("api/profile", { headers: API_H, cache: "no-store" });
-      const p = await r.json();
-      if (!r.ok || !Array.isArray(p.known)) return;
+  async function profileRequest(path, body) {
+    const r = await fetch(path, { headers: API_H, cache: "no-store", signal: AbortSignal.timeout(10000), ...(body ? { method: "POST", body: JSON.stringify(body), keepalive: true } : {}) });
+    const p = await r.json();
+    if (!r.ok || p.error) throw new Error(p.error || `HTTP ${r.status}`);
+    return p;
+  }
+  const profileSync = AdaptiveProfileSync.create({
+    read: () => profileRequest("api/profile"),
+    write: op => op.type === "level" ? profileRequest("api/profile", { level: op.level })
+      : profileRequest("api/mark", { key: op.key, state: op.state, expected_state: op.expectedState }),
+    apply: p => {
       shared = p;
-      S.level = nearestLevel(p.level);
-      S.known = new Set(p.known);
-      S.unknown = new Set(p.unknown);
-      if (S.cues.length) renderAll(); else renderControls();
-    } catch { /* old program version: keep this browser's own marks */ }
+      S.level = previewLevel ?? p.level;
+      S.known = new Set(p.known); S.unknown = new Set(p.unknown);
+      renderAll(false);
+    },
+  });
+  async function loadShared() {
+    if (profileLoading) return;
+    profileLoading = true;
+    $("#retryProfile").disabled = true;
+    try { await profileSync.refresh(); profileProblem = ""; }
+    catch (e) {
+      profileProblem = e.name === "TimeoutError" ? "本机画像读取超时" : `本机画像读取失败：${e.message}`;
+    } finally {
+      profileLoading = false;
+      $("#retryProfile").disabled = false;
+      renderDensity();
+    }
   }
-  async function pushMark(key, state) {
-    if (!shared) return;
+  async function pushMark(key, state, expectedState) {
+    if (live === null || (live && (!shared || profileProblem))) {
+      toast("画像尚未读取，请先重新读取本机画像再标记");
+      return false;
+    }
+    if (!live) {
+      return !!(await persist(current => {
+        const known = new Set(current.known || []), unknown = new Set(current.unknown || []);
+        const before = known.has(key) ? "known" : unknown.has(key) ? "unknown" : "clear";
+        if (expectedState !== undefined && expectedState !== before)
+          throw new AdaptivePlayerStore.StorageProblem("这个词的标记已在其他页面更新，请核对后再操作", "conflict");
+        known.delete(key); unknown.delete(key);
+        if (state === "known") known.add(key);
+        if (state === "unknown") unknown.add(key);
+        return { ...current, known: [...known], unknown: [...unknown] };
+      }));
+    }
     try {
-      const r = await fetch("api/mark", { method: "POST", headers: API_H, body: JSON.stringify({ key, state }) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      loadShared();
-    } catch { toast("标记没能保存到 Adaptive Subs 程序（只保存在这个浏览器里）"); }
+      await profileSync.mutate({ type: "mark", key, state, expectedState });
+      return true;
+    } catch (e) {
+      toast(`标记保存未确认：${e.message || "连接失败"}。已恢复到最近确认的记录，请重试。`);
+      return false;
+    }
   }
-  let levelTimer = 0;
-  function pushLevel() {
-    if (!shared) return;
-    clearTimeout(levelTimer);
-    levelTimer = setTimeout(() => fetch("api/profile", { method: "POST", headers: API_H, body: JSON.stringify({ level: S.level }) })
-      .then(() => loadShared()).catch(() => {}), 400);
+  async function commitLevel(event) {
+    if (event.target.disabled) return;
+    const level = LEVELS[+event.target.value];
+    previewLevel = null;
+    if (live) {
+      try { await profileSync.mutate({ type: "level", level }); }
+      catch (error) { toast(`词汇量保存未确认：${error.message}，请重试`); }
+    } else if (!await save({ level })) {
+      S.level = previewLevel ?? localLevel;
+      renderAll(false);
+    }
   }
 
-  function addToBook(entry) {
-    if (bookKeys.has(entry.key)) return;
-    S.book.push({ ...entry, vid: S.video.id, added: Date.now() });
-    bookKeys = new Set(S.book.map((b) => b.key));
-    if (entry.hasNote) { const mk = entry.mk || entry.key; S.unknown.add(mk); S.known.delete(mk); pushMark(mk, "unknown"); }
-    save(); renderAll();
+  async function addToBook(entry) {
+    const record = { ...entry, vid: S.video.id, added: Date.now() };
+    let added = false;
+    if (!await saveBook(book => {
+      if (book.some(b => b.key === record.key)) return book;
+      if (book.length >= AdaptiveWordbook.MAX_ENTRIES) throw new Error("生词本已满，请先备份并整理记录");
+      added = true; return [...book, record];
+    }) || !added) return;
+    if (entry.hasNote && !await pushMark(entry.mk || entry.key, "unknown")) {
+      toast(`已加入生词本：${entry.term}。不熟悉标记尚未确认，可在词卡中核对。`);
+      return;
+    }
     toast(`已加入生词本：${entry.term}`);
   }
   function bookEntryFromCue(ci, noteIdx, word) {
@@ -387,23 +510,71 @@
       const n = c.notes[noteIdx];
       return { key: n.key, mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
     }
-    // a word without a pre-generated gloss: use the same gloss if it appears elsewhere
+    // A different sentence's gloss can describe a different meaning. Keep this entry unglossed.
     const key = word.toLowerCase();
-    let found = null;
-    S.cues.some((cc) => cc.notes.some((n) => (n.key === key ? (found = n) : false)));
-    return { key, term: word, zh: found ? found.zh : "", kind: found ? found.kind : "word", lv: found ? found.lv : 0, sentence: c.text, t: c.s, hasNote: !!found };
+    return { key, term: word, zh: "", kind: "word", lv: 0, sentence: c.text, t: c.s, hasNote: false };
   }
 
-  function exportCSV() {
-    const q = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
-    const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
-      S.book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
-    const blob = new Blob(["﻿" + rows.map((r) => r.map(q).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+  async function saveBook(edit) {
+    return !!(await persist(current => ({ ...current, book: edit(current.book || []) })));
+  }
+  function downloadBook(contents, type, filename) {
+    const blob = new Blob([contents], { type });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "adaptive-subs-wordbook.csv";
+    a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  function exportCSV() {
+    try {
+      const book = playerStore.read().book || [];
+      const rows = [["word", "meaning", "sentence", "time", "video"]].concat(
+        book.map((b) => [b.term, b.zh, b.sentence, fmtTime(b.t), `https://www.youtube.com/watch?v=${b.vid}&t=${Math.floor(b.t)}s`]));
+      downloadBook("\uFEFF" + rows.map(r => r.map(AdaptiveWordbook.csvCell).join(",")).join("\r\n"),
+        "text/csv;charset=utf-8", "adaptive-subs-wordbook.csv");
+    } catch (e) { toast(`导出失败：${e.message}`); }
+  }
+  function exportBook() {
+    try {
+      const data = JSON.stringify(AdaptiveWordbook.backup(playerStore.read().book || []), null, 2);
+      if (new Blob([data]).size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("备份超过 8 MB，请先分批整理记录");
+      downloadBook(data, "application/json;charset=utf-8", "adaptive-subs-wordbook.json");
+    } catch (e) { toast(`备份失败：${e.message}`); }
+  }
+  let pendingBookImport = null, bookImportSequence = 0;
+  async function previewBookImport(event) {
+    const file = event.target.files[0], sequence = ++bookImportSequence;
+    event.target.value = "";
+    pendingBookImport = null;
+    if (!file) return;
+    try {
+      if (file.size > AdaptiveWordbook.MAX_FILE_BYTES) throw new Error("文件超过 8 MB");
+      const incoming = AdaptiveWordbook.parse(JSON.parse(await file.text()));
+      if (sequence !== bookImportSequence) return;
+      const current = playerStore.read().book || [];
+      const merged = AdaptiveWordbook.merge(current, incoming), added = merged.length - current.length;
+      pendingBookImport = incoming;
+      $("#bookImportSummary").textContent = `备份含 ${incoming.length} 条记录，将新增 ${added} 条，保留 ${incoming.length - added} 条已有记录。`;
+      $("#bookImportError").textContent = "";
+      $("#bookImportDialog").showModal();
+    } catch (e) { if (sequence === bookImportSequence) toast(`无法读取生词本备份：${e.message}`); }
+  }
+  async function importBook() {
+    if (!pendingBookImport) return;
+    const incoming = pendingBookImport;
+    $("#bookImportConfirm").disabled = true;
+    try {
+      let added = 0;
+      if (!await saveBook(book => {
+        const merged = AdaptiveWordbook.merge(book, incoming); added = merged.length - book.length; return merged;
+      })) {
+        $("#bookImportError").textContent = "浏览器保存失败，原有生词本未改变。请检查存储空间后重试。";
+        return;
+      }
+      $("#bookImportDialog").close();
+      toast(`生词本已恢复，新增 ${added} 条记录`);
+    } catch (e) { $("#bookImportError").textContent = `恢复失败：${e.message}`; }
+    finally { $("#bookImportConfirm").disabled = false; }
   }
 
   // --------------------------------------------------------------- toast ---
@@ -419,7 +590,10 @@
     hostFor(el);
     el.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button type="button">撤销</button>` : ""}`;
     el.hidden = false;
-    if (undo) $("button", el).onclick = () => { undo(); el.hidden = true; };
+    if (undo) $("button", el).onclick = async () => {
+      el.hidden = true; clearTimeout(toastTimer);
+      try { await undo(); } catch (e) { toast(`撤销失败：${e.message || "请重试"}`); }
+    };
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
   }
@@ -442,13 +616,13 @@
     let main;
     if (note) {
       const action = shown
-        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">我认识了，不再提示</button>`
+        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">认识，不再提示</button>`
         : S.known.has(key)
           ? `<button class="btn btn-primary btn-sm" data-act="restore" data-key="${esc(key)}">恢复提示</button>`
-          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">标为生词，总是提示</button>`;
+          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">不认识，总是提示</button>`;
       const why = shown
-        ? (S.unknown.has(key) ? "你标记过这个词，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
-        : S.known.has(key) ? (shared && note.kind === "word" ? "在你的熟词库里（考试词表 / 常见词 / 测试 / 你的标记），所以不提示" : "你标记过认识，所以不提示") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
+        ? (noteState(note) === "forced" ? "你标记过不熟悉，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
+        : noteState(note) === "known" ? "熟词库中已有这个词，所以不提示" : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
       main = `
         <div class="wc-head"><span class="wc-term">${esc(term)}</span>
           <span class="tag ${note.kind !== "word" ? `tag-${note.kind}` : ""}">${KIND_LABEL[note.kind]}</span>
@@ -463,7 +637,7 @@
         <div class="wc-note">不确定的话，可以去词典查一下，或者先收进生词本。</div>
         <div class="wc-actions">`;
     }
-    const inBook = bookKeys.has(key);
+    const inBook = bookKeys.has(note ? note.key : key);
     main += `
         <button class="btn btn-ghost btn-sm" data-act="book" data-c="${ci}" ${ni != null ? `data-n="${ni}"` : ""} data-w="${esc(term)}" ${inBook ? "disabled" : ""}>${inBook ? "✓ 已在生词本" : "+ 生词本"}</button>
         <button class="btn btn-ghost btn-sm" data-act="replay" data-c="${ci}">重听本句</button>
@@ -495,30 +669,76 @@
   }
 
   // -------------------------------------------------------------- player ---
-  let player = null, ready = false, pausedFor = -1;
+  let player = null, playerVideoId = null, ready = false, pausedFor = -1, pendingSeek = null;
+  let ytLoading = false, ytAttempt = 0, ytTimer = 0, ytScript = null;
+
+  function showPlayerNotice(message, retry = false) {
+    $("#playerNotice").hidden = !message;
+    $("#playerMessage").textContent = message;
+    $("#retryPlayer").hidden = !retry;
+    $("#openYouTube").hidden = !S.video;
+    if (S.video) $("#openYouTube").href = `https://www.youtube.com/watch?v=${encodeURIComponent(S.video.id)}`;
+  }
+  function playerFailed(attempt, message, retry = true) {
+    if (attempt !== ytAttempt) return;
+    ++ytAttempt;  // Late script / iframe callbacks cannot revive a failed attempt.
+    clearTimeout(ytTimer); ytLoading = false; ready = false;
+    showPlayerNotice(message + " 已有字幕仍可在下方查看。", retry);
+  }
 
   function loadYouTube() {
-    window.onYouTubeIframeAPIReady = () => {
-      player = new YT.Player("yt", {
-        videoId: S.video.id,
-        // fs: 0 hides YouTube's fullscreen button: it would fullscreen the bare video without our subtitles
-        playerVars: { cc_load_policy: 0, rel: 0, modestbranding: 1, playsinline: 1, fs: 0 },
-        events: {
-          // YouTube may switch its own captions on; keep only ours
-          onReady: (e) => {
-            ready = true;
-            e.target.unloadModule("captions");
-            // the viewer may have switched videos while the player was loading
-            if (S.video && e.target.getVideoData().video_id !== S.video.id) e.target.cueVideoById(S.video.id);
+    const attempt = ++ytAttempt;
+    ytLoading = true; ready = false; clearTimeout(ytTimer);
+    try { player?.destroy(); } catch { /* A failed iframe may no longer respond. */ }
+    player = null; ytScript?.remove(); ytScript = null;
+    $("#yt")?.remove();
+    const mount = document.createElement("div"); mount.id = "yt"; frame().prepend(mount);
+    showPlayerNotice("正在连接 YouTube 播放器，可以先查看已有字幕。");
+    ytTimer = setTimeout(() => playerFailed(attempt, "播放器连接超时，请检查网络后重试。"), 20000);
+    let created = false;
+    const create = () => {
+      if (attempt !== ytAttempt || created || !S.video) return;
+      created = true;
+      const active = () => attempt === ytAttempt;
+      const captionsOff = target => { try { target.unloadModule("captions"); } catch { /* Optional player module. */ } };
+      try {
+        playerVideoId = S.video.id;
+        player = new YT.Player("yt", {
+          videoId: playerVideoId,
+          playerVars: { cc_load_policy: 0, rel: 0, playsinline: 1, fs: 0, origin: location.origin },
+          events: {
+            onReady: e => {
+              if (!active()) return;
+              player = e.target; ready = true; ytLoading = false; clearTimeout(ytTimer);
+              showPlayerNotice(""); captionsOff(e.target);
+              ensurePlayer();
+            },
+            onApiChange: e => { if (active()) captionsOff(e.target); },
+            onStateChange: e => {
+              if (active() && e.data === 1) { showPlayerNotice(""); captionsOff(e.target); }
+            },
+            onAutoplayBlocked: () => { if (active()) showPlayerNotice("浏览器暂停了自动播放，请点击视频内的播放按钮继续。"); },
+            onError: e => {
+              const messages = {
+                2: "视频地址无效，请选择另一个视频。", 5: "浏览器暂时无法播放这个视频，请重试或在 YouTube 打开。",
+                100: "视频已移除或设为私密，无法在这里播放。",
+                101: "视频作者不允许嵌入播放，请在 YouTube 打开。", 150: "视频作者不允许嵌入播放，请在 YouTube 打开。",
+                153: "YouTube 无法验证播放器来源，请刷新或在 YouTube 打开。",
+              };
+              playerFailed(attempt, messages[e.data] || "视频暂时无法播放，请检查网络或在 YouTube 打开。", ![2, 100, 101, 150].includes(e.data));
+            },
           },
-          onApiChange: (e) => e.target.unloadModule("captions"),
-          onStateChange: (e) => { if (e.data === YT.PlayerState.PLAYING) e.target.unloadModule("captions"); },
-        },
-      });
+        });
+      } catch { playerFailed(attempt, "播放器初始化失败，请重试。"); }
     };
-    const s = document.createElement("script");
-    s.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(s);
+    window.onYouTubeIframeAPIReady = create;
+    if (window.YT?.Player) create();
+    else {
+      ytScript = document.createElement("script");
+      ytScript.src = "https://www.youtube.com/iframe_api";
+      ytScript.onerror = () => playerFailed(attempt, "未能加载 YouTube 播放器，请检查网络后重试。");
+      document.head.appendChild(ytScript);
+    }
   }
 
   const isPlaying = () => !!(ready && player.getPlayerState && player.getPlayerState() === 1);
@@ -532,14 +752,19 @@
     return ans;
   }
 
-  let ytLoading = false;
   function ensurePlayer() {
     if (!S.video) return;
+    $("#openYouTube").href = `https://www.youtube.com/watch?v=${encodeURIComponent(S.video.id)}`;
     if (ready) {
-      if (player.getVideoData().video_id !== S.video.id) player.cueVideoById(S.video.id);
+      // The iframe can still report A while a previous cue command is changing it to B.
+      if (playerVideoId !== S.video.id || player.getVideoData()?.video_id !== S.video.id) {
+        playerVideoId = S.video.id;
+        showPlayerNotice("");
+        player.cueVideoById(playerVideoId);
+      }
       return;
     }
-    if (!ytLoading) { ytLoading = true; loadYouTube(); }   // its onReady picks up S.video
+    if (!ytLoading) loadYouTube();   // its onReady picks up S.video
   }
 
   // while a video is generated live, tell the server where the viewer is, so it works there first
@@ -549,14 +774,16 @@
     const jumped = lastFocusT >= 0 && Math.abs(t - lastFocusT) > 3;
     if (jumped || lastSentFocus < 0 || Math.abs(t - lastSentFocus) > 20) {
       lastSentFocus = t;
-      fetch(`api/focus?v=${encodeURIComponent(S.video.id)}&t=${t.toFixed(1)}`).catch(() => {});
+      fetch("api/focus", { method: "POST", headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ v: S.video.id, t }) }).catch(() => {});
     }
     lastFocusT = t;
   }
 
   let lastIdx = -1;   // the line that was playing on the previous tick
   function tick() {
-    if (!ready || !player.getCurrentTime) return;
+    if (!ready || !player.getCurrentTime || player.getVideoData()?.video_id !== S.video?.id) return;
+    if (pendingSeek) { applySeek(); return; }
     const t = player.getCurrentTime();
     reportFocus(t);
     let i = cueAtOrBefore(t);
@@ -580,23 +807,27 @@
     }
   }
 
-  function seekCue(ci, play = true) {
-    if (!S.cues[ci]) return;
+  function seekPlayback(ci, time, play) {
     closeCard(false);
+    lastIdx = S.cur = ci;
     pausedFor = -1;
-    lastIdx = ci;
-    S.cur = ci;
-    S.gap = false;
+    S.gap = ci >= 0 && time > S.cues[ci].e + GAP_GRACE;
     renderStage();
     markActiveRow(true);
-    if (!ready) return;
-    player.seekTo(S.cues[ci].s + 0.01, true);
+    pendingSeek = { time, play };
+    applySeek();
+  }
+  function applySeek() {
+    if (!ready || player.getVideoData()?.video_id !== S.video?.id) return;
+    const { time, play } = pendingSeek;
+    pendingSeek = null;
+    player.seekTo(time, true);
     if (play) player.playVideo();
   }
-  function seekTime(t) {
-    const ci = cueAtOrBefore(t);
-    seekCue(ci >= 0 ? ci : 0);
+  function seekCue(ci, play = true) {
+    if (S.cues[ci]) seekPlayback(ci, S.cues[ci].s + 0.01, play);
   }
+  function replayBookTime(time) { seekPlayback(cueAtOrBefore(time), time, true); }
   const replay = () => seekCue(S.cur >= 0 ? S.cur : 0);
   const step = (d) => seekCue(Math.max(0, Math.min(S.cues.length - 1, (S.cur >= 0 ? S.cur : -1) + d)));
   function togglePlay() {
@@ -623,6 +854,8 @@
     hostFor($("#wordCard"));
     hostFor($("#toast"));
     const fs = isFs();
+    if (fs) frame().append($("#playerNotice"));
+    else frame().before($("#playerNotice"));
     $("#fsBtn span").textContent = fs ? "退出全屏" : "全屏";
     document.body.style.overflow = frame().classList.contains("pseudo-fs") ? "hidden" : "";
     placeSubs();
@@ -655,7 +888,7 @@
 
   async function openTest() {
     if (IS_FILE) { showFileNotice(); return; }
-    if (shared) { if (isPlaying()) player.pauseVideo(); window.open("/profile", "_blank", "noopener"); return; }
+    if (live) { if (isPlaying()) player.pauseVideo(); window.open("/profile", "_blank", "noopener"); return; }
     if (isPlaying()) player.pauseVideo();
     const dlg = $("#testDialog");
     if (!bank) {
@@ -803,7 +1036,7 @@
     };
   }
 
-  function onTestClick(e) {
+  async function onTestClick(e) {
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
@@ -836,46 +1069,93 @@
     }
     else if (act === "tagain") { T = newTest(); T.stage = "words"; renderTest(); }
     else if (act === "tapply") {
-      S.level = +b.dataset.lv;
-      S.test = { est: T.result.est, date: new Date().toISOString().slice(0, 10) };
-      save(); renderAll();
+      if (!await save({ level: +b.dataset.lv, test: { est: T.result.est, date: new Date().toISOString().slice(0, 10) } })) return;
+      renderAll();
       $("#testDialog").close();
       toast(`已按测试结果设置：≈ ${fmtNum(S.level)} 词`);
     }
   }
 
   // ------------------------------------------------------------- events ---
-  function onAction(e) {
+  async function onAction(e) {
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act, key = b.dataset.key;
-    if (act === "know") { closeCard(true); markKnown(key); }
-    else if (act === "unknown") { closeCard(true); markUnknown(key); }
-    else if (act === "restore") { closeCard(true); restore(key); }
+    if (act === "know" || act === "unknown" || act === "restore") {
+      closeCard(true);
+      markWord(key, act === "know" ? "known" : act === "restore" ? "clear" : "unknown");
+    }
     else if (act === "book") {
+      closeCard(true);
       const ci = +b.dataset.c;
-      if (b.dataset.n != null || b.dataset.w) addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
+      if (b.dataset.n != null || b.dataset.w) await addToBook(bookEntryFromCue(ci, b.dataset.n != null ? +b.dataset.n : null, b.dataset.w || ""));
       else {
         // from the pre-watch list: find the note with this key in that cue
-        const ni = S.cues[ci].notes.findIndex((n) => n.key === key);
-        addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
+        const ni = S.cues[ci].notes.findIndex((n) => markKey(n) === key);
+        await addToBook(bookEntryFromCue(ci, ni >= 0 ? ni : null, key));
       }
-      closeCard(true);
     }
     else if (act === "unbook") {
-      const [removed] = S.book.splice(+b.dataset.i, 1);
-      bookKeys = new Set(S.book.map((x) => x.key));
-      save(); renderAll();
-      toast(`已从生词本删除：${removed.term}`, () => { S.book.push(removed); bookKeys = new Set(S.book.map((x) => x.key)); save(); renderAll(); });
+      let index, removed;
+      if (!await saveBook(book => {
+        index = book.findIndex(item => item.key === key); removed = book[index];
+        return book.filter(item => item.key !== key);
+      }) || !removed) return;
+      toast(`已从生词本删除：${removed.term}`, () => {
+        return saveBook(book => {
+          if (book.some(item => item.key === removed.key)) return book;
+          const next = book.slice(); next.splice(Math.min(index, next.length), 0, removed); return next;
+        });
+      });
     }
     else if (act === "replay") seekCue(+b.dataset.c);
     else if (act === "seek") seekCue(+b.dataset.c);
-    else if (act === "seekt") seekTime(+b.dataset.t);
+    else if (act === "seekt") {
+      const id = b.dataset.vid, time = Number(b.dataset.t);
+      if (id === S.video?.id && !S.retrySaved && !S.retryId) {
+        ++navigation;
+        replayBookTime(time);
+      } else {
+        const entry = index.find(video => video.id === id);
+        if (entry) await loadSaved(entry, ++navigation, time);
+      }
+    }
     else if (act === "export") exportCSV();
+    else if (act === "backup-book") exportBook();
+    else if (act === "import-book") $("#bookBackupFile").click();
+    else if (act === "book-prev" || act === "book-next") {
+      bookPage = Math.max(0, bookPage + (act === "book-next" ? 1 : -1)); renderBook(); $("#tab-book").scrollTop = 0;
+    }
+    else if (act === "book-clear") { bookQuery = ""; bookPage = 0; $("#bookSearch").value = ""; renderBook(); $("#bookSearch").focus(); }
     else if (act === "close") closeCard(true);
   }
 
   function bindUI() {
+    $("#retryPlayer").addEventListener("click", () => { if (S.video && !ytLoading) loadYouTube(); });
+    $("#recoverStorage").addEventListener("click", recoverLocalStore);
+    $("#downloadStorage").addEventListener("click", () => downloadStorageCopies(true));
+    $("#downloadRecovery").addEventListener("click", () => downloadStorageCopies());
+    window.addEventListener("storage", event => { if (event.key === STORE_KEY || event.key === null) refreshLocalStore(); });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshLocalStore(); });
+    $("#retryProfile").addEventListener("click", loadShared);
+    $("#bookBackupFile").addEventListener("change", previewBookImport);
+    $("#bookImportConfirm").addEventListener("click", importBook);
+    $("#bookImportCancel").addEventListener("click", () => $("#bookImportDialog").close());
+    $("#bookImportDialog").addEventListener("close", () => { pendingBookImport = null; });
+    $("#density").addEventListener("click", async (e) => {
+      const button = e.target.closest("[data-generation]");
+      if (!button) return;
+      if (button.dataset.generation === "retry") return openVideo(S.retryId, true);
+      button.disabled = true;
+      try {
+        const r = await fetch("api/jobs/cancel", { method: "POST",
+          headers: { "X-Adaptive-Subs": "1", "Content-Type": "application/json" },
+          body: JSON.stringify({ id: S.video.id }) });
+        const data = await r.json();
+        toast(data.error || "正在停止，已经发出的请求会先完成");
+      } catch { toast("连不上本地程序"); }
+      finally { button.disabled = false; }
+    });
     $("#line").addEventListener("click", (e) => { const t = e.target.closest(".tok"); if (t) openCard(t); });
     $("#urlForm").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -885,7 +1165,7 @@
       openVideo(v);
     });
     $("#videoSelect").addEventListener("change", (e) => openVideo(e.target.value));
-    $("#posSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.subPos = b.dataset.pos; save(); renderControls(); renderStage(); } });
+    $("#posSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.subPos = b.dataset.pos; save({ subPos: S.subPos }); renderControls(); renderStage(); } });
     $("#fsBtn").addEventListener("click", toggleFullscreen);
     $("#fsBar").addEventListener("click", (e) => {
       const b = e.target.closest("[data-fs]");
@@ -901,12 +1181,17 @@
     $("#tab-transcript").addEventListener("click", (e) => { const r = e.target.closest(".tr-row"); if (r) seekCue(+r.dataset.c); });
     ["wheel", "touchmove"].forEach((ev) => $("#tab-transcript").addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true }));
 
-    $("#levelRange").addEventListener("input", (e) => { S.level = LEVELS[+e.target.value]; save(); renderAll(); pushLevel(); });
-    $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save(); renderAll(); } });
-    $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save(); renderAll(); } });
-    $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save(); renderAll(); } });
-    $("#autoPause").addEventListener("change", (e) => { S.autoPause = e.target.checked; pausedFor = -1; save(); toast(S.autoPause ? "每句结束时会自动暂停，按空格继续" : "已关闭每句暂停"); });
-    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save(); renderControls(); if (S.tab === "transcript") markActiveRow(true); }));
+    $("#levelRange").addEventListener("input", e => {
+      if (e.target.disabled) return;
+      previewLevel = S.level = LEVELS[+e.target.value];
+      renderAll(false);
+    });
+    $("#levelRange").addEventListener("change", commitLevel);
+    $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.mode = b.dataset.mode; save({ mode: S.mode }); renderAll(); } });
+    $("#glossSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.gloss = b.dataset.gloss; save({ gloss: S.gloss }); renderAll(); } });
+    $("#prefSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.pref = b.dataset.pref; save({ pref: S.pref }); renderAll(); } });
+    $("#autoPause").addEventListener("change", async (e) => { S.autoPause = e.target.checked; pausedFor = -1; if (await save({ autoPause: S.autoPause })) toast(S.autoPause ? "每句结束时会自动暂停，按空格继续" : "已关闭每句暂停"); });
+    $$(".tabs button").forEach((b) => b.addEventListener("click", () => { S.tab = b.dataset.tab; save({ tab: S.tab }); renderControls(); renderActivePanel(true); }));
 
     $("#prevLine").addEventListener("click", () => step(-1));
     $("#nextLine").addEventListener("click", () => step(1));
@@ -918,7 +1203,7 @@
     $("#openIntro").addEventListener("click", () => $("#introDialog").showModal());
     $("#introTest").addEventListener("click", () => { $("#introDialog").close(); openTest(); });
     $("#introSkip").addEventListener("click", () => $("#introDialog").close());
-    $("#introDialog").addEventListener("close", () => { S.introSeen = true; save(); });
+    $("#introDialog").addEventListener("close", () => { S.introSeen = true; save({ introSeen: true }); });
     ["introDialog", "testDialog"].forEach((id) => $("#" + id).addEventListener("click", (e) => { if (e.target.id === id) e.target.close(); }));
 
     document.addEventListener("pointerdown", (e) => {
@@ -953,16 +1238,22 @@
   // ------------------------------------------------------- video loading ---
   // Saved videos load from data/<id>.json. With the local server (server.py) running, any YouTube
   // link can be opened: subtitles arrive in seconds, annotations stream in while you watch.
+  let navigation = 0;  // Only the latest open request may replace the displayed video.
   let index = [];      // saved videos [{id, title, file}]
-  let live = false;    // local server available
+  let live = null;     // null until the server check completes
   let es = null;       // EventSource of a video being generated
 
-  async function loadIndex() {
+  async function loadIndex(request) {
     try {
-      const r = await fetch("data/index.json", { cache: "no-store" });
-      index = r.ok ? await r.json() : [];
-    } catch { index = []; }
-    if (!Array.isArray(index)) index = [];
+      const r = await fetch("data/index.json", { cache: "no-store", signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row.id !== "string"
+          || typeof row.file !== "string" || typeof row.title !== "string")) throw new Error("视频列表格式无效");
+      if (request === navigation) index = rows;
+    } catch (error) {
+      if (request === navigation) throw error;
+    }
   }
 
   function resetVideo(video) {
@@ -975,7 +1266,7 @@
     S.annDone = null;
     S.progress = null;
     S.statusMsg = "";
-    S.retryId = null;
+    S.retryId = null; S.retrySaved = null; pendingSeek = null;
     lastIdx = -1; pausedFor = -1; lastFocusT = -1; lastSentFocus = -1;
   }
 
@@ -995,33 +1286,57 @@
     ensurePlayer();
   }
 
-  async function loadSaved(entry) {
-    let data;
-    try { data = await (await fetch("data/" + entry.file, { cache: "no-store" })).json(); }
-    catch { toast(`字幕文件 data/${entry.file} 读取失败`); return; }
+  async function loadSaved(entry, request, replayAt = null) {
+    let data, rebuild = false;
+    try {
+      const response = await fetch("data/" + entry.file, { cache: "no-store", signal: AbortSignal.timeout(15000) });
+      data = await response.json();
+      if (request !== navigation) return;
+      rebuild = live && response.status === 409 && data?.retry === true;
+      if (!response.ok || data?.error) throw new Error(data?.error || `字幕读取失败（HTTP ${response.status}）`);
+      if (data?.video?.id !== entry.id || !Array.isArray(data.cues)) throw new Error("字幕文件与所选视频不匹配或格式无效");
+      data.cues = data.cues.map(c => ({ ...c, notes: AdaptiveLearning.clientNotes(c.text, c.notes) }));
+    }
+    catch (e) {
+      if (request !== navigation) return;
+      resetVideo({ id: entry.id, title: entry.title || entry.id });
+      S.statusMsg = e.name === "TimeoutError" ? "已保存字幕读取超时" : e.message || "已保存字幕无法读取";
+      if (rebuild) S.retryId = entry.id;
+      else S.retrySaved = { entry, replayAt };
+      afterVideoChange(); toast(S.statusMsg); return;
+    }
     resetVideo(data.video);
     S.cues = data.cues;
     afterVideoChange();
+    if (replayAt !== null) replayBookTime(replayAt);
   }
 
-  async function openVideo(input) {
+  async function openVideo(input, bypassIndex = false) {
     const v = String(input || "").trim();
     if (!v) return;
+    const request = ++navigation;
     const saved = index.find((x) => x.id === v);
-    if (saved) return loadSaved(saved);
+    if (saved && !bypassIndex) return loadSaved(saved, request);
     if (!live) { toast("打开新视频需要先打开 Adaptive Subs 程序"); return; }
-    let r;
-    try { r = await (await fetch(`api/open?url=${encodeURIComponent(v)}`)).json(); }
-    catch { toast("连不上本地服务器，请确认 Adaptive Subs 程序还开着"); return; }
-    if (r.error) { toast(r.error); return; }
-    if (r.cached) {
-      await loadIndex();
-      return loadSaved(index.find((x) => x.id === r.id) || { id: r.id, file: r.file });
+    try {
+      const response = await fetch("api/open", { method: "POST", signal: AbortSignal.timeout(15000),
+        headers: API_H, body: JSON.stringify({ url: v }) });
+      const r = await response.json();
+      if (request !== navigation) return;
+      if (!response.ok || r?.error) throw new Error(r?.error || `打开视频失败（HTTP ${response.status}）`);
+      if (typeof r?.id !== "string" || !/^[A-Za-z0-9_-]{11}$/.test(r.id) || typeof r.cached !== "boolean")
+        throw new Error("本地程序未确认打开的视频，请重试");
+      if (r.cached) {
+        // The acknowledged video can still open if the catalog is temporarily unavailable.
+        await loadIndex(request).catch(() => {});
+        if (request === navigation) await loadSaved(index.find(x => x.id === r.id) || { id: r.id, file: r.id + ".json" }, request);
+      } else startLive(r.id, request);
+    } catch (error) {
+      if (request === navigation) toast(error.name === "TimeoutError" ? "打开请求超时，请在程序中核对处理进度" : error.message);
     }
-    startLive(r.id);
   }
 
-  function startLive(id) {
+  function startLive(id, request) {
     resetVideo({ id, title: "正在获取字幕…" });
     S.annDone = new Set();
     S.statusMsg = "正在获取英文字幕…";
@@ -1032,7 +1347,7 @@
       queued = true;
       setTimeout(() => { queued = false; renderAll(false); }, 400);
     };
-    const src = new EventSource(`api/stream?v=${encodeURIComponent(id)}`);
+    const src = new AdaptiveEvents(id);
     es = src;
     const on = (type, fn) => src.addEventListener(type, (e) => { if (es === src) fn(JSON.parse(e.data)); });
     on("status", (d) => { S.statusMsg = d.msg; renderStage(); });
@@ -1044,7 +1359,9 @@
       if (d.source === "auto") toast("这个视频没有人工字幕，用的是 YouTube 自动字幕，可能有错字或断句不准");
     });
     on("ann", (d) => {
-      for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) { S.cues[+k].notes = notes; S.annDone.add(+k); }
+      for (const [k, notes] of Object.entries(d)) if (S.cues[+k]) {
+        S.cues[+k].notes = AdaptiveLearning.clientNotes(S.cues[+k].text, notes); S.annDone.add(+k);
+      }
       rerender();
     });
     on("zh", (d) => { for (const [k, z] of Object.entries(d)) if (S.cues[+k]) S.cues[+k].zh = z; rerender(); });
@@ -1053,10 +1370,11 @@
       src.close(); es = null;
       S.annDone = null;
       S.progress = { done: 1, total: 1, finished: true, seconds: d.seconds };
-      await loadIndex();
+      await loadIndex(request).catch(() => {});
+      if (request !== navigation) return;
       renderVideoSelect();
       renderAll(false);
-      toast(`全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
+      toast(d.warning || `全部注释已生成（用时 ${d.seconds} 秒），以后打开这个视频会直接加载`);
     });
     on("fail", (d) => {
       src.close(); es = null;
@@ -1066,42 +1384,63 @@
       renderAll(false);
       toast(d.msg);
     });
-    src.onerror = () => {   // EventSource retries on its own; give up only if the server is gone
-      if (es === src && src.readyState === EventSource.CLOSED) { es = null; toast("和本地服务器的连接断开了，请确认 Adaptive Subs 程序还开着"); }
+    src.onerror = () => {
+      if (es === src && src.readyState === 2) {
+        es = null; S.progress = null; S.retryId = id;
+        renderDensity();
+        toast("连接断开。重新打开本地程序后，可以继续处理缺失字幕。");
+      }
     };
   }
 
   // --------------------------------------------------------------- init ---
   async function init() {
     bindUI();
+    renderStorageNotice(); renderActivePanel();
     renderControls();
+    renderDensity();
     renderStage();
     if (IS_FILE) {
       $("#line").innerHTML = `<span class="placeholder">请通过本地服务器打开：先打开 Adaptive Subs 程序</span>`;
       showFileNotice();
       return;
     }
-    try { live = !!(await (await fetch("api/health", { cache: "no-store" })).json()).ok; } catch { live = false; }
+    for (const id of ["openTest", "introTest", "levelTest"]) $("#" + id).disabled = true;
+    const mode = document.documentElement.dataset.playerMode;
+    if (mode === "local" || mode === "static") live = mode === "local";
+    else {
+      // Older builds and the raw web folder use discovery.
+      try { live = !!(await (await fetch("api/health", { cache: "no-store", signal: AbortSignal.timeout(10000) })).json()).ok; }
+      catch { live = false; }
+    }
+    for (const id of ["openTest", "introTest", "levelTest"]) $("#" + id).disabled = false;
+    renderDensity();
     $("#urlForm").hidden = !live;
+    $("#settingsLink").hidden = !live;
     if (live) {
-      await loadShared();
+      loadShared();   // Reading the profile should never delay opening saved subtitles.
       // the profile page (another tab) may change it: reload when coming back
-      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && shared) loadShared(); });
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") loadShared(); });
     }
     // a local address without the live server = an old plain file server: say how to fix it
     // (on GitHub Pages there is never a server, so no hint there)
-    $("#liveHint").hidden = live || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
-    await loadIndex();
-    renderVideoSelect();
+    $("#liveHint").hidden = mode === "static" || live || !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+    const initial = navigation;
+    let indexError;
+    try { await loadIndex(initial); } catch (error) { indexError = error; }
     setInterval(tick, 100);
-    const want = params.get("v");
-    if (want && (live || index.some((v) => v.id === want))) await openVideo(want);
-    else if (index.length) await loadSaved(index[0]);
-    else {
-      S.statusMsg = live ? "在上方粘贴一个 YouTube 链接开始" : "没有找到字幕数据（data/index.json）：先运行 annotate.py，或确认 data 文件夹已上传";
-      renderStage();
+    if (initial === navigation) {
+      renderVideoSelect();
+      const want = params.get("v");
+      if (want && (live || index.some(v => v.id === want))) await openVideo(want);
+      else if (index.length) await openVideo(index[0].id);
+      else {
+        S.statusMsg = indexError ? "已保存视频列表读取失败，请刷新页面重试"
+          : live ? "在上方粘贴一个 YouTube 链接开始" : "还没有已保存的视频";
+        renderStage();
+      }
     }
-    if (!S.introSeen) $("#introDialog").showModal();
+    if (!S.introSeen && !storageIssue) $("#introDialog").showModal();
   }
 
   init();
