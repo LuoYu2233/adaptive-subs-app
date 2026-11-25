@@ -21,3 +21,23 @@ node tools/compare_word_models.cjs video.json labels.json profile.json word-diff
 - display 或 baseline 以最终实际显示的注释计数，含命中、多注、漏注、召回和每分钟多注，也包括候选提取阶段已经漏掉的词。
 - probability 只评估表中存在且未被个人标记覆盖的单词出现次数。logLoss 越小越好。AUC 衡量排序，在样本只有一个类别时返回 null。各校准区间同时给出样本数、平均预测概率和实际生词比例。
 - 用标注前取得的画像，固定参数后再看留出的学习者或视频。若同一段素材用于调参，请单独保留评估数据。用人工标注人数、片段时长和覆盖率说明结果的适用范围。
+
+## 多位试用者、多个片段
+
+将每位学习者观看每段视频的文件写进一个本地 JSON 清单。路径相对于清单文件。learner 使用匿名代号，domain 用于分别查看科技、日常口语或新闻等片段。parameters 可省略，省略时使用该场的观看前词汇量反推能力。
+
+```json
+{
+  "version": 1,
+  "sessions": [
+    {"learner":"P01","domain":"科技","video":"clips/tech.json","labels":"P01/tech-labels.json","profile":"P01/tech-before.json","parameters":"P01/word-cat-parameters.json"},
+    {"learner":"P02","domain":"科技","video":"clips/tech.json","labels":"P02/tech-labels.json","profile":"P02/tech-before.json"}
+  ]
+}
+```
+
+```powershell
+node tools/compare_word_cohort.cjs manifest.json word-difficulty-v1.json normal
+```
+
+overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。同一人观看同一视频的重复记录会报错，重测可另存清单独立分析。

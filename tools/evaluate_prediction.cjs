@@ -93,14 +93,18 @@ function evaluate(result, labels, profile, preset, classifyNote) {
     }
   });
   const missed = noCandidate + belowThresholdOrKnown + displayLimit;
-  const f2Denominator = 5 * hits + 4 * missed + extra;
   return {
     video: expected.video, preset, durationSeconds: expected.duration, evaluatedCues: expected.cues.length,
-    hits, missed, extra,
+    ...displayMetrics(hits, missed, extra, expected.duration),
     missedByReason: { noCandidate, belowThresholdOrKnown, displayLimit },
-    missRate: hits + missed ? missed / (hits + missed) : null,
-    extraPerMinute: extra * 60 / expected.duration,
-    f2: f2Denominator ? 5 * hits / f2Denominator : null,
+  };
+}
+
+function displayMetrics(hits, missed, extra, durationSeconds) {
+  const denominator = 5 * hits + 4 * missed + extra;
+  return {
+    hits, missed, extra, missRate: hits + missed ? missed / (hits + missed) : null,
+    extraPerMinute: extra * 60 / durationSeconds, f2: denominator ? 5 * hits / denominator : null,
   };
 }
 
@@ -120,7 +124,7 @@ function main(args) {
   }
 }
 
-module.exports = { prepare, evaluate, labelSpan, spanKey, load };
+module.exports = { prepare, evaluate, displayMetrics, labelSpan, spanKey, load };
 if (require.main === module) {
   try { main(process.argv.slice(2)); }
   catch (error) { console.error(error.message); process.exitCode = 1; }

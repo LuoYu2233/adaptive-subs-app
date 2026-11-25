@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'tools/compare_word_models.cjs'
+      - 'tools/compare_word_cohort.cjs'
       - 'tools/evaluate_prediction.cjs'
       - 'app/web/assets/prediction.js'
       - 'tests/compare_word_models.test.cjs'
