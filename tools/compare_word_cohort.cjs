@@ -38,6 +38,29 @@ function group(sessions, key) {
   return [...groups].map(([name, rows]) => ({ [key]: name, ...summarize(rows) }));
 }
 
+// Keep all of one learner's videos together when checking whether the aggregate depends on that learner.
+function pairedChanges(overall, learners) {
+  const fields = ["baseline","b_frequency","b_initial"];
+  const metrics = ["missRate","extraPerMinute","f2"];
+  const differences = scores => Object.fromEntries(fields.slice(1).map(field => [field,
+    Object.fromEntries(metrics.map(key => [key, scores[field][key] == null || scores.baseline[key] == null
+      ? null : scores[field][key] - scores.baseline[key]]))]));
+  const all = Object.fromEntries(fields.map(field => [field, overall.models[field].display]));
+  const changes = differences(all);
+  const leaveOneLearnerOut = [];
+  if (learners.length > 1) {
+    for (const person of learners) {
+      const remaining = Object.fromEntries(fields.map(field => {
+        const drop = person.models[field].display, total = all[field];
+        return [field, displayMetrics(total.hits - drop.hits, total.missed - drop.missed, total.extra - drop.extra,
+          overall.durationSeconds - person.durationSeconds)];
+      }));
+      leaveOneLearnerOut.push({ omitted: person.learner, changes: differences(remaining) });
+    }
+  }
+  return { changes, leaveOneLearnerOut };
+}
+
 function cohort(manifestPath, tableFile, preset) {
   const manifest = load(manifestPath), { table, tableSha256 } = readTable(tableFile);
   if (manifest?.version !== 1 || !Array.isArray(manifest.sessions) || !manifest.sessions.length)
@@ -85,10 +108,10 @@ function cohort(manifestPath, tableFile, preset) {
     ranges.push({ ...range, hash: s.subtitleSha256 });
     seen.set(id, ranges);
   });
+  const overall = summarize(sessions), byLearner = group(sessions, "learner");
   return {
-    preset, tableSha256, participants: new Set(sessions.map(r => r.learner)).size,
-    videos: new Set(sessions.map(identity)).size, overall: summarize(sessions),
-    byLearner: group(sessions, "learner"), byDomain: group(sessions, "domain"),
+    preset, tableSha256, participants: byLearner.length, videos: new Set(sessions.map(identity)).size, overall,
+    byLearner, byDomain: group(sessions, "domain"), pairedDisplay: pairedChanges(overall, byLearner),
   };
 }
 
