@@ -27,20 +27,25 @@ jobs:
         run: |
           set -e
           node --test tests/*.test.cjs
-          python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p 'test_*.py'
           python tools/build_word_difficulty.py
           python tests/check_generated_word_table.py
-      - name: Run the six installed-browser and desktop-page scenarios
+      - name: Run installed-browser and desktop-page scenarios
         shell: bash
         run: |
           set -e
-          for check in check_cat_page check_blind_labels check_irt_extension check_viewing_study check_subtitle_spans check_profile_backup_page; do
+          for check in check_cat_page check_phrase_page check_blind_labels check_irt_extension check_viewing_study check_subtitle_spans check_profile_backup_page; do
             python "tests/$check.py"
           done
       - name: Build and open the native application from the distributed ZIP
         run: python packaging/build.py
       - shell: pwsh
         run: ./tools/check_windows_package.ps1
+      - name: Install offline research dependencies after building the distribution
+        run: python -m pip install -r tools/viewing/requirements.txt
+      - name: Run all Python module tests under native Windows
+        run: python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p 'test_*.py'
+      - name: Measure, predict, capture feedback and score a future blind video using the extracted ZIP
+        run: python tools/check_integrated_trial.py build/word-difficulty-v1.json --archive release/AdaptiveSubs-Windows.zip
       - name: Retain the verified candidate for seven days
         uses: actions/upload-artifact@v4
         with:

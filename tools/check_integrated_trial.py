@@ -1,0 +1,167 @@
+"""Exercise real CAT exports, packaged extension, localhost backend, feedback fit and blind scoring together."""
+import argparse
+import base64
+import io
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.request import Request, urlopen
+import wave
+from zipfile import ZipFile
+
+from playwright.sync_api import expect, sync_playwright
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from check_cat_page import check as measured_trial
+
+
+def fixture(ident, text):
+    notes = []
+    for word in ("orbit", "plume", "bridge", "drift"):
+        pos = text.index(word)
+        notes.append({"s": pos, "e": pos + len(word), "kind": "word", "key": word, "lv": 9000 - len(notes),
+                      "zh": {"orbit": "轨道", "plume": "羽毛", "bridge": "桥", "drift": "漂移"}[word]})
+    return {"video": {"id": ident, "title": "联合验收", "duration": 5}, "cues": [{"s": 0, "e": 5, "text": text, "zh": "", "notes": notes}]}
+
+
+def save(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def trial(table, archive, analysis_python):
+    measured = measured_trial(table, expanded=True)
+    with tempfile.TemporaryDirectory() as temp:
+        folder = Path(temp)
+        home = folder / "独立用户"
+        (home / "data").mkdir(parents=True)
+        training, blind = "studyset001", "blindset002"
+        save(home / "data" / f"{training}.json", fixture(training, "orbit plume bridge drift"))
+        save(home / "data" / f"{blind}.json", fixture(blind, "😀 orbit plume bridge drift today"))
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        base = f"http://127.0.0.1:{port}"
+        if archive:
+            with ZipFile(archive) as z: z.extractall(folder / "分发包")
+            program = folder / "分发包" / "AdaptiveSubs-Windows"
+            command = [str(program / "程序" / "AdaptiveSubs.exe")]
+            ext = program / "浏览器插件"
+        else:
+            command = [sys.executable, str(ROOT / "app/server.py")]
+            ext = ROOT / "extension"
+        env = dict(os.environ, ASUBS_HOME=str(home), ASUBS_HEADLESS="1", ASUBS_NO_BROWSER="1", PYTHONIOENCODING="utf-8")
+        for key in ("OPENAI_API_KEY","DEEPSEEK_API_KEY","MIMO_API_KEY"): env.pop(key, None)
+        with (folder / "server.log").open("wb") as log:
+            server = subprocess.Popen(command + ["--port", str(port)], env=env, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                for _ in range(200):
+                    if server.poll() is not None: raise RuntimeError("Desktop program exited during startup")
+                    try:
+                        with urlopen(base + "/api/health", timeout=2) as r:
+                            if json.load(r)["ok"]: break
+                    except OSError: pass
+                    time.sleep(.25)
+                else: raise RuntimeError("Local server did not start")
+                try:
+                    capture(folder, ext, base, table, measured, training, blind)
+                except Exception:
+                    print((folder / "server.log").read_text(encoding="utf-8", errors="replace")[-4000:])
+                    raise
+                fitted = subprocess.check_output([analysis_python, str(ROOT / "tools/fit_viewing_feedback.py"),
+                    str(folder / "cat.json"), str(table), "--train", str(folder / "study.json")], cwd=folder)
+                fit = json.loads(fitted)
+                assert fit["training"]["included"] == 4 and fit["trainingSubtitleHashes"]
+                (folder / "fit.json").write_bytes(fitted)
+                save(folder / "clips.json", {"version": 1, "clips": [{"clip": "holdout", "domain": "科技", "packet": "blind.json"}]})
+                result = json.loads(subprocess.check_output(["node", str(ROOT / "tools/score_blind_feedback.cjs"),
+                    "fit.json", str(table), "clips.json", "normal"], cwd=folder))
+                assert result["updated"]["probability"]["observations"] == 3
+                assert result["updated"]["display"]["hits"] + result["updated"]["display"]["missed"] == 1
+                assert result["tableSha256"] == measured["record"]["parameters"]["tableSha256"]
+                print("Passed real 800-item CAT, 30000-word import, local persisted correction, sealed feedback fit and later independent blind scoring.")
+            finally:
+                if server.poll() is None:
+                    server.terminate()
+                    try: server.wait(timeout=12)
+                    except subprocess.TimeoutExpired: server.kill(); server.wait(timeout=10)
+
+
+def capture(folder, ext, base, table, measured, training, blind):
+    save(folder / "cat.json", measured["record"])
+    save(folder / "parameters.json", measured["parameters"])
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as wav:
+        wav.setparams((1, 2, 8000, 0, "NONE", "")); wav.writeframes(bytes(8000 * 2 * 6))
+    src = "data:audio/wav;base64," + base64.b64encode(audio.getvalue()).decode()
+    html = f'<div id="movie_player" style="width:800px;height:400px"><video muted style="width:100%;height:100%" src="{src}"></video></div>'
+    with sync_playwright() as pw:
+        args = [f"--disable-extensions-except={ext}", f"--load-extension={ext}", "--autoplay-policy=no-user-gesture-required"]
+        ctx = pw.chromium.launch_persistent_context(str(folder / "浏览器"), channel="chromium", headless=True, args=args)
+        try:
+            unexpected = []
+            def route(r):
+                u = r.request.url
+                if u.startswith("https://www.youtube.com/watch?"): return r.fulfill(content_type="text/html", body=html)
+                if u.startswith(base + "/") or u.startswith("chrome-extension://"): return r.continue_()
+                unexpected.append(u); return r.abort()
+            ctx.route("**/*", route)
+            worker = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
+            origin = worker.url.rsplit("/", 1)[0]
+            worker.evaluate("b => chrome.storage.session.set({base:b})",base)
+            worker.evaluate("() => chrome.storage.local.set({settings:{pref:'normal'},asubsKeysHint:1})")
+            settings = ctx.new_page(); settings.goto(origin + "/irt.html")
+            settings.locator("#table").set_input_files(table)
+            settings.locator("#parameters").set_input_files(folder / "parameters.json")
+            settings.locator("#apply").click()
+            expect(settings.locator("#status")).to_contain_text("30,000")
+            video = ctx.new_page(); video.goto("https://www.youtube.com/watch?v=" + training)
+            expect(video.locator(".asubs-t[data-n]")).to_have_count(4)
+            video.bring_to_front()
+            video.locator(".asubs-t[data-n='0']").click()
+            expect(video.locator(".asubs-card-why")).to_contain_text("IRT 试用", timeout=20000)
+            video.locator(".asubs-card [data-act=close]").click()
+            tab = worker.evaluate("async () => (await chrome.tabs.query({active:true,currentWindow:true}))[0].id")
+            study = ctx.new_page(); study.goto(origin + "/study.html?tab=" + str(tab))
+            study.locator("#clip").fill("train01"); study.locator("#domain").fill("科技"); study.locator("#begin").click()
+            expect(study.locator("#status")).to_contain_text("正在记录")
+            video.bring_to_front(); video.evaluate("document.querySelector('video').play()")
+            expect(study.locator("#status")).to_contain_text("4 次")
+            video.locator(".asubs-t[data-n='3']").click()
+            video.locator(".asubs-card [data-act=unknown]").click()
+            expect(video.locator(".asubs-pill")).to_contain_text("已标为生词")
+            with urlopen(Request(base + "/api/profile", headers={"X-Adaptive-Subs":"1"})) as r:
+                assert "drift" in json.load(r)["marks"]["unknown"]
+            study.locator("#stop").click()
+            with study.expect_download() as f: study.locator("#export").click()
+            f.value.save_as(folder / "study.json")
+            assert len(json.loads((folder / "study.json").read_bytes())["exposures"]) == 4
+            video.goto("https://www.youtube.com/watch?v=" + blind)
+            expect(video.locator(".asubs-t[data-n]")).to_have_count(4)
+            label = ctx.new_page(); label.goto(origin + "/label.html?tab=" + str(tab))
+            label.locator("#new").click()
+            label.get_by_role("button", name="plume", exact=True).click()
+            label.locator("#confirm").click()
+            expect(label.locator("#bundle")).to_be_enabled()
+            with label.expect_download() as f: label.locator("#bundle").click()
+            f.value.save_as(folder / "blind.json")
+            packet = json.loads((folder / "blind.json").read_bytes())
+            assert packet["profile"]["marks"]["unknown"] == ["drift"]
+            assert packet["labels"]["cues"][0]["unknown"] == [{"s":8,"text":"plume"}]
+            assert not unexpected, unexpected
+        finally:
+            ctx.close()
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("table", type=Path)
+    p.add_argument("--archive", type=Path)
+    p.add_argument("--analysis-python", default=sys.executable)
+    args = p.parse_args()
+    trial(args.table.resolve(), args.archive, args.analysis_python)
