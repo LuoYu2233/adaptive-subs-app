@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>逐句盲标 · Adaptive Subs</title>
+  <link rel="stylesheet" href="label.css">
+</head>
+<body>
+  <main>
+    <h1>逐句盲标</h1>
+    <p id="title"></p>
+    <section id="start" hidden>
+      <p>在原视频中听一句，点出当时没能理解的词或短语。确认本句后，答案保存在这台电脑。</p>
+      <p id="draftStatus"></p>
+      <button id="resume" hidden>继续上次标注</button>
+      <button id="new">开始新标注</button>
+    </section>
+    <section id="editor" hidden>
+      <div class="bar"><strong id="progress"></strong><button id="replay">重听本句</button></div>
+      <p id="sentence" lang="en" aria-label="本句英文"></p>
+      <div class="bar"><button id="phrase" aria-pressed="false">选择短语</button>
+        <button id="selection">标记选中的文字</button></div>
+      <p id="hint">点词可标记或撤销。选择短语后，依次点首词和末词。</p>
+      <div id="selected" aria-label="本句已选"></div>
+      <div class="bar"><button id="previous">上一句</button><button class="primary" id="confirm">确认本句</button></div>
+      <p id="saved"></p>
+      <footer><button id="answers">导出标注</button><button id="viewer">导出观看前画像</button><button id="clear">清除本地草稿</button></footer>
+    </section>
+    <p id="notice" role="status" aria-live="polite">正在连接视频页…</p>
+  </main>
+  <script src="label.js"></script>
+</body>
+</html>

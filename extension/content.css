@@ -133,3 +133,9 @@
 /* subtitles at the top: for videos whose own subtitles are printed at the bottom of the picture */
 .asubs-root.asubs-top .asubs-box { top: max(48px, 9%); bottom: auto; }
 .asubs-root.asubs-top .asubs-pill { top: auto; bottom: max(58px, 12%); }
+
+.asubs-labeling .asubs-zh, .asubs-labeling .asubs-card, .asubs-labeling .asubs-pill,
+.asubs-labeling .asubs-toast, .asubs-labeling .ytp-caption-window-container,
+.asubs-labeling .bpx-player-subtitle-wrap, .asubs-labeling .bili-subtitle-x-subtitle-panel-wrap {
+  display: none !important;
+}

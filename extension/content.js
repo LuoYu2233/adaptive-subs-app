@@ -145,7 +145,7 @@
   // ------------------------------------------------------------- loading ---
   async function load(key) {
     const gen = ++S.gen;
-    Object.assign(S, { key: key.str, page: key, id: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
+    Object.assign(S, { key: key.str, page: key, id: null, savedVideo: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
       owner: null, ownerName: "" });
     lastLayout = "";
     if (!cfg.enabled) return;
@@ -160,7 +160,7 @@
     if (gen !== S.gen) return;
     if (r.cached) {
       S.id = r.id;
-      setCues(r.data.cues);
+      setSaved(r.data);
       return pill(r.id === key.v ? "注释已载入（这个视频之前生成过）" : "已载入之前语音识别的英文字幕和注释", { hideAfter: 4000 });
     }
     if (r.nosubs && S.page) return offerASR(gen, ytASR(S.page), "这个视频没有英文字幕");
@@ -186,7 +186,7 @@
     const r = await bg({ type: "open", payload });
     if (gen !== S.gen) return;
     if (r.error) return pill(serverMsg(r), { sticky: true, action: { label: "重试", fn: () => startGloss(gen, payload, label) } });
-    if (r.cached) { S.id = r.id || payload.id; setCues(r.data.cues); return pill("注释已载入", { hideAfter: 3000 }); }
+    if (r.cached) { S.id = r.id || payload.id; setSaved(r.data); return pill("注释已载入", { hideAfter: 3000 }); }
     follow(gen, r.id || payload.id, "正在生成注释，先处理你正在看的位置…");
   }
 
@@ -253,7 +253,7 @@
       if (gen !== S.gen) return;
       if (r.error) return pill(serverMsg(r), { sticky: true });
       if (r.cached) {
-        setCues(r.data.cues);
+        setSaved(r.data);
         return pill("注释已载入（这个视频之前生成过）", { hideAfter: 4000 });
       }
       if (r.running) return follow(gen, S.id, "正在生成注释，先处理你正在看的位置…");
@@ -272,7 +272,7 @@
     if (gen !== S.gen) return;
     if (probe.cached) {
       S.id = payload.id;
-      setCues(probe.data.cues);
+      setSaved(probe.data);
       return pill("已载入之前语音识别的英文字幕和注释", { hideAfter: 4000 });
     }
     if (probe.running) return follow(gen, payload.id, "语音识别进行中…");
@@ -290,7 +290,7 @@
     const r = await bg({ type: "open", payload });
     if (gen !== S.gen) return;
     if (r.error) return pill(serverMsg(r), { sticky: true });
-    if (r.cached) { S.id = payload.id; setCues(r.data.cues); return pill("已载入", { hideAfter: 3000 }); }
+    if (r.cached) { S.id = payload.id; setSaved(r.data); return pill("已载入", { hideAfter: 3000 }); }
     follow(gen, payload.id, "正在下载音频…");
   }
 
@@ -300,6 +300,11 @@
     S.annDone = new Set();
     pill(msg);
     poll(gen);
+  }
+
+  function setSaved(data) {
+    S.savedVideo = data.video;
+    setCues(data.cues);
   }
 
   function setCues(cues) {
@@ -858,6 +863,7 @@
     toast(on ? `遮挡板：开（${SITE.here}的视频会记住）` : "遮挡板：关");
   }
   window.addEventListener("keydown", (e) => {
+    if (labelPlayback.active) return;
     if (e.code !== "KeyZ" && e.code !== "KeyB" && e.code !== "KeyP") return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing || typingIn(e)) return;
     if (e.code === "KeyP") {
@@ -879,6 +885,7 @@
     else startPeek();
   }, true);
   window.addEventListener("keyup", (e) => {
+    if (labelPlayback.active) return;
     if (e.code !== "KeyZ" || !PEEK.hold) return;
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -920,6 +927,12 @@
     ui.box.hidden = !show;
     if (!show) return;
     const c = S.cues[i], vis = S.visible[i] || new Set();
+    if (labelPlayback.active) {
+      ui.line.className = "asubs-line";
+      ui.line.textContent = c.text;
+      ui.zh.hidden = true;
+      return;
+    }
     const style = cfg.mode === "adaptive" ? cfg.gloss : "none";
     ui.line.className = "asubs-line" + (style === "paren" ? " asubs-paren" : "") + (style === "over" && vis.size ? " asubs-has-over" : "");
     ui.line.replaceChildren();
@@ -970,6 +983,31 @@
     return ans;
   }
 
+  function labelAvailable() {
+    return cfg.enabled && S.savedVideo?.id === S.id && Number.isFinite(S.savedVideo?.duration) &&
+      S.savedVideo.duration > 0 && S.cues.length > 0 && pageKey()?.str === S.key;
+  }
+
+  const labelPlayback = installLabelPlayback({
+    getClip: () => labelAvailable() ? {
+      generation: S.gen, title: S.savedVideo.title || S.id,
+      sheet: { version: 1, video: S.id, duration: S.savedVideo.duration,
+        cues: S.cues.map(({ s, e, text }) => ({ s, e, text, unknown: null })) },
+    } : null,
+    isCurrent: clip => labelAvailable() && S.gen === clip.generation && S.id === clip.sheet.video,
+    getVideo: findVideo,
+    isAd: () => YOUTUBE && !!findVideo()?.closest(".ad-showing"),
+    setBlind: on => {
+      document.documentElement.classList.toggle("asubs-labeling", on);
+      if (on) {
+        CARD.paused = false; closeCard();
+        PEEK.hold = false; PEEK.sticky = false;
+        if (ui.line) ui.line.replaceChildren();
+      }
+      S.dirty = true;
+    },
+  });
+
   let orphanNoted = false;
   function tick() {
     // the extension was reloaded or updated: this copy keeps showing subtitles but is the old code and can't
@@ -978,6 +1016,7 @@
       orphanNoted = true;
       pill(SERVER_MSG.ext, { sticky: true });
     }
+    labelPlayback.tick();
     const k = pageKey();
     if ((k && k.str) !== S.key) {           // both sites change video / part without reloading the page
       if (k) load(k); else { S.key = null; S.gen++; S.cues = []; }
@@ -1039,7 +1078,7 @@
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (sender.id !== chrome.runtime.id || !msg) return;
     if (msg.type === "where") {
-      reply({ here: SITE.here, owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
+      reply({ videoPage: !!pageKey(), canLabel: !!labelAvailable(), here: SITE.here, owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
     } else if (msg.type === "cover" && S.key && S.owner != null) {
       setCoverHere(!!msg.on);
       reply({ ok: true, cover: coverHere() });
