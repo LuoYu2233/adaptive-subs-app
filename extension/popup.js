@@ -43,7 +43,8 @@ function save() {
 
 // (The cover board is off by default for every UP 主 / channel — P on the video or the row
 // below turns it on — so there is no list of UP 主s it was closed for any more.)
-chrome.storage.local.get(["settings"], (r) => {
+chrome.storage.local.get(["settings", "irtEnabled"], (r) => {
+  if (r?.irtEnabled === true) $("#irtLink").textContent = "IRT 判词试用 · 已开启";
   cfg = { ...DEFAULTS, ...((r && r.settings) || {}) };
   render();
 });
