@@ -1,5 +1,6 @@
 """Run opt-in viewing, successful corrections, export and deletion in an installed extension."""
 import json
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from playwright.sync_api import expect, sync_playwright
@@ -93,6 +94,8 @@ def check():
                 control.locator("#export").click()
             result = json.loads(Path(dl.value.path()).read_bytes())
             assert result["kind"] == "word-viewing-study" and result["tableSha256"] == "1" * 64
+            digest = sha256(json.dumps([[0, 60, sentence]], separators=(",", ":")).encode()).hexdigest()
+            assert result["subtitleSha256"] == digest
             assert result["clip"] == "clip01" and result["domain"] == "科技"
             rows = {r["word"]: (r["shown"], r["event"]) for r in result["exposures"]}
             assert rows == {"orbit": (True, "known"), "plume": (True, "none"), "fog": (True, "none"),

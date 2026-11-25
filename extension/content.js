@@ -65,6 +65,7 @@
   // Phrase and special-sense notes use their own keys ("phrase:…", "sense:…"), so knowing a word
   // never hides its uncommon meaning.
   const PF = { ok: false, rev: -1, level: 0, known: new Set(), unknown: new Set(), marks: new Map(), lastCheck: 0 };
+  let profileRead = 0;
   let defs = {};    // key -> short Chinese meaning, for words marked 不认识 that had no annotation
   const markKey = AdaptivePrediction.markKey;
   const effLevel = () => (PF.ok && PF.level) || cfg.level;
@@ -373,6 +374,7 @@
 
   function trialProbability(n) {
     if (!trialEnabled || !trialModel || !PF.ok || n?.kind !== "word" || n.local || PF.marks.has(n.key)) return null;
+    if (PF.legacy && (PF.known.has(n.key) || PF.unknown.has(n.key))) return null;
     return Object.hasOwn(trialModel.probabilities, n.key) ? trialModel.probabilities[n.key] : null;
   }
 
@@ -423,11 +425,19 @@
 
   // ------------------------------------------------------------- profile ---
   async function loadProfile() {
+    const request = ++profileRead;
     const r = await bg({ type: "profile" });
+    if (request !== profileRead) return;
     PF.lastCheck = Date.now();
-    if (r.error || !Array.isArray(r.known)) { PF.ok = false; computeVisible(); return; }
-    Object.assign(PF, { ok: true, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
-      marks: new Map([...r.marks.known.map((k) => [k, "known"]), ...r.marks.unknown.map((k) => [k, "unknown"])]) });
+    const wordList = v => Array.isArray(v) && v.every(k => typeof k === "string");
+    const legacy = r.marks == null;
+    if (r.error || !wordList(r.known) || !wordList(r.unknown) ||
+        !legacy && (!wordList(r.marks.known) || !wordList(r.marks.unknown))) {
+      PF.ok = false; computeVisible(); return;
+    }
+    const marks = legacy ? [] : [...r.marks.known.map(k => [k, "known"]), ...r.marks.unknown.map(k => [k, "unknown"])];
+    Object.assign(PF, { ok: true, legacy, rev: r.rev, level: r.level, known: new Set(r.known), unknown: new Set(r.unknown),
+      marks: new Map(marks) });
     computeVisible();
   }
 
@@ -440,19 +450,14 @@
   }
 
   async function mark(key, state, word, zhShort, observation) {
+    const r = await bg({ type: "mark", payload: { key, state } });
+    if (!r.ok || r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
+    if (observation && ["known", "unknown"].includes(state))
+      sendStudyRows(observation.id, observation.cue, [{ ...observation.row, event: state }]);
     if (state === "unknown" && zhShort && !defs[key]) {
       defs[key] = zhShort;
       chrome.storage.local.set({ asubsDefs: defs });
     }
-    // update right away, then let the server recompute the library
-    PF.known.delete(key); PF.unknown.delete(key); PF.marks.delete(key);
-    if (state === "known") { PF.known.add(key); PF.marks.set(key, "known"); }
-    if (state === "unknown") { PF.unknown.add(key); PF.marks.set(key, "unknown"); }
-    computeVisible();
-    const r = await bg({ type: "mark", payload: { key, state } });
-    if (r.error) return pill(`标记没保存：${serverMsg(r)}`, { hideAfter: 5000 });
-    if (r.ok && observation && ["known", "unknown"].includes(state))
-      sendStudyRows(observation.id, observation.cue, [{ ...observation.row, event: state }]);
     const shown = key.replace(/^(sense|phrase):/, "");
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
@@ -1131,6 +1136,7 @@
       S.cur = live; S.dirty = false;
       renderLine(live);
     }
+    if (study && document.documentElement.classList.contains("asubs-labeling")) endStudy();
     if (study) sampleScreen(video, live, t);
     // while glosses are being generated, tell the server where the viewer is (after a jump, or every 20 s)
     if (S.annDone && S.id) {
@@ -1166,7 +1172,11 @@
     if (msg.type === "studyStart") {
       if (!studyReady() || study) { reply({ error: "请启用 IRT、载入完整字幕，再开始记录" }); return; }
       const gen = S.gen, model = trialModel;
-      bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint }).then(r => {
+      const bytes = new TextEncoder().encode(JSON.stringify(S.cues.map(c => [c.s, c.e, c.text])));
+      crypto.subtle.digest("SHA-256", bytes).then(digest => {
+        const subtitleSha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+        return bg({ type: "studyBegin", clip: msg.clip, domain: msg.domain, field: model.field, fingerprint: model.fingerprint, subtitleSha256 });
+      }).then(r => {
         if (r.id) {
           study = { id: r.id, gen }; observedFrame = null;
           if (gen !== S.gen || model !== trialModel || !studyReady()) {
@@ -1175,7 +1185,7 @@
           toast("本视频的单词观看记录已开始");
         }
         reply(r);
-      });
+      }).catch(error => reply({ error: error.message }));
       return true;
     }
     if (msg.type === "where") {
