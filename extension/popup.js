@@ -82,7 +82,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const button = $("#labelVideo");
       button.hidden = false;
       button.disabled = !w.canLabel;
-      button.title = w.canLabel ? "打开独立标注窗口" : "请先完成字幕生成，再刷新视频页";
+      button.title = w.canLabel ? "打开独立标注窗口" : "请先完成字幕生成，再打开插件弹窗";
       button.onclick = () => chrome.windows.create({
         url: chrome.runtime.getURL("label.html?tab=" + tab.id), type: "popup", width: 520, height: 580,
       });

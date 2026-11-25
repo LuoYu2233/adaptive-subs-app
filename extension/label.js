@@ -3,7 +3,7 @@ const byId = id => document.getElementById(id);
 const tell = text => { byId("notice").textContent = text; };
 const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
-let busy = false, connected = false, oldDraft = false;
+let busy = false, connected = false, oldDraft = false, releaseLock;
 
 function validProfile(p) {
   return Number.isFinite(p?.level) && p.level > 0 &&
@@ -122,7 +122,11 @@ async function action(fn) {
   busy = true; controls();
   try { await fn(); }
   catch (error) { tell("操作未完成：" + error.message); }
-  finally { busy = false; if (draft && !byId("editor").hidden) render(); else controls(); }
+  finally {
+    busy = false;
+    if (draft && !byId("editor").hidden) render(); else controls();
+    if (!connected) releaseLock?.();
+  }
 }
 
 function enter() {
@@ -195,6 +199,7 @@ byId("viewer").onclick = () => download(draft.sheet.video + "-viewer-before.json
 
 function disconnected() {
   connected = false; controls();
+  if (!busy) releaseLock?.();
   if (draft && !byId("editor").hidden) render();
   if (!byId("notice").textContent) tell("视频页已断开。已确认的答案可继续导出。");
 }
@@ -216,7 +221,11 @@ async function openDraft(sheet, title) {
         byId("draftStatus").textContent = "现有草稿和当前字幕不匹配。开始新标注会替换旧草稿。";
       }
       byId("start").hidden = false; tell(""); controls();
-      await new Promise(resolve => window.addEventListener("pagehide", resolve, { once: true }));
+      await new Promise(resolve => {
+        releaseLock = resolve;
+        window.addEventListener("pagehide", resolve, { once: true });
+      });
+      releaseLock = undefined;
     } catch (error) { tell("读取本地草稿失败：" + error.message); port.disconnect(); disconnected(); }
   });
 }

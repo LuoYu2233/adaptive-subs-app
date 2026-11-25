@@ -145,7 +145,7 @@
   // ------------------------------------------------------------- loading ---
   async function load(key) {
     const gen = ++S.gen;
-    Object.assign(S, { key: key.str, page: key, id: null, savedVideo: null, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
+    Object.assign(S, { key: key.str, page: key, id: null, savedVideo: null, finished: false, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
       owner: null, ownerName: "" });
     lastLayout = "";
     if (!cfg.enabled) return;
@@ -303,7 +303,7 @@
   }
 
   function setSaved(data) {
-    S.savedVideo = data.video;
+    S.savedVideo = data.status == null || data.status === "complete" ? data.video : null;
     setCues(data.cues);
   }
 
@@ -348,6 +348,7 @@
           const pct = Math.round((100 * d.done) / Math.max(1, d.total));
           pill(`${S.cues.length && S.asr ? "语音识别 + " : ""}生成注释 ${pct}% · 先处理你正在看的位置`);
         } else if (type === "done") {
+          S.finished = true;
           finished = true;
           S.annDone = null;
           pill(`注释已全部生成（用时 ${d.seconds} 秒），下次打开会直接载入`, { hideAfter: 5000 });
@@ -1078,7 +1079,19 @@
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (sender.id !== chrome.runtime.id || !msg) return;
     if (msg.type === "where") {
-      reply({ videoPage: !!pageKey(), canLabel: !!labelAvailable(), here: SITE.here, owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
+      const send = () => reply({ videoPage: !!pageKey(), canLabel: !!labelAvailable(), here: SITE.here,
+        owner: S.key && S.owner != null ? String(S.owner) : "", name: S.ownerName || "", cover: coverHere() });
+      // Use the finalized on-disk cue list, which can differ from the streaming ASR lines.
+      if (S.finished && !S.savedVideo && cfg.enabled && S.key === pageKey()?.str) {
+        const gen = S.gen, id = S.id;
+        const payload = { id, probe: true };
+        if (YOUTUBE && id === S.page?.v) payload.source = "youtube";
+        bg({ type: "open", payload }).then(r => {
+          if (gen === S.gen && r.cached && r.data?.video?.id === id) setSaved(r.data);
+        }).finally(send);
+        return true;
+      }
+      send();
     } else if (msg.type === "cover" && S.key && S.owner != null) {
       setCoverHere(!!msg.on);
       reply({ ok: true, cover: coverHere() });
