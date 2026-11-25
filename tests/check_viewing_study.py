@@ -100,6 +100,7 @@ def check():
             assert result["kind"] == "word-viewing-study" and result["tableSha256"] == "1" * 64
             digest = sha256(json.dumps([[0, 60, sentence]], separators=(",", ":")).encode()).hexdigest()
             assert result["subtitleSha256"] == digest
+            assert result["mediaSha256"] == sha256(b'"yt:abcdefghijk"').hexdigest()
             assert result["policy"] == model["policy"]
             assert result["clip"] == "clip01" and result["domain"] == "科技"
             rows = {r["word"]: (r["shown"], r["event"]) for r in result["exposures"]}
