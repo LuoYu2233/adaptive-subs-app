@@ -145,7 +145,7 @@
   // ------------------------------------------------------------- loading ---
   async function load(key) {
     const gen = ++S.gen;
-    Object.assign(S, { key: key.str, page: key, id: null, savedVideo: null, finished: false, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
+    Object.assign(S, { key: key.str, page: key, id: null, savedVideo: null, savedCues: null, finished: false, asr: false, cues: [], visible: [], annDone: null, since: 0, cur: -2, dirty: true,
       owner: null, ownerName: "" });
     lastLayout = "";
     if (!cfg.enabled) return;
@@ -304,6 +304,7 @@
 
   function setSaved(data) {
     S.savedVideo = data.status == null || data.status === "complete" ? data.video : null;
+    S.savedCues = S.savedVideo ? data.cues : null;
     setCues(data.cues);
   }
 
@@ -992,6 +993,7 @@
   const labelPlayback = installLabelPlayback({
     getClip: () => labelAvailable() ? {
       generation: S.gen, title: S.savedVideo.title || S.id,
+      candidates: S.savedCues.map(c => (c.notes || []).map(({s, e, kind, key, lv}) => ({s, e, kind, key, lv}))),
       sheet: { version: 1, video: S.id, duration: S.savedVideo.duration,
         cues: S.cues.map(({ s, e, text }) => ({ s, e, text, unknown: null })) },
     } : null,
