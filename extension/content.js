@@ -748,15 +748,27 @@
     const elapsed = prev ? (now - prev.wall) / 1000 : 0;
     const advance = prev ? time - prev.time : 0;
     if (!prev || prev.i !== i || elapsed > 0.6 || advance < 0 || advance > elapsed * (video.playbackRate || 1) + 0.12) {
-      observedFrame = { i, time, wall: now, live: 0, sent: false };
+      observedFrame = { i, time, wall: now, dwell: new Map(), sent: new Set(), complete: false };
       return;
     }
     prev.time = time; prev.wall = now;
-    if (advance <= 0) { prev.live = 0; return; }
-    prev.live += Math.min(elapsed, advance / (video.playbackRate || 1));
-    if (prev.sent || prev.live < 0.35) return;
-    prev.sent = true;
-    const rows = Array.from(ui.line.querySelectorAll(".asubs-t[data-n]"), studyWord).filter(Boolean);
+    if (prev.complete) return;
+    if (advance <= 0) { prev.dwell.clear(); return; }
+    const delta = Math.min(elapsed, advance / (video.playbackRate || 1));
+    const tokens = ui.line.querySelectorAll(".asubs-t[data-n]");
+    const rows = [];
+    for (const tok of tokens) {
+      const index = tok.dataset.n;
+      if (prev.sent.has(index)) continue;
+      const row = studyWord(tok);
+      if (!row) { prev.dwell.delete(index); continue; }
+      const visible = prev.dwell.has(index) ? prev.dwell.get(index) + delta : 0;
+      if (visible < 0.35) { prev.dwell.set(index, visible); continue; }
+      prev.sent.add(index);
+      prev.dwell.delete(index);
+      rows.push(row);
+    }
+    prev.complete = tokens.length > 0 && prev.sent.size === tokens.length;
     sendStudyRows(study.id, i, rows);
   }
   window.addEventListener("pagehide", endStudy);

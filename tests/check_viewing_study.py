@@ -72,6 +72,7 @@ def check():
             expect(control.locator("#status")).to_contain_text("正在记录")
             expect(control.locator("#status")).to_contain_text("0 次")
             page.bring_to_front()
+            style = page.add_style_tag(content=".asubs-t[data-n='1'] { position:fixed!important; left:200vw!important }")
             page.evaluate("""async () => {
               const video=document.querySelector('video'), canvas=document.createElement('canvas');
               const c=canvas.getContext('2d'); c.fillRect(0,0,20,20);
@@ -83,6 +84,12 @@ def check():
             page.wait_for_timeout(650)
             expect(control.locator("#status")).to_contain_text("0 次")
             page.evaluate("document.querySelector('#movie_player').classList.remove('ad-showing')")
+            expect(control.locator("#status")).to_contain_text("5 次")
+            # A word entering the viewport after the rest of its cue needs its own dwell interval.
+            style.evaluate("""e => { e.disabled = true; setTimeout(() => { e.disabled=false },100) }""")
+            page.wait_for_timeout(500)
+            expect(control.locator("#status")).to_contain_text("5 次")
+            style.evaluate("e => e.remove()")
             expect(control.locator("#status")).to_contain_text("6 次")
             def click_word(i, action):
                 page.locator(f".asubs-t[data-n='{i}']").click()
