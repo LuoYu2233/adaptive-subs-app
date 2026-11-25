@@ -75,11 +75,14 @@ def parse_session(data, table, digest, field, prior):
         if not math.isclose(expected, r["pUnknown"], abs_tol=1e-9, rel_tol=1e-9):
             raise ValueError(f"第 {idx} 条概率与导入的试测参数不一致")
         rows.append({**r, "b": b})
-    subtitle_hash = data.get("subtitleSha256")
-    if subtitle_hash is not None and (not isinstance(subtitle_hash, str) or len(subtitle_hash) != 64 or
-                                      any(ch not in "0123456789abcdef" for ch in subtitle_hash)):
-        raise ValueError("字幕指纹无效")
-    return {k: data[k] for k in ("clip", "domain", "id", "started", "ended")} | {"rows": rows, "subtitleHash": subtitle_hash}
+    provenance = {}
+    for key in ("subtitleSha256", "mediaSha256"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)):
+            raise ValueError("视频或字幕指纹无效")
+        provenance[key] = value
+    return {k: data[k] for k in ("clip", "domain", "id", "started", "ended")} | {"rows": rows, **provenance}
+
 
 
 def report(record_file, table_file, field, train_files, test_files, *, half_life=90,
@@ -116,9 +119,10 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
     ordered = train + test
     if len({s["id"] for s in ordered}) != len(ordered) or len({s["clip"] for s in ordered}) != len(ordered):
         raise ValueError("存在重复会话或同一视频代号；请为留出集使用独立视频")
-    hashes = [s["subtitleHash"] for s in ordered if s["subtitleHash"]]
-    if len(hashes) != len(set(hashes)):
-        raise ValueError("字幕指纹重复；同一段字幕不能以不同代号进入多个会话")
+    for key in ("subtitleSha256", "mediaSha256"):
+        hashes = [s[key] for s in ordered if s[key]]
+        if len(hashes) != len(set(hashes)):
+            raise ValueError("视频或字幕指纹重复；同一视频不能以不同代号或字幕轨进入多个会话")
     if any(left["ended"] > right["started"] for left, right in zip(ordered, ordered[1:])):
         raise ValueError("观看时间重叠或训练数据晚于留出片段")
     domains = sorted({s["domain"] for s in train})
@@ -151,7 +155,8 @@ def report(record_file, table_file, field, train_files, test_files, *, half_life
         overall["leaveOneClipOutRange"] = [min(remaining), max(remaining)]
 
     return {"version": 1, "field": field, "tableSha256": digest, "trainingCutoff": cutoff,
-            "trainingClips": [s["clip"] for s in train], "trainingSubtitleHashes": [s["subtitleHash"] for s in train if s["subtitleHash"]],
+            "trainingClips": [s["clip"] for s in train], "trainingSubtitleHashes": [s["subtitleSha256"] for s in train if s["subtitleSha256"]],
+            "trainingMediaHashes": [s["mediaSha256"] for s in train if s["mediaSha256"]],
             "halfLifeDays": half_life, "iterations": iterations,
             "options": {"domainBias": domain_bias, "viewingDiscount": viewing_discount, "fitFeedback": fit_feedback},
             "anchor": {"theta": prior.theta, "se": prior.se, "discrimination": prior.slope, "measuredAt": measured_at},

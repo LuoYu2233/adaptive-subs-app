@@ -17,23 +17,29 @@ function blindReport(fit, table, tableSha256, entries, preset) {
     throw new Error("冻结模型的参数无效");
   if (!Number.isSafeInteger(anchor.measuredAt) || anchor.measuredAt < 0 || anchor.measuredAt > fit.trainingCutoff)
     throw new Error("严格前瞻评估需要含完成时间的原始试测记录");
-  if (fit.trainingSubtitleHashes.length !== fit.trainingClips.length) throw new Error("训练记录缺少字幕指纹，无法核验独立留出片段");
+  if (!Number.isSafeInteger(fit.frozenAt) || fit.frozenAt < fit.trainingCutoff)
+    throw new Error("严格前瞻评估需要在盲标前实际冻结的模型报告");
+  const isHash = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  if (!fit.trainingClips.length || ![fit.trainingSubtitleHashes, fit.trainingMediaHashes].every(hashes =>
+      Array.isArray(hashes) && hashes.length === fit.trainingClips.length && hashes.every(isHash)))
+    throw new Error("训练记录缺少视频或字幕指纹，无法核验独立留出片段");
+  const media = new Set(fit.trainingMediaHashes);
   const usedClips = new Set(fit.trainingClips), usedHashes = new Set(fit.trainingSubtitleHashes);
   const videos = new Set();
   const scored = entries.map(({ clip, domain, packet }) => {
     if (![clip, domain].every(s => typeof s === "string" && s.trim() && s === s.trim()) || !packet ||
-        packet.version !== 1 || packet.kind !== "blind-video-evaluation" || !packet.sourceVerifiedAtStart)
+        packet.version !== 1 || packet.kind !== "blind-video-evaluation" || packet.sourceVerifiedAtStart !== true || !isHash(packet.mediaSha256))
       throw new Error("需要匿名代号、领域以及已核验原始候选的完整盲标评分包");
     const collection = packet.labels?.collection;
     if (collection?.mode !== "blind-cue" || !Number.isSafeInteger(collection.startedAt) ||
         !Number.isSafeInteger(collection.completedAt) || collection.completedAt < collection.startedAt ||
-        collection.startedAt < fit.trainingCutoff) throw new Error("盲标必须在训练结束后独立开始并全部确认");
+        collection.startedAt < fit.frozenAt) throw new Error("盲标必须在训练结束、模型冻结后独立开始并全部确认");
     const digest = createHash("sha256").update(JSON.stringify(packet.video.cues.map(c => [c.s,c.e,c.text]))).digest("hex");
     if (digest !== packet.subtitleSha256) throw new Error("评分包的英文字幕与指纹不一致");
     const videoId = packet.video.video?.id;
-    if (usedClips.has(clip) || usedHashes.has(digest) || videos.has(videoId))
+    if (usedClips.has(clip) || usedHashes.has(digest) || videos.has(videoId) || media.has(packet.mediaSha256))
       throw new Error("训练或留出集中重复使用视频、代号或字幕");
-    usedClips.add(clip); usedHashes.add(digest); videos.add(videoId);
+    usedClips.add(clip); usedHashes.add(digest); videos.add(videoId); media.add(packet.mediaSha256);
     function run(theta, domainBias, viewingDiscount) {
       let samples;
       const r = compare(packet.video,packet.labels,packet.profile,preset,table,
@@ -56,7 +62,7 @@ function blindReport(fit, table, tableSha256, entries, preset) {
   }
   const pooled = side => ({ display: pooledDisplay(scored.map(s => s[side].model.display)),
     probability: probabilityMetrics(scored.flatMap(s => s[side].samples)) });
-  return { version: 1, field, tableSha256, preset, trainingCutoff: fit.trainingCutoff,
+  return { version: 1, field, tableSha256, preset, trainingCutoff: fit.trainingCutoff, frozenAt: fit.frozenAt,
     legacy: pooledDisplay(scored.map(s => s.before.baseline)), anchor: pooled("before"), updated: pooled("after"),
     clips: scored.map(({ clip, domain, before, after }) => ({ clip, domain, coverage: before.coverage,
       overlappingLabels: before.overlappingLabels, legacy: before.baseline, anchor: before.model, updated: after.model })) };

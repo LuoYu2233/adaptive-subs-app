@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 
 from viewing.study import report
 
@@ -22,6 +23,9 @@ def main():
     try:
         result = report(args.record, args.table, args.field, args.train, args.holdout, half_life=args.half_life_days,
                         domain_bias=not args.no_domain, viewing_discount=not args.no_discount, fit_feedback=not args.fixed_feedback)
+        result["frozenAt"] = time.time_ns() // 1_000_000
+        if result["frozenAt"] < result["trainingCutoff"]:
+            raise ValueError("训练记录来自未来，请核对设备时间")
         sys.stdout.buffer.write((json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8"))
     except (OSError, ValueError, TypeError, OverflowError) as e:
         parser.exit(2, f"{e}\n")
