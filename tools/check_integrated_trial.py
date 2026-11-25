@@ -132,6 +132,12 @@ def trial(table, archive, analysis_python, materials=None):
                 assert result["updated"]["probability"]["observations"] == 3
                 assert result["updated"]["display"]["hits"] + result["updated"]["display"]["missed"] == 1
                 assert result["tableSha256"] == measured["record"]["parameters"]["tableSha256"]
+                save(folder / "cohort.json", {"version": 1, "sessions": [{"learner": "P01", "domain": "科技",
+                    "packet": "blind.json", "parameters": "parameters.json"}]})
+                cohort = json.loads(subprocess.check_output(["node", str(ROOT / "tools/compare_word_cohort.cjs"),
+                    "cohort.json", str(table), "normal"], cwd=folder))
+                assert cohort["participants"] == 1 and cohort["videos"] == 1
+                assert cohort["overall"]["models"][fit["field"]]["probability"] == result["anchor"]["probability"]
                 reimport(folder, ext, base, table, blind, fit)
                 print("Passed real 800-item CAT, 30000-word import, locally persisted correction, sealed feedback fit, later blind scoring and in-player calibrated probability.")
             finally:
