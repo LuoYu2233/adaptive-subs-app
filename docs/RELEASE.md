@@ -1,6 +1,8 @@
-# 基础设施试用版
+# 学习功能草案
 
-本版改进任务中断恢复、本地文件写入与备份、启动和退出、源码制包与完整性校验。Windows 安装包仍需在目标机器上验收。
+本草案基于基础设施分支。它试验按语境标记词义、校验词汇题库，并在词汇测试保存冲突时保留作答。判词仍使用难度阈值，IRT 方案尚待确定。请使用独立的 ASUBS_HOME 和浏览器配置试用。
+
+草案会写入按语境生成的标记键与 mark_details。回到基础设施版前，请恢复试用前的画像和浏览器备份。
 
 ## 本地验证与制包
 
@@ -10,8 +12,8 @@ python -m playwright install chromium
 python tools/quality_check.py             # 另需 Node.js 22
 python tools/browser_check.py
 python packaging/source_release.py        # 仅打包干净工作树的已提交源码
-python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.22-source.zip
-python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.22-source.zip
+python packaging/verify_source_release.py release/AdaptiveSubs-0.4.0-alpha.23-source.zip
+python tools/release_smoke.py release/AdaptiveSubs-0.4.0-alpha.23-source.zip
 python tools/instance_check.py           # 临时数据目录，验证重复启动、崩溃恢复和退出
 python tools/runtime_check.py            # 模拟组件缺失，再加载真实本地组件验证修复
 ```

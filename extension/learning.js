@@ -1,11 +1,29 @@
 /* Canonical learning rules. Run tools/sync_assets.py after editing this file. */
 (function (root) {
   "use strict";
-  const key = n => n.kind === "word" ? n.key : `${n.kind}:${n.key}`;
+  const cached = new WeakMap();
+  const legacyKey = n => n.kind === "word" ? n.key : `${n.kind}:${n.key}`;
+  function key(n) {
+    if (!n.zh || n.local) return legacyKey(n);
+    const source = `${String(n.key).trim().toLowerCase()}\0${String(n.zh).normalize("NFKC").replace(/[\s，。；！？，、:：,.!?;（）()]/g, "")}`;
+    const prev = cached.get(n);
+    if (prev && prev.source === source) return prev.id;
+    // FNV-1a is an identity checksum, not an authentication or security token.
+    let hash = 14695981039346656037n;
+    for (const byte of new TextEncoder().encode(source)) {
+      hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 1099511628211n);
+    }
+    const term = String(n.key).toLowerCase().replace(/[^a-z' .-]/g, "").replace(/^[^a-z]+/, "").trim().slice(0, 60) || "term";
+    const id = `ctx:${term}:${hash.toString(16).padStart(16, "0")}`;
+    cached.set(n, { source, id });
+    return id;
+  }
   function state(n, known, unknown, threshold) {
-    const id = key(n);
-    if (unknown.has(id)) return "forced";
-    if (known.has(id)) return "known";
+    const specific = key(n), legacy = legacyKey(n);
+    if (unknown.has(specific)) return "forced";
+    if (known.has(specific)) return "known";
+    if (unknown.has(legacy)) return "forced";
+    if (known.has(legacy)) return "known";
     return n.lv > threshold ? "hard" : "easy";
   }
   function select(notes, known, unknown, threshold, preference, counts) {
@@ -17,15 +35,14 @@
     candidates.sort((a, b) => Number(b.forced) - Number(a.forced) || b.level - a.level);
     const selected = new Set();
     for (const candidate of candidates) {
-      if (selected.size >= preference.perLine) break;
       const seen = counts.get(candidate.id) || 0;
-      if (!candidate.forced && seen >= preference.repeat) continue;
+      if (!candidate.forced && (selected.size >= preference.perLine || seen >= preference.repeat)) continue;
       selected.add(candidate.i);
       counts.set(candidate.id, seen + 1);
     }
     return selected;
   }
-  const label = k => k.replace(/^(sense|phrase):/, "");
+  const label = k => k.startsWith("ctx:") ? k.slice(4, k.lastIndexOf(":")) : k.replace(/^(sense|phrase):/, "");
   function clientNotes(text, notes = []) {
     // Persisted/server offsets are Python Unicode code points; JS slice() uses UTF-16 units.
     const offsets = [0];
@@ -38,7 +55,7 @@
         e: note.offsets === "utf16" ? note.e : offsets[note.e], offsets: "utf16" };
     });
   }
-  const api = { key, state, select, label, clientNotes };
+  const api = { key, legacyKey, state, select, label, clientNotes };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AdaptiveLearning = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

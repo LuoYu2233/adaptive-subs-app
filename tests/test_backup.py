@@ -9,11 +9,12 @@ import profile_store as PS
 def sample():
     return {"format": "adaptive-subs-profile", "version": 1, "profile": {
         "identity": "undergrad", "field": "计算机", "exams": {"cet4": 560}, "level": 4500,
-        "known": ["sense:bank"], "unknown": ["river"],
+        "known": ["ctx:bank:0123456789abcdef"], "unknown": ["river"],
+        "mark_details": {"ctx:bank:0123456789abcdef": {"term": "bank", "zh": "银行"}},
         "test": {"est": 4600, "date": "2026-11-24", "known": ["dock"], "unknown": ["margin"], "bands": [1, 0.5, 0]}}}
 
 
-def test_backup_roundtrip_keeps_exact_level_date_and_marks(tmp_path):
+def test_backup_roundtrip_keeps_exact_level_date_and_meanings(tmp_path):
     a, b = PS.Store(tmp_path / "a.json"), PS.Store(tmp_path / "b.json")
     a.import_backup(sample(), 0)
     backup = a.export_backup()
@@ -27,8 +28,9 @@ def test_backup_roundtrip_keeps_exact_level_date_and_marks(tmp_path):
 
 @pytest.mark.parametrize("change", [
     {"identity": []}, {"exams": {"cet4": True}}, {"level": float("nan")},
-    {"unknown": ["sense:bank"]}, {"known": ["river", "river"]},
+    {"unknown": ["ctx:bank:0123456789abcdef"]}, {"known": ["river", "river"]},
     {"field": "x" * 41}, {"known": ["../file"]}, {"api_key": "bad"},
+    {"mark_details": {"other": {"zh": "not a mark"}}},
     {"test": {"est": 3000, "date": "not-a-date"}},
     {"test": {"est": 3000, "date": "2026-11-24", "bands": [float("inf")]}},
 ])

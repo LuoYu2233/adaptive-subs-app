@@ -43,9 +43,10 @@ EXAMS = {   # id: (name, min, max)
 }
 IDENTITIES = {"high": "高中生", "undergrad": "大学生", "grad": "研究生", "work": "已工作", "other": "其他"}
 KEY_RE = re.compile(r"[a-z][a-z' .:-]{0,79}")
+CONTEXT_KEY_RE = re.compile(r"ctx:[a-z][a-z' .-]{0,59}:[0-9a-f]{16}")
 LEVELS = [1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 15000]
 MAX_MARKS = 10000
-BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown"}
+BACKUP_FIELDS = {"identity", "field", "exams", "level", "test", "known", "unknown", "mark_details"}
 UNSPECIFIED_REVISION = object()
 
 
@@ -89,17 +90,23 @@ def validate_backup(backup: dict) -> dict:
     if "level" in p and (type(p["level"]) is not int or not 1 <= p["level"] <= 100000):
         raise ValueError("备份中的词汇量无效")
 
-    def words(value, limit):
-        if not isinstance(value, list) or len(value) > limit or any(not isinstance(w, str) or not KEY_RE.fullmatch(w) for w in value):
+    def words(value, limit, context=False):
+        if not isinstance(value, list) or len(value) > limit or any(not isinstance(w, str) or not (KEY_RE.fullmatch(w) or (context and CONTEXT_KEY_RE.fullmatch(w))) for w in value):
             raise ValueError("备份中的词条或词义标记无效")
         if len(value) != len(set(value)):
             raise ValueError("备份包含重复标记")
         return set(value)
 
-    known = words(p.get("known", []), MAX_MARKS)
-    unknown = words(p.get("unknown", []), MAX_MARKS)
+    known = words(p.get("known", []), MAX_MARKS, True)
+    unknown = words(p.get("unknown", []), MAX_MARKS, True)
     if known & unknown or len(known | unknown) > MAX_MARKS:
         raise ValueError("备份的标记存在冲突或超过一万条")
+    details = p.get("mark_details", {})
+    if not isinstance(details, dict) or set(details) - (known | unknown):
+        raise ValueError("备份的词义说明没有对应标记")
+    for d in details.values():
+        if not isinstance(d, dict) or set(d) - {"term", "zh"} or any(not isinstance(d.get(k, ""), str) or len(d.get(k, "")) > cap for k, cap in (("term", 100), ("zh", 80))):
+            raise ValueError("备份中的词义说明无效")
     t = p.get("test")
     if t is not None:
         if not isinstance(t, dict) or set(t) - {"est", "date", "bands", "known", "unknown"} or type(t.get("est")) is not int or not 1 <= t["est"] <= 100000:
@@ -302,6 +309,7 @@ class Store:
                           "marked_known": len(m_known), "marked_unknown": len(m_unknown)},
                 "known": sorted(known), "unknown": sorted(unknown),
                 "marks": {"known": sorted(m_known), "unknown": sorted(m_unknown)},
+                "mark_details": {k: v for k, v in (p.get("mark_details") or {}).items() if k in m_known or k in m_unknown},
             }
             self._cache = (rev, out)
             return out
@@ -409,15 +417,20 @@ class Store:
                 p["level"] = min(LEVELS, key=lambda lv: abs(lv - est))
             if body.get("reset_marks") is True:
                 p["known"], p["unknown"] = [], []
+                p["mark_details"] = {}
             self._save(p)
             return None
 
-    def mark(self, key: str, state: str, *, expected_state=None) -> str | None:
+    def mark(self, key: str, state: str, detail=None, *, expected_state=None) -> str | None:
         if not isinstance(key, str):
             return "bad mark"
         key = key.lower().strip()
-        if not KEY_RE.fullmatch(key) or state not in ("known", "unknown", "clear"):
+        if not (KEY_RE.fullmatch(key) or CONTEXT_KEY_RE.fullmatch(key)) or state not in ("known", "unknown", "clear"):
             return "bad mark"
+        if detail is not None and (not isinstance(detail, dict) or any(
+            not isinstance(detail.get(k, ""), str) for k in ("term", "zh")
+        )):
+            return "bad mark detail"
         with self.lock:
             p = self.load()
             known, unknown = set(p.get("known") or []), set(p.get("unknown") or [])
@@ -434,6 +447,11 @@ class Store:
             if len(known | unknown) > MAX_MARKS:
                 return "标记已达一万条，请先导出备份并整理已有标记"
             p["known"], p["unknown"] = sorted(known), sorted(unknown)
+            details = p.setdefault("mark_details", {})
+            if state == "clear":
+                details.pop(key, None)
+            elif detail:
+                details[key] = {"term": detail.get("term", "")[:100], "zh": detail.get("zh", "")[:80]}
             self._save(p)
             return None
 
@@ -441,4 +459,5 @@ class Store:
         with self.lock:
             p = self.load()
             p["known"], p["unknown"] = [], []
+            p["mark_details"] = {}
             self._save(p)

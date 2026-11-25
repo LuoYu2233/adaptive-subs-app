@@ -201,6 +201,7 @@
     if (ci < 0 || !S.cues[ci]) {
       line.className = "line";
       line.innerHTML = `<span class="placeholder">${esc(S.cues.length ? "▶ 播放视频，字幕会显示在这里" : S.statusMsg || "正在加载字幕…")}</span>`
+        + (!S.cues.length && !S.video && live ? ' <a class="btn btn-primary" href="demo">先体验示例</a>' : "")
         + ((S.retryId || S.retrySaved) && !S.cues.length ? ` <button class="btn btn-primary retry-btn" type="button">${S.retrySaved ? "重新读取字幕" : "重试"}</button>` : "");
       const rb = $(".retry-btn", line);
       if (rb) rb.onclick = () => S.retrySaved ? loadSaved(S.retrySaved.entry, ++navigation, S.retrySaved.replayAt) : openVideo(S.retryId, true);
@@ -327,7 +328,7 @@
           <div><div class="w-term">${esc(a.n.key)}</div><div class="w-zh">${esc(a.zh)}</div></div>
           <div class="w-actions">
             <button class="btn btn-ghost btn-sm" data-act="know" data-key="${esc(a.key)}">认识</button>
-            <button class="btn btn-ghost btn-sm" data-act="book" data-c="${a.first}" data-key="${esc(a.key)}">${bookKeys.has(a.n.key) ? "✓ 已收藏" : "+ 生词本"}</button>
+            <button class="btn btn-ghost btn-sm" data-act="book" data-c="${a.first}" data-key="${esc(a.key)}">${bookKeys.has(a.key) ? "✓ 已收藏" : "+ 生词本"}</button>
           </div>
           <div class="w-meta">
             ${a.kind !== "word" ? `<span class="tag tag-${a.kind}">${KIND_LABEL[a.kind]}</span>` : ""}
@@ -404,7 +405,10 @@
   }
 
   // ------------------------------------------------------ personal marks ---
-  const shownKey = AdaptiveLearning.label;
+  const shownKey = key => {
+    const note = key.startsWith("ctx:") && S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
+    return AdaptiveLearning.label(key) + (note ? `（${note.zh}）` : "");
+  };
   let markNotice = 0;
   function explicitMark(key) {
     if (live) return shared?.marks.known.includes(key) ? "known" : shared?.marks.unknown.includes(key) ? "unknown" : "clear";
@@ -412,11 +416,12 @@
   }
   async function markWord(key, state) {
     const notice = ++markNotice, before = explicitMark(key), label = shownKey(key);
+    const detail = shared?.mark_details?.[key];
     if (!await pushMark(key, state, before) || notice !== markNotice) return;
     const message = state === "known" ? `已标为认识：${label}，之后不再提示`
       : state === "unknown" ? `以后总是提示：${label}` : `已恢复：${label}`;
     toast(message, before === state ? null : async () => {
-      if (await pushMark(key, before, state)) toast(`已撤销：${label}`);
+      if (await pushMark(key, before, state, detail)) toast(`已撤销：${label}`);
     });
   }
 
@@ -431,7 +436,7 @@
   const profileSync = AdaptiveProfileSync.create({
     read: () => profileRequest("api/profile"),
     write: op => op.type === "level" ? profileRequest("api/profile", { level: op.level })
-      : profileRequest("api/mark", { key: op.key, state: op.state, expected_state: op.expectedState }),
+      : profileRequest("api/mark", { key: op.key, state: op.state, detail: op.detail, expected_state: op.expectedState }),
     apply: p => {
       shared = p;
       S.level = previewLevel ?? p.level;
@@ -452,7 +457,7 @@
       renderDensity();
     }
   }
-  async function pushMark(key, state, expectedState) {
+  async function pushMark(key, state, expectedState, detail) {
     if (live === null || (live && (!shared || profileProblem))) {
       toast("画像尚未读取，请先重新读取本机画像再标记");
       return false;
@@ -470,7 +475,11 @@
       }));
     }
     try {
-      await profileSync.mutate({ type: "mark", key, state, expectedState });
+      if (!detail) {
+        const note = S.cues.flatMap(c => c.notes).find(n => markKey(n) === key);
+        if (note) detail = { term: note.key, zh: note.zh };
+      }
+      await profileSync.mutate({ type: "mark", key, state, expectedState, detail });
       return true;
     } catch (e) {
       toast(`标记保存未确认：${e.message || "连接失败"}。已恢复到最近确认的记录，请重试。`);
@@ -498,7 +507,7 @@
       if (book.length >= AdaptiveWordbook.MAX_ENTRIES) throw new Error("生词本已满，请先备份并整理记录");
       added = true; return [...book, record];
     }) || !added) return;
-    if (entry.hasNote && !await pushMark(entry.mk || entry.key, "unknown")) {
+    if (entry.hasNote && !await pushMark(entry.mk || entry.key, "unknown", undefined, { term: entry.term, zh: entry.zh })) {
       toast(`已加入生词本：${entry.term}。不熟悉标记尚未确认，可在词卡中核对。`);
       return;
     }
@@ -508,7 +517,7 @@
     const c = S.cues[ci];
     if (noteIdx != null) {
       const n = c.notes[noteIdx];
-      return { key: n.key, mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
+      return { key: markKey(n), mk: markKey(n), term: n.key, zh: n.zh, kind: n.kind, lv: n.lv, sentence: c.text, t: c.s, hasNote: true };
     }
     // A different sentence's gloss can describe a different meaning. Keep this entry unglossed.
     const key = word.toLowerCase();
@@ -616,13 +625,13 @@
     let main;
     if (note) {
       const action = shown
-        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">认识，不再提示</button>`
+        ? `<button class="btn btn-primary btn-sm" data-act="know" data-key="${esc(key)}">认识这个意思，不再提示</button>`
         : S.known.has(key)
           ? `<button class="btn btn-primary btn-sm" data-act="restore" data-key="${esc(key)}">恢复提示</button>`
-          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">不认识，总是提示</button>`;
+          : `<button class="btn btn-primary btn-sm" data-act="unknown" data-key="${esc(key)}">这个意思不熟，总是提示</button>`;
       const why = shown
         ? (noteState(note) === "forced" ? "你标记过不熟悉，所以总是提示" : `按你的词汇量（≈ ${fmtNum(S.level)}）显示`)
-        : noteState(note) === "known" ? "熟词库中已有这个词，所以不提示" : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个词本集提示够多次了";
+        : noteState(note) === "known" ? (S.known.has(key) ? "你标记过认识这个意思，所以不提示" : "根据熟词库或旧版词条标记不提示；这个意思不熟时可以单独标记") : !isHard(note) ? `大约 ${fmtNum(note.lv)} 词水平，按你的词汇量和注释偏好不提示` : "这句已经有更难的词，或者这个意思本集提示够多次了";
       main = `
         <div class="wc-head"><span class="wc-term">${esc(term)}</span>
           <span class="tag ${note.kind !== "word" ? `tag-${note.kind}` : ""}">${KIND_LABEL[note.kind]}</span>
@@ -637,7 +646,7 @@
         <div class="wc-note">不确定的话，可以去词典查一下，或者先收进生词本。</div>
         <div class="wc-actions">`;
     }
-    const inBook = bookKeys.has(note ? note.key : key);
+    const inBook = bookKeys.has(key);
     main += `
         <button class="btn btn-ghost btn-sm" data-act="book" data-c="${ci}" ${ni != null ? `data-n="${ni}"` : ""} data-w="${esc(term)}" ${inBook ? "disabled" : ""}>${inBook ? "✓ 已在生词本" : "+ 生词本"}</button>
         <button class="btn btn-ghost btn-sm" data-act="replay" data-c="${ci}">重听本句</button>
@@ -863,7 +872,8 @@
   }
 
   // ---------------------------------------------------- vocabulary test ---
-  let bank = null, T = null;
+  const loadBank = AdaptiveVocabBank.loader("data/vocab_test.json");
+  let bank = null, T = null, testOpening = false;
   const W = { 2: 1, 1: 0.3, 0: 0 };          // known / unsure / unknown
   const PAGE = 14;
   const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
@@ -888,31 +898,27 @@
 
   async function openTest() {
     if (IS_FILE) { showFileNotice(); return; }
-    if (live) { if (isPlaying()) player.pauseVideo(); window.open("/profile", "_blank", "noopener"); return; }
+    if (live === null) return;
     if (isPlaying()) player.pauseVideo();
+    if (live) { window.open("/profile", "_blank", "noopener"); return; }
     const dlg = $("#testDialog");
-    if (!bank) {
-      try {
-        const r = await fetch("data/vocab_test.json");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        bank = await r.json();
-        if (!bank.bands || !bank.bands.length) throw new Error("empty word bank");
-      } catch (err) {
-        bank = null;
-        $("#testBody").innerHTML = `
-          <p class="eyebrow">词汇测试</p>
-          <h3>题库没有加载出来</h3>
-          <p class="muted">读取 <code>data/vocab_test.json</code> 失败（${esc(err.message || err)}）。
-          如果是部署到 GitHub Pages 的版本，请确认上传了 <code>site/data/</code> 里的 vocab_test.json；
-          如果是直接双击打开的本地文件，请先打开 Adaptive Subs 程序，再通过 <code>http://127.0.0.1:8765/player.html</code> 访问。</p>
-          <div class="modal-actions"><button class="btn btn-ghost" data-act="tclose">关闭</button><button class="btn btn-primary" data-act="tretry">重试</button></div>`;
-        if (!dlg.open) dlg.showModal();
-        return;
-      }
-    }
-    T = newTest();
-    renderTest();
+    if (testOpening) { if (!dlg.open) dlg.showModal(); return; }
+    testOpening = true;
+    $("#testBody").innerHTML = '<p role="status">正在加载词汇测试题库…</p><button class="btn btn-ghost" data-act="tclose">关闭</button>';
     if (!dlg.open) dlg.showModal();
+    try {
+      bank = await loadBank();
+      if (!dlg.open) return;
+      T = newTest();
+      renderTest();
+    } catch (error) {
+      if (!dlg.open) return;
+      const message = error.name === "TimeoutError" ? "题库读取超时" : error.message;
+      $("#testBody").innerHTML = `
+        <h3>题库没有加载出来</h3><p role="status">${esc(message)}</p>
+        <div class="modal-actions"><button class="btn btn-ghost" data-act="tclose">关闭</button>
+        <button class="btn btn-primary" data-act="tretry">重新加载题库</button></div>`;
+    } finally { testOpening = false; }
   }
 
   function newTest() {
@@ -924,7 +930,8 @@
       const at = 4 + Math.floor(Math.random() * (items.length - 3));
       items.splice(at, 0, { type: "non", word: nw, ans: null });
     });
-    return { items, page: 0, stage: "intro", checks: [], result: null };
+    return { items, page: 0, stage: "intro", checks: [], result: null,
+      baseline: { level: localLevel, test: S.test }, saving: false, saveMessage: "" };
   }
 
   function renderTest() {
@@ -996,9 +1003,9 @@
           ${r.checkTotal ? `<br>词义核对：答对 ${r.checkOk} / ${r.checkTotal} 题${r.checkOk < r.checkTotal ? "，答错的词频段已下调" : ""}。` : ""}
         </div>
         <div class="modal-actions">
-          <button class="btn btn-ghost" data-act="tagain">再测一次</button><span class="spacer"></span>
-          <button class="btn btn-primary" data-act="tapply" data-lv="${lv}">用这个结果设置字幕（≈ ${fmtNum(lv)} 词）</button>
-        </div>`;
+          <button class="btn btn-ghost" data-act="tagain" ${T.saving ? "disabled" : ""}>再测一次</button><span class="spacer"></span>
+          <button class="btn btn-primary" data-act="tapply" data-lv="${lv}" ${T.saving ? "disabled" : ""}>${T.saving ? "正在保存…" : T.conflict ? "用本次结果替换最新设置" : `用这个结果设置字幕（≈ ${fmtNum(lv)} 词）`}</button>
+        </div><p id="testSaveMessage" role="status">${esc(T.saveMessage)}</p>`;
     }
   }
 
@@ -1069,10 +1076,29 @@
     }
     else if (act === "tagain") { T = newTest(); T.stage = "words"; renderTest(); }
     else if (act === "tapply") {
-      if (!await save({ level: +b.dataset.lv, test: { est: T.result.est, date: new Date().toISOString().slice(0, 10) } })) return;
-      renderAll();
-      $("#testDialog").close();
-      toast(`已按测试结果设置：≈ ${fmtNum(S.level)} 词`);
+      const attempt = T, level = +b.dataset.lv;
+      if (attempt.saving) return;
+      attempt.saving = true;
+      renderTest();
+      try {
+        await playerStore.update(current => {
+          const before = attempt.baseline, latest = { level: current.level || 5000, test: current.test || null };
+          if (latest.level !== before.level || latest.test?.est !== before.test?.est || latest.test?.date !== before.test?.date) {
+            attempt.baseline = latest;
+            attempt.conflict = true;
+            throw new Error("其他页面已更新词汇量或测试记录。你的作答已保留，请确认是否替换最新设置。");
+          }
+          return { ...current, level, test: { est: attempt.result.est, date: new Date().toISOString().slice(0, 10) } };
+        });
+        refreshLocalStore();
+        if (T === attempt && dlg.open) {
+          dlg.close();
+          toast(`已按测试结果设置：≈ ${fmtNum(level)} 词`);
+        }
+      } catch (error) {
+        attempt.saveMessage = `本次结果尚未保存。${error.message}`;
+        if (T === attempt) { attempt.saving = false; renderTest(); }
+      }
     }
   }
 

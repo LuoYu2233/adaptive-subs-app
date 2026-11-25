@@ -173,6 +173,80 @@ def check_player_profile(context, base, output):
         page.close()
 
 
+def check_static_test(context, base, output):
+    """Run the built static site under a path prefix with its real assets and a separate origin store."""
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+    from urllib.parse import urlsplit
+    from unittest.mock import patch
+    import build_site
+    from playwright.sync_api import expect
+
+    isolated = context.browser.new_context(viewport={"width": 390, "height": 844})
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            site = Path(folder) / "site"
+            with patch.multiple(build_site, SITE=site, VIDEOS=Path(folder) / "no-videos"), contextlib.redirect_stdout(io.StringIO()):
+                build_site.main()
+            errors, api_calls = [], []
+            stage = "broken"
+            def serve(route):
+                path = urlsplit(route.request.url).path
+                if "/api/" in path: api_calls.append(path)
+                if not route.request.url.startswith(base + "/study/"): return route.abort()
+                if path.endswith("/vocab_test.json") and stage == "broken":
+                    return route.fulfill(json={"bands": [{}], "nonwords": []})
+                target = site / (path.removeprefix("/study/") or "index.html")
+                if target.is_file(): return route.fulfill(path=target)
+                route.fulfill(status=404, body="missing")
+            isolated.route("**/*", serve)
+            page = isolated.new_page()
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(base + "/study/")
+            page.locator("#introSkip").click()
+            page.locator("#openTest").click()
+            expect(page.locator("#testBody")).to_contain_text("题库格式无效")
+            expect(page.locator('[data-act="tstart"]')).to_have_count(0)
+            stage = "valid"
+            page.locator('[data-act="tretry"]').click()
+            page.locator('[data-act="tstart"]').click()
+            while page.locator('[data-act="tnext"]').count():
+                page.locator('[data-act="trest"]').click()
+                page.locator('[data-act="tnext"]').click()
+            apply = page.locator('[data-act="tapply"]')
+            expect(apply).to_be_visible()
+            other = isolated.new_page()
+            other.goto(base + "/study/")
+            other.locator("#levelRange").fill("7")
+            expect(other.locator("#levelValue")).to_contain_text("7,000")
+            expect(page.locator("#levelValue")).to_contain_text("7,000")
+            apply.click()
+            expect(page.locator("#testSaveMessage")).to_contain_text("其他页面已更新")
+            expect(apply).to_have_text("用本次结果替换最新设置")
+            previous = page.evaluate("localStorage.getItem('adaptive-subs:v2')")
+            page.evaluate("""() => {
+                window.putPlayerData = Storage.prototype.setItem;
+                Storage.prototype.setItem = function() { throw new Error('测试存储已满'); };
+            }""")
+            apply.click()
+            expect(page.locator("#testSaveMessage")).to_contain_text("测试存储已满")
+            assert page.evaluate("localStorage.getItem('adaptive-subs:v2')") == previous
+            expect(page.locator("#levelValue")).to_contain_text("7,000")
+            page.evaluate("() => { Storage.prototype.setItem = window.putPlayerData; }")
+            apply.click()
+            expect(page.locator("#testDialog")).to_be_hidden()
+            expect(other.locator("#levelValue")).to_contain_text("1,500")
+            page.reload()
+            expect(page.locator("#levelValue")).to_contain_text("1,500")
+            assert page.evaluate("JSON.parse(localStorage.getItem('adaptive-subs:v2')).test.est") == 500
+            assert not errors and not api_calls, (errors, api_calls)
+            print("Built static player passed: invalid bank retry, complete test, two-tab conflict, quota failure, saved result after reload.")
+    finally:
+        isolated.close()
+
+
 def check_video_switching(context, base, output):
     """Delay both saved-file and open-job replies while the learner chooses another video."""
     from playwright.sync_api import expect

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>先体验字幕 · Adaptive Subs</title>
+  <link rel="stylesheet" href="assets/demo.css">
+</head>
+<body>
+  <header><a class="brand" href="/app">Adaptive Subs <span>自适应英语字幕</span></a><a class="button" href="/setup">开始设置</a></header>
+  <main>
+    <div class="intro"><span class="eyebrow">30 秒互动体验 · 无需 API key</span>
+      <h1>认识 bank，<br>也可能错过它的另一个意思。</h1>
+      <p>保留英语原句，只在需要的地方给一点中文帮助。调节水平，或告诉字幕「这个意思我懂了」。</p>
+    </div>
+    <div class="workspace">
+      <section class="examples" aria-label="字幕示例">
+        <div class="section-title"><h2>同一个词，不同的语境</h2><span>原创例句</span></div>
+        <div id="examples"></div>
+        <p class="caption">点英文句中带下划线的词，查看当前意思并试着标记。这里展示字幕交互，不播放视频。</p>
+      </section>
+      <aside>
+        <section class="panel">
+          <h2>让提示适合你</h2>
+          <label for="level">大致词汇量 <output id="levelValue" for="level"></output></label>
+          <input id="level" type="range" min="1500" max="10000" step="500" value="3000">
+          <div class="range-labels"><span>刚开始积累</span><span>阅读更熟练</span></div>
+          <fieldset><legend>字幕模式</legend><div class="modes">
+            <label><input type="radio" name="mode" value="adaptive" checked><span>自适应</span></label>
+            <label><input type="radio" name="mode" value="plain"><span>纯英文</span></label>
+            <label><input type="radio" name="mode" value="bilingual"><span>中英对照</span></label>
+          </div></fieldset>
+          <p id="density" class="caption" aria-live="polite"></p>
+        </section>
+        <section class="panel meaning" aria-labelledby="meaningTitle">
+          <span class="eyebrow">这句话里的意思</span>
+          <h2 id="meaningTitle" tabindex="-1"></h2><p id="meaningZh"></p><p id="reason" class="caption"></p>
+          <div class="actions"><button id="known" class="button primary" type="button">这个意思我懂了</button>
+            <button id="unknown" class="button" type="button">这个意思不熟</button></div>
+          <button id="clear" class="text-button" type="button">按词汇量判断</button>
+        </section>
+      </aside>
+    </div>
+    <div class="next"><div><h2>带到你真正想看的视频里</h2><p>B 站与 YouTube 的英语内容，按你的英语画像给提示。</p></div>
+      <a class="button primary" href="/setup">配置我的字幕</a></div>
+    <footer><span>示例里的标记只用于这次体验，不改动你的英语画像，也不调用模型。</span><button id="reset" class="text-button" type="button">重置体验</button></footer>
+    <p id="message" class="sr-only" role="status"></p>
+  </main>
+  <script src="assets/learning.js"></script><script src="assets/demo.js"></script>
+</body>
+</html>

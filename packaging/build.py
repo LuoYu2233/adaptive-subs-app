@@ -34,7 +34,8 @@ GUIDE = """Adaptive Subs（测试版）使用说明
 1. 把整个压缩包解压到一个文件夹（不要在压缩包里直接双击运行）。
 2. 双击「程序」文件夹里的 AdaptiveSubs.exe。
    - 当前试用包没有数字签名。先核对来源和校验值；遇到系统拦截时保留提示，联系发布者核实。
-3. 要处理视频，点「填写 API key」（以后在「准备情况 → 注释模型」旁点「更改」）：
+3. 可以先点「先体验字幕」：使用内置原创示例，无需 key，不请求模型。
+   要处理真实视频，再点「填写 API key」（以后在「准备情况 → 注释模型」旁点「更改」）：
    - 选择注释模型并填写它的 API key。例如 DeepSeek（国内可直接用）：
        DeepSeek：https://platform.deepseek.com/api_keys
        小米 MiMo：https://platform.xiaomimimo.com

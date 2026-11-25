@@ -1107,7 +1107,7 @@ EXPLAIN_PROMPT = A.EXPLAIN_PROMPT
 
 STATIC_PAGES = {"/": "player.html", "/player.html": "player.html", "/setup": "setup.html", "/setup.html": "setup.html",
                 "/profile": "profile.html", "/profile.html": "profile.html", "/app": "app.html", "/app.html": "app.html",
-                "/privacy": "privacy.html", "/privacy.html": "privacy.html"}
+                "/demo": "demo.html", "/demo.html": "demo.html", "/privacy": "privacy.html", "/privacy.html": "privacy.html"}
 LAST_EXT = 0.0            # when the browser extension last talked to us (shown in the control panel)
 STARTED = time.time()
 LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?")
@@ -1597,7 +1597,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "词义标记的原状态无效"}, 400)
             try:
                 with PROFILE.lock:
-                    err = PROFILE.mark(body.get("key"), body.get("state"),
+                    err = PROFILE.mark(body.get("key"), body.get("state"), body.get("detail"),
                                        expected_state=body.get("expected_state"))
                     result = {"error": err} if err else {"ok": True, **PROFILE.payload()}
             except PS.ProfileConflict as error:

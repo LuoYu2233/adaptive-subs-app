@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 import sys
 from unittest.mock import Mock
 
@@ -8,6 +9,20 @@ import srt
 
 import annotate as A
 import storage
+
+FIXTURE = json.loads((Path(__file__).parent / "fixtures/export_meanings.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=lambda case: case["name"])
+def test_export_matches_browser_meaning_grouping(case):
+    pool = FIXTURE["notes"]
+    before = copy.deepcopy(pool)
+    cues = [{"notes": [pool[key] for key in row]} for row in case["cues"]]
+    names = {id(note): key for key, note in pool.items()}
+    selected = A.visible_notes(cues, case["level"], case["repeat"], case["perLine"])
+    assert [[names[id(note)] for note in row] for row in selected] == case["expected"]
+    assert pool == before
+
 
 def sample():
     cues = []
@@ -19,15 +34,15 @@ def sample():
     return {"video": {"id": "abcdefghijk", "title": "Original export sample", "duration": 6}, "cues": cues}
 
 
-def test_actual_export_preserves_unicode_positions_and_fractional_timing(tmp_path):
+def test_actual_export_preserves_unicode_positions_meanings_and_fractional_timing(tmp_path):
     out = tmp_path / "sample.srt"
     value = sample()
     before = copy.deepcopy(value)
-    assert A.export_srt(value, out, 3000) == 2
+    assert A.export_srt(value, out, 3000) == 3
     assert out.read_bytes().startswith(b"\xef\xbb\xbf")
     subtitles = list(srt.parse(out.read_text(encoding="utf-8-sig")))
     assert [cue.content for cue in subtitles] == [
-        "😀 The bank(银行) is here.", "😀 The bank(银行) is here.", "😀 The bank is here."]
+        "😀 The bank(银行) is here.", "😀 The bank(银行) is here.", "😀 The bank(河岸) is here."]
     assert subtitles[-1].start.total_seconds() == 4
     assert subtitles[-1].end.total_seconds() == 5.25
     assert value == before

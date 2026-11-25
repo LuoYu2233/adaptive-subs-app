@@ -260,6 +260,28 @@ def main():
                     page.unroute(base + "/api/status")
                     page.unroute(base + "/api/health")
 
+                    calls = []
+                    on_request = lambda r: calls.append(r.url) if "/api/" in r.url else None
+                    page.on("request", on_request)
+                    page.goto(base + "/demo")
+                    expect(page.locator("#density")).to_contain_text("2 处提示")
+                    page.locator('[data-note="0"]').click()
+                    expect(page.locator("#meaningZh")).to_have_text("银行")
+                    page.locator("#known").click()
+                    expect(page.locator('[data-note="1"] .gloss')).to_have_text("河岸")
+                    page.locator("#unknown").click()
+                    page.locator("#level").focus()
+                    page.locator("#level").press("End")
+                    expect(page.locator('[data-note="0"] .gloss')).to_have_text("银行")
+                    expect(page.locator('[data-note="1"] .gloss')).to_have_count(0)
+                    page.get_by_text("中英对照", exact=True).click()
+                    expect(page.locator(".translation")).to_have_count(3)
+                    page.locator("#reset").click()
+                    expect(page.locator("#density")).to_contain_text("2 处提示")
+                    page.screenshot(path=str(output / "demo.png"), full_page=True)
+                    page.remove_listener("request", on_request)
+                    assert calls == [], f"Demo unexpectedly requested an API: {calls}"
+
                     # Failure paths use the real settings page and protected local API.
                     settings_mode = "load-error"
                     settings_calls = {"save": 0, "check": 0}
@@ -398,11 +420,11 @@ def main():
                     data = home / "data"
                     data.mkdir(exist_ok=True)
                     cues = []
-                    for i, (text, term, zh) in enumerate((("😀 The bank approved my loan.", "bank", "银行"),
-                                                    ("We walked along the river bank to the shore.", "shore", "河岸"))):
-                        offset = text.index(term)
+                    for i, (text, zh) in enumerate((("😀 The bank approved my loan.", "银行"),
+                                                    ("We walked along the river bank.", "河岸"))):
+                        offset = text.index("bank")
                         cues.append({"s": i * 5, "e": i * 5 + 5, "text": text, "zh": "",
-                                     "notes": [{"s": offset, "e": offset + len(term), "key": term, "zh": zh,
+                                     "notes": [{"s": offset, "e": offset + 4, "key": "bank", "zh": zh,
                                                 "kind": "sense", "lv": 15000}]})
                     (data / "zzzzzzzzzzz.json").write_text(json.dumps({"status": "complete",
                         "video": {"id": "zzzzzzzzzzz", "title": "词义回归示例", "duration": 10}, "cues": cues}), encoding="utf-8")
@@ -600,6 +622,7 @@ def main():
                     expect(page.locator("#toast")).to_contain_text("已撤销")
                     current_profile = json.loads((home / "profile.json").read_text(encoding="utf-8"))
                     assert known_key in current_profile["unknown"]
+                    assert current_profile["mark_details"][known_key]["zh"] == "银行"
                     # Another client changes this particular meaning after the next mark.
                     row.locator("[data-act='know']").click()
                     expect(page.locator("#toast")).to_contain_text("已标为认识")
@@ -620,8 +643,8 @@ def main():
                     page.locator(".tabs [data-tab='preview']").click()
                     page.screenshot(path=str(output / "meaning-feedback.png"), full_page=True)
                     page.goto(base + "/profile")
-                    expect(page.locator("#marks")).to_contain_text("bank")
-                    expect(page.locator("#marks")).to_contain_text("shore")
+                    expect(page.locator("#marks")).to_contain_text("bank · 银行")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
                     # A damaged saved file must offer an explicit retry, without starting work on read.
                     broken = home / "data/zzzzzzzzzzz.json"
@@ -652,7 +675,7 @@ def main():
                     page.locator("#restoreProfile").click()
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
                     expect(page.locator("#field")).to_have_value("计算机")
-                    expect(page.locator("#marks")).to_contain_text("shore")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
                     page.locator("#dataTools details summary").click()
                     page.once("dialog", lambda dialog: dialog.accept())
                     page.locator("#clearProfile").click()
@@ -664,7 +687,7 @@ def main():
                     expect(page.locator("#restorePreview")).to_be_visible()
                     page.locator("#restoreProfile").click()
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
-                    expect(page.locator("#marks")).to_contain_text("shore")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
                     damaged_profile = b'{"known":["preserve-original",'
                     (home / "profile.json").write_bytes(damaged_profile)
@@ -681,7 +704,7 @@ def main():
                     expect(page.locator("#restorePreview")).to_be_visible()
                     page.locator("#restoreProfile").click()
                     expect(page.locator("#dataMessage")).to_contain_text("画像已恢复")
-                    expect(page.locator("#marks")).to_contain_text("shore")
+                    expect(page.locator("#marks")).to_contain_text("bank · 河岸")
 
                     # Thousands of saved words stay searchable without thousands of DOM rows.
                     page.goto(base + "/player.html?v=zzzzzzzzzzz")
@@ -767,7 +790,7 @@ def main():
                     assert page.locator("#bookImportDialog").evaluate("e => e.getBoundingClientRect().right <= innerWidth")
                     page.screenshot(path=str(output / "wordbook-mobile.png"), full_page=True)
                     page.locator("#bookImportCancel").click()
-                    for path in ("app", "setup", "profile", "privacy"):
+                    for path in ("app", "setup", "profile", "demo", "privacy"):
                         page.goto(base + "/" + path)
                         page.wait_for_load_state("networkidle")
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Overflow on {path}"
@@ -775,14 +798,19 @@ def main():
                             assert page.locator("#stage").evaluate("element => { const a=element.getBoundingClientRect(); const b=element.querySelector('.btn').getBoundingClientRect(); return b.bottom <= a.bottom && b.top >= a.top; }")
                         page.screenshot(path=str(output / f"{path}-mobile.png"), full_page=True)
                     assert not errors, errors
-                    from player_check import check_player, check_player_profile, check_video_switching
+                    from profile_check import check_profile, check_profile_conflicts, check_vocab_bank
+                    check_vocab_bank(context, base, home, output)
+                    check_profile(context, base, home, output)
+                    check_profile_conflicts(context, base, home, output)
+                    from player_check import check_player, check_player_profile, check_static_test, check_video_switching
                     check_player(context, base, output)
                     check_player_profile(context, base, output)
+                    check_static_test(context, base, output)
                     check_video_switching(context, base, output)
                     browser.close()
                     from extension_check import check_extension
                     check_extension(p, base, home, output)
-                print("Browser checks passed: recovery, settings, profile persistence, word marking/wordbook, mobile layout.")
+                print("Browser checks passed: recovery, settings, profile persistence, separate meaning feedback/wordbook, mobile layout.")
             finally:
                 server.terminate()
                 try:

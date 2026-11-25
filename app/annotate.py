@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date
@@ -531,11 +532,20 @@ def place_notes(text: str, notes: list[dict]) -> list[dict]:
 
 
 def add_keys(cues: list[dict]) -> None:
-    """key = lemmatised lowercase span, so 'multipliers' and 'multiplier' count as one word."""
-    spans = [(c, n) for c in cues for n in c["notes"]]
-    docs = nlp().pipe(c["text"][n["s"]:n["e"]] for c, n in spans)
-    for (c, n), d in zip(spans, docs):
-        n["key"] = " ".join(t.lemma_.lower() for t in d if not (t.is_punct or t.is_space)) or c["text"][n["s"]:n["e"]].lower()
+    """Lemmatize each annotated span in its original cue, preserving contextual part of speech.
+
+    Isolated 'saw' can become 'see' even when the sentence describes a tool;
+    'leaves' can become 'leave' instead of 'leaf'. Parse a cue once for all its notes.
+    """
+    annotated = [c for c in cues if c["notes"]]
+    if not annotated:
+        return
+    docs = nlp().pipe(c["text"] for c in annotated)
+    for c, doc in zip(annotated, docs):
+        for note in c["notes"]:
+            terms = [t.lemma_.lower() for t in doc if note["s"] <= t.idx
+                     and t.idx + len(t.text) <= note["e"] and not (t.is_punct or t.is_space)]
+            note["key"] = " ".join(terms) or c["text"][note["s"]:note["e"]].lower()
 
 
 def blend_word_levels(cues: list[dict]) -> None:
@@ -577,32 +587,41 @@ def translate_lines(texts, model, effort) -> dict[int, str]:
 
 
 def unify_glosses(cues: list[dict]) -> None:
-    """Same word + same kind -> same gloss everywhere (first one wins)."""
-    first: dict[tuple, dict] = {}
+    """Normalize individual glosses without overwriting context-dependent meanings.
+
+    A lemma (bank) and kind (word) do not identify a sense (银行 / 河岸).
+    Even equal gloss strings need not imply equal difficulty in different contexts.
+    """
     for c in cues:
         for n in c["notes"]:
-            k = (n["key"], n["kind"])
-            if k in first:
-                n["zh"], n["lv"] = first[k]["zh"], first[k]["lv"]
-            else:
-                first[k] = n
+            n["zh"] = clean_zh(n["zh"])
 
 
 # ECMAScript whitespace matches shared/learning.js (Python's \s also includes extra controls).
 JS_SPACE = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 
 
+def repetition_key(note):
+    """Use the browser's meaning grouping without needing its serialized hash identifier."""
+    if not note.get("zh") or note.get("local"):
+        return ("legacy", note["key"] if note["kind"] == "word" else f"{note['kind']}:{note['key']}")
+    gloss = unicodedata.normalize("NFKC", note["zh"])
+    gloss = re.sub("[" + re.escape(JS_SPACE + "，。；！？，、:：,.!?;（）()") + "]", "", gloss)
+    return ("context", note["key"].strip(JS_SPACE).lower(), gloss)
+
+
 def visible_notes(cues: list[dict], level: int, max_repeat: int = 2, per_line: int = 3) -> list[list[dict]]:
-    """Same rule as the web player: level filter, repeat cap, per-line cap (hardest first)."""
-    count: dict[str, int] = {}
+    """Filter by export threshold, with separate repetition counts for distinct meanings."""
+    count = {}
     out = []
     for c in cues:
         cand = sorted((n for n in c["notes"] if n["lv"] > level), key=lambda n: -n["lv"])
         keep = []
         for n in cand:
-            if len(keep) >= per_line or count.get(n["key"], 0) >= max_repeat:
+            key = repetition_key(n)
+            if len(keep) >= per_line or count.get(key, 0) >= max_repeat:
                 continue
-            count[n["key"]] = count.get(n["key"], 0) + 1
+            count[key] = count.get(key, 0) + 1
             keep.append(n)
         out.append(sorted(keep, key=lambda n: n["s"]))
     return out

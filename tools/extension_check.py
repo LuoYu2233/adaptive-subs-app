@@ -160,7 +160,8 @@ def check_extension(playwright, base, home, output):
             page.locator('.asubs-card [data-act="known"]').click()
             expect(page.locator(".asubs-pill")).to_contain_text("已加入熟词库")
             marked = json.loads((home / "profile.json").read_text(encoding="utf-8"))
-            assert marked["known"] == ["sense:bank"], marked["known"]
+            assert len(marked["known"]) == 1 and marked["known"][0].startswith("ctx:bank:"), marked["known"]
+            assert next(iter(marked["mark_details"].values()))["zh"] == "银行"
             worker.evaluate("async () => { const p = await handle({type:'profile'}); return handle({type:'setprofile',payload:{reset_marks:true,expected_rev:p.rev}}); }")
             page.reload()
             expect(gloss).to_have_text("银行", timeout=20000)
@@ -177,12 +178,13 @@ def check_extension(playwright, base, home, output):
             expect(gloss).to_have_count(0)
             page.locator("video").evaluate("v => { v.currentTime = 6; }")
             expect(gloss).to_have_text("河岸")
-            page.locator(".asubs-t").filter(has_text="shore").click()
+            page.locator(".asubs-t").filter(has_text="bank").click()
             expect(page.locator(".asubs-card-zh")).to_contain_text("河岸")
             page.locator('.asubs-card [data-act="unknown"]').click()
             expect(page.locator(".asubs-pill")).to_contain_text("已标为生词")
             saved = json.loads((home / "profile.json").read_text(encoding="utf-8"))
-            assert saved["known"] == ["sense:bank"] and saved["unknown"] == ["sense:shore"]
+            assert len(saved["known"]) == len(saved["unknown"]) == 1
+            assert {x["zh"] for x in saved["mark_details"].values()} == {"银行", "河岸"}
             page.screenshot(path=str(output / f"extension-{site}.png"), full_page=True)
             assert not errors, errors
             page.close()
@@ -371,7 +373,7 @@ def check_extension(playwright, base, home, output):
         expect(popup.locator("#levelValue")).to_contain_text("5,000")
         popup.screenshot(path=str(output / "extension-popup.png"), full_page=True)
         (output / "extension-requests.json").write_text(json.dumps(external, ensure_ascii=False, indent=2), encoding="utf-8")
-        print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and word marking.")
+        print("Installed extension checks passed on synthetic YouTube/Bilibili pages: overlay, meaning cards, failed-save rollback and separate meaning feedback.")
     except Exception:
         for i, page in enumerate(context.pages):
             page.screenshot(path=str(output / f"extension-failure-{i}.png"), full_page=True)

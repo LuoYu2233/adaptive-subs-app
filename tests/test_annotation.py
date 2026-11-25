@@ -18,6 +18,16 @@ def fake_client(*values):
     return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
 
+def test_polysemy_survives_finalization():
+    cues = [
+        {"notes": [{"key": "bank", "kind": "word", "zh": "银行", "lv": 3000}]},
+        {"notes": [{"key": "bank", "kind": "word", "zh": "河岸", "lv": 5000}]},
+    ]
+    A.unify_glosses(cues)
+    assert [c["notes"][0]["zh"] for c in cues] == ["银行", "河岸"]
+    assert [c["notes"][0]["lv"] for c in cues] == [3000, 5000]
+
+
 def test_request_failure_is_not_an_empty_annotation():
     client = fake_client(TimeoutError(), TimeoutError())
     with pytest.raises(A.ModelResponseError):

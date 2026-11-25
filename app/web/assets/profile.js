@@ -98,7 +98,7 @@
         ? `已保存。按你的成绩，${P.lists.join("、")}词表算作已认识（共约 ${fmt(P.stats.exams)} 词），词汇量先估计为 ≈ ${fmt(P.prior)}`
         : `已保存。词汇量先估计为 ≈ ${fmt(P.prior)}`;
       renderSummary();
-      if (!T || T.stage === "intro" || (T.stage === "result" && !T.saveError)) { T = null; renderTest(); }
+      if (!T || T.stage === "intro" || (T.stage === "result" && T.saveState === "saved")) { T = null; renderTest(); }
       $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e) {
       msg.className = "msg bad"; msg.textContent = e.message;
@@ -138,7 +138,11 @@
     const m = P.marks, n = m.known.length + m.unknown.length;
     box.hidden = !n;
     if (!n) return;
-    const chip = (k) => `<span class="mk">${esc(k.replace(/^(sense|phrase):/, ""))}${/^sense:/.test(k) ? '<small class="muted">（特殊意思）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(k)}">×</button></span>`;
+    const chip = (k) => {
+      const detail = (P.mark_details || {})[k];
+      const text = detail && detail.zh ? `${detail.term || AdaptiveLearning.label(k)} · ${detail.zh}` : AdaptiveLearning.label(k);
+      return `<span class="mk">${esc(text)}${/^ctx:/.test(k) ? '<small class="muted">（当前意思）</small>' : /^sense:/.test(k) ? '<small class="muted">（旧版用法标记）</small>' : ""}<button type="button" data-clear="${esc(k)}" aria-label="恢复 ${esc(text)}">×</button></span>`;
+    };
     $("#marks").innerHTML = `
       ${m.unknown.length ? `<div class="muted">我不认识（总是注释）</div><div class="marks">${m.unknown.map((k) => chip(k)).join("")}</div>` : ""}
       ${m.known.length ? `<div class="muted" style="margin-top:12px">我认识（不再注释）</div><div class="marks">${m.known.map((k) => chip(k)).join("")}</div>` : ""}
@@ -256,15 +260,7 @@
   const W = { 2: 1, 1: 0.3, 0: 0 };
   const PAGE = 12;
   let bank = null, T = null;
-
-  async function loadBank() {
-    if (bank) return bank;
-    const r = await fetch("/data/vocab_test.json");
-    if (!r.ok) throw new Error(`题库读取失败（HTTP ${r.status}）`);
-    bank = await r.json();
-    bank.bands.forEach((b, i) => { b.i = i; b.pool = shuffle(b.words); });
-    return bank;
-  }
+  const loadBank = AdaptiveVocabBank.loader("/data/vocab_test.json");
   const bandLabel = (b) => (b.hi >= 1000 ? `${+(b.hi / 1000).toFixed(1)}k` : String(b.hi));
 
   function takeWords(b, n) { return b.pool.splice(0, n).map((w) => ({ type: "word", band: b.i, word: w.word, data: w, ans: null })); }
@@ -275,7 +271,7 @@
   }
 
   function newTest() {
-    bank.bands.forEach((b) => { b.pool = shuffle(b.words); });
+    bank.bands.forEach((b, i) => { b.i = i; b.pool = shuffle(b.words); });
     const prior = (P && P.prior) || 3000;
     T = { stage: "intro", page: 0, non: shuffle(bank.nonwords), items: [], checks: [], prior, revision: P.rev };
     const items = [];
@@ -362,8 +358,14 @@
   async function renderTest() {
     const box = $("#test");
     if (!T) {
-      try { await loadBank(); } catch (e) { box.innerHTML = `<p class="msg bad">${esc(e.message)}</p>`; return; }
-      newTest();
+      box.innerHTML = '<p class="msg" role="status">正在加载词汇测试题库…</p>';
+      try { bank = await loadBank(); } catch (e) {
+        const message = e.name === "TimeoutError" || e.name === "AbortError" ? "题库读取超时，请重试"
+          : e instanceof SyntaxError ? "题库不是有效的 JSON，请重新加载或修复程序文件" : e.message;
+        box.innerHTML = `<p class="msg bad" role="status">${esc(message)}</p><button class="btn" type="button" data-act="reload-bank">重新加载题库</button>`;
+        return;
+      }
+      if (!T) newTest();
     }
     if (T.stage === "intro") {
       box.innerHTML = `
@@ -411,23 +413,34 @@
     }
     if (T.stage === "result") {
       const r = T.result;
+      const saved = T.saveState === "saved", busy = T.saveState === "saving" || T.saveState === "checking";
+      const message = saved ? "本机画像已记录本次结果；播放器和插件下次读取画像后更新。"
+        : busy ? (T.saveState === "checking" ? "正在读取本机画像，核对本次结果…" : "测试已完成，正在保存到本机画像…")
+        : "本次结果尚未确认保存，作答仍保留在此页面。请先核对或重新保存；关闭页面会丢失未保存的作答。";
       box.innerHTML = `
         <div class="big">≈ ${fmt(r.est)}<small>词</small></div>
-        <p class="muted" style="margin:4px 0 0">${P && P.prior ? `按考试成绩 / 身份的估计是 ≈ ${fmt(P.prior)}。` : ""}${T.saveError ? "" : "结果已保存，字幕从现在起按它来判断。"}</p>
+        <p class="msg ${saved ? "ok" : busy ? "" : "bad"}" role="status" data-test-save>${esc(message)}</p>
+        ${T.saveError ? `<p class="msg bad">${esc(T.saveError)}</p>` : ""}
+        <p class="muted" style="margin:4px 0 0">${P && P.prior ? `按考试成绩 / 身份的估计是 ≈ ${fmt(P.prior)}。` : ""}</p>
         <div class="bands">${r.bands.map((x) => `<div class="band" title="${Math.round(x * 100)}%"><div class="band-bar" style="height:${Math.max(2, x * 100)}%"></div></div>`).join("")}</div>
         <div class="band-labels">${bank.bands.map((b) => `<span>${bandLabel(b)}</span>`).join("")}</div>
         <div class="note">每根柱子是一个词频段里你大概认识的比例，越往右越难。<br>
           假词：${r.nonYes ? `${r.nonTotal} 个里有 ${r.nonYes} 个选了「认识」，结果已经往下校正` : `${r.nonTotal} 个都没选「认识」`}。
           ${r.checkTotal ? `词义核对：答对 ${r.checkOk} / ${r.checkTotal}${r.checkOk < r.checkTotal ? "，答错的词频段已下调，答错的词会继续注释" : ""}。` : ""}<br>
-          你选了「认识」的 ${r.known.length} 个词加入熟词库，选了「不认识」的 ${r.unknown.length} 个词以后总会注释。</div>
-        <div class="actions"><button class="btn" type="button" data-act="again">再测一次</button></div>`;
+          本次作答：认识 ${r.known.length} 个词，不认识 ${r.unknown.length} 个词。${saved ? "这些回答已写入画像。" : "确认保存后才会用于字幕判断。"}</div>
+        <div class="actions">
+          ${!saved ? `<button class="btn" type="button" data-act="check-save" ${busy ? "disabled" : ""}>核对保存结果</button>
+            <button class="btn primary" type="button" data-act="retry-save" ${busy ? "disabled" : ""}>重新保存本次结果</button>` : ""}
+          <button class="btn" type="button" data-act="again" ${busy ? "disabled" : ""}>再测一次</button></div>`;
     }
   }
 
   $("#test").addEventListener("click", async (e) => {
+    if (!profileReady) return;
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
+    if (act === "reload-bank") { await renderTest(); return; }
     const pageItems = () => T.items.slice(T.page * PAGE, (T.page + 1) * PAGE);
     const top = () => $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
     if (act === "start") { T.stage = "words"; renderTest(); }
@@ -448,20 +461,77 @@
       if (T.checks.some((c) => c.pick == null)) { T.showMissing = true; renderTest(); return; }
       finish();
     }
-    else if (act === "again") { T = null; renderTest(); }
+    else if (act === "check-save") { checkSavedTest(); }
+    else if (act === "retry-save") { finish(true); }
+    else if (act === "again") {
+      if (T.saveState !== "saved" && !confirm("本次结果尚未确认保存，重新测试会丢弃当前页面的作答。继续？")) return;
+      T = null; renderTest();
+    }
   });
 
-  async function finish() {
-    T.result = score();
-    T.stage = "result";
+  const testBusy = t => t && (t.saveState === "saving" || t.saveState === "checking");
+  const testPayload = r => ({ est: r.est, bands: r.bands, known: r.known, unknown: r.unknown });
+  const sameTestSummary = (saved, result) => saved && saved.est === result.est
+    && Array.isArray(saved.bands) && saved.bands.length === result.bands.length
+    && saved.bands.every((n, i) => Number.isFinite(n) && Math.abs(n - result.bands[i]) <= 0.000501);
+  function sameTest(saved, result) {
+    const words = xs => Array.isArray(xs) && xs.every(w => typeof w === "string")
+      ? JSON.stringify([...new Set(xs.map(w => w.toLowerCase()))].sort()) : null;
+    return sameTestSummary(saved, result)
+      && words(saved.known) === words(result.known) && words(saved.unknown) === words(result.unknown);
+  }
+  async function reconcileTest(test) {
+    const backup = await api("/api/profile/export");
+    if (!sameTest(backup.profile?.test, test.result)) return false;
+    if (T !== test) return false;
+    test.saveState = "saved";
+    test.saveError = "";
     try {
-      P = await api("/api/profile", { expected_rev: T.revision, test: { est: T.result.est, bands: T.result.bands, known: T.result.known, unknown: T.result.unknown } });
+      const current = await api("/api/profile");
+      if (T === test) { P = current; renderSummary(); }
+    } catch { test.saveError = "本次结果已核对保存，画像概览暂时无法更新，请稍后重新打开页面。"; }
+    return true;
+  }
+  async function checkSavedTest() {
+    const test = T;
+    if (!test?.result || testBusy(test)) return;
+    test.saveState = "checking"; test.saveError = "";
+    await renderTest();
+    try {
+      if (!await reconcileTest(test)) test.saveError = "当前读取的画像与本次作答不同，可以重新保存本次结果。";
+    } catch (error) { test.saveError = error.message; }
+    if (test.saveState !== "saved") test.saveState = "unconfirmed";
+    if (T === test) await renderTest();
+  }
+  async function finish(retry = false) {
+    const test = T;
+    if (!test || testBusy(test)) return;
+    test.result ||= score();
+    test.stage = "result";
+    test.saveState = "saving"; test.saveError = "";
+    await renderTest();
+    try {
+      if (retry) {
+        if (await reconcileTest(test)) { if (T === test) await renderTest(); return; }
+        const latest = await api("/api/profile");
+        if (T !== test) return;
+        test.revision = latest.rev;
+        P = latest;
+      }
+      const current = await api("/api/profile", { test: testPayload(test.result), expected_rev: test.revision });
+      if (T !== test) return;
+      if (!sameTestSummary(current.test, test.result)) throw new Error("保存响应未确认本次测试结果");
+      P = current;
+      test.saveState = "saved";
       renderSummary();
     } catch (e) {
-      T.saveError = e.message;
+      test.saveError = e.message;
+      // A write may have succeeded before its response was lost. Read, never automatically replay it.
+      try { await reconcileTest(test); } catch { /* preserve the current attempt and show it as unconfirmed */ }
+      if (test.saveState !== "saved") test.saveState = "unconfirmed";
     }
+    if (T !== test) return;
     await renderTest();
-    if (T.saveError) $("#test").insertAdjacentHTML("afterbegin", `<p class="msg bad">保存失败：${esc(T.saveError)}</p>`);
     $("#s3").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 

@@ -517,15 +517,16 @@
     const runtime = s.runtime || {state: "unchecked", message: "本地英语组件尚未检查"};
     if (runtime.state === "error") {
       stage("runtimeerror", `<div class="kicker"><i></i>本地组件需要修复</div><div class="line">暂时无法开始新的生成</div>
-        <div class="sub">已有字幕仍保留。请查看下方本地英语组件的修复说明。</div><a class="btn" href="/player.html">查看已有字幕</a>`, null);
+        <div class="sub">已有字幕仍保留。请查看下方本地英语组件的修复说明。</div><a class="btn primary" href="/demo">先体验字幕</a>`, null);
     } else if (runtime.state !== "ready") {
       stage("runtimechecking", `<div class="kicker"><i></i>正在准备本地组件</div><div class="line">正在加载英语处理能力</div>
-        <div class="sub">完成后即可开始生成。</div><a class="btn" href="/player.html">查看已有字幕</a>`, null);
+        <div class="sub">完成后即可开始生成；你也可以先体验字幕。</div><a class="btn primary" href="/demo">先体验字幕</a>`, null);
     } else if (!s.key) {
       stage("nokey", `<div class="kicker"><i></i>还差一步</div>
         <div class="line">${gl("", "Set up", "设置", " a model key to begin.")}</div>
         <div class="sub">先填写注释模型的 API key，插件才能生成注释</div>
-        <a class="btn primary" href="/setup?app=1">填写 API key</a>`, null);
+        <a class="btn primary" href="/demo">先体验字幕</a>
+        <a class="btn" href="/setup?app=1">填写 API key</a>`, null);
     } else if (job) {
       const pct = job.total ? Math.min(100, Math.round((100 * job.done) / job.total)) : 0;
       stage(`job:${job.id}`, `<div class="kicker"><i></i>正在处理${job.asr ? "（语音识别）" : ""}</div>

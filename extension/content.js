@@ -417,7 +417,7 @@
       return r;
     },
     write: async op => {
-      const r = await bg({ type: "mark", payload: { key: op.key, state: op.state } });
+      const r = await bg({ type: "mark", payload: { key: op.key, state: op.state, detail: op.detail } });
       if (r.error) throw new Error(serverMsg(r));
       return r;
     },
@@ -445,7 +445,7 @@
   async function mark(key, state, word, zhShort) {
     const notice = ++markNotice;
     try {
-      await profileSync.mutate({ type: "mark", key, state });
+      await profileSync.mutate({ type: "mark", key, state, detail: { term: word, zh: zhShort || "" } });
     } catch (e) {
       return pill(`标记保存未确认：${e.message}；已恢复到最近确认的记录，请重试`, { hideAfter: 6000 });
     }
@@ -454,7 +454,7 @@
       chrome.storage.local.set({ asubsDefs: defs });
     }
     if (notice !== markNotice) return;
-    const shown = AdaptiveLearning.label(key);
+    const shown = AdaptiveLearning.label(key) + (key.startsWith("ctx:") && zhShort ? `（${zhShort}）` : "");
     pill(state === "known" ? `已加入熟词库：${shown}，不再注释` : state === "unknown" ? `已标为生词：${shown}，以后总会注释` : `已恢复：${shown}，按画像判断`,
       { hideAfter: 3500 });
   }
@@ -755,13 +755,15 @@
     if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
     if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
     if (!n) return "这一集没有给它注释";
+    if (noteState(n) === "known") return "根据熟词库或旧版词条标记不提示；这个意思不熟时可以单独标记";
+    if (noteState(n) === "forced") return "旧版词条或词汇测试标记为不认识；认识当前意思后可以单独标记";
     return noteState(n) === "hard" ? `难度约 ${n.lv.toLocaleString("en-US")} 词，高于你的水平（≈ ${effLevel().toLocaleString("en-US")}），所以注释`
       : `难度约 ${n.lv.toLocaleString("en-US")} 词，按你的水平（≈ ${effLevel().toLocaleString("en-US")}）不注释`;
   }
 
   function renderCard() {
     const n = CARD.note, mk = PF.marks.get(CARD.key);
-    const known = "我认识";
+    const known = n && !n.local ? "我懂这个意思" : "我认识";
     const dim = (t) => h("div", "asubs-card-dim", t);
     const zhLine = (pos, zh) => h("div", "asubs-card-zh", pos ? h("span", "asubs-card-pos", pos) : null, zh);
     let meaning;
@@ -794,7 +796,7 @@
       ...meaning,
       ...(CARD.lists && CARD.lists.length ? [dim(`考试词表：${CARD.lists.join("、")}`)] : []),
       h("div", "asubs-card-why", cardReason()),
-      h("div", "asubs-card-btns", btn("known", known, mk === "known"), btn("unknown", "我不认识", mk === "unknown"),
+      h("div", "asubs-card-btns", btn("known", known, mk === "known"), btn("unknown", n && !n.local ? "这个意思不熟" : "我不认识", mk === "unknown"),
         mk ? btn("clear", "恢复默认") : null, dict));
     ui.card.hidden = false;
   }

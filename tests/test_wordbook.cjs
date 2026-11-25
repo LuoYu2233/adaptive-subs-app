@@ -1,17 +1,17 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const W = require("../app/web/assets/wordbook.js");
-const entry = { key: "bank", mk: "sense:bank", term: "bank", zh: "银行", kind: "sense",
+const entry = { key: "ctx:bank:finance", mk: "ctx:bank:finance", term: "bank", zh: "银行", kind: "sense",
   lv: 5000, sentence: "😀 The bank approved my loan.", t: 1.25, vid: "abcdefghijk", added: 1700000000000, hasNote: true };
 
 test("wordbook backup round trips meanings, Unicode, fractional time and legacy entries", () => {
-  const legacy = { ...entry, key: "dock", term: "dock", zh: "码头" }; delete legacy.mk; delete legacy.hasNote;
+  const legacy = { ...entry, key: "bank" }; delete legacy.mk; delete legacy.hasNote;
   const original = [entry, legacy];
   assert.deepEqual(W.parse(JSON.parse(JSON.stringify(W.backup(original)))), original);
   assert.deepEqual(W.parse(W.backup([])), []);
 });
-test("merge preserves existing details and keeps distinct entries without modifying inputs", () => {
-  const incoming = [{ ...entry, zh: "do not overwrite" }, { ...entry, key: "shore", mk: "sense:shore", term: "shore", zh: "河岸" }];
+test("merge preserves existing details and distinguishes two meanings without modifying inputs", () => {
+  const incoming = [{ ...entry, zh: "do not overwrite" }, { ...entry, key: "ctx:bank:shore", zh: "河岸" }];
   const original = structuredClone(incoming), current = [structuredClone(entry)];
   const merged = W.merge(current, incoming);
   assert.equal(merged.length, 2); assert.equal(merged[0].zh, "银行"); assert.equal(merged[1].zh, "河岸");
