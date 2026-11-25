@@ -69,7 +69,7 @@
   // never hides its uncommon meaning.
   const PF = { ok: false, rev: -1, level: 0, known: new Set(), unknown: new Set(), marks: new Map(), lastCheck: 0 };
   let defs = {};    // key -> short Chinese meaning, for words marked 不认识 that had no annotation
-  const markKey = (n) => (n.kind === "word" ? n.key : `${n.kind}:${n.key}`);
+  const markKey = AdaptivePrediction.markKey;
   const effLevel = () => (PF.ok && PF.level) || cfg.level;
 
   // ------------------------------------------------------------ helpers ---
@@ -366,11 +366,8 @@
   // ------------------------------------------- which glosses to show (core) ---
   // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
   function noteState(n) {
-    const mk = markKey(n);
-    if (PF.unknown.has(mk)) return "forced";
-    if (PF.known.has(mk)) return "known";
     const pref = PREFS[cfg.pref] || PREFS.more;
-    return n.lv > effLevel() * pref.factor ? "hard" : "easy";
+    return AdaptivePrediction.classify(n, PF.known, PF.unknown, effLevel() * pref.factor);
   }
 
   // rough base forms of a word as written, to match the library's lemma keys ("decided" -> "decide")
@@ -406,21 +403,7 @@
     const count = new Map();
     S.visible = S.cues.map((c) => {
       addMarkedWords(c);
-      const cand = [];
-      c.notes.forEach((n, i) => {
-        const st = noteState(n);
-        if (st === "forced" || st === "hard") cand.push({ i, lv: n.lv, key: markKey(n), forced: st === "forced" });
-      });
-      cand.sort((a, b) => (b.forced - a.forced) || (b.lv - a.lv));
-      const keep = new Set();
-      for (const x of cand) {
-        if (keep.size >= pref.perLine) break;
-        const seen = count.get(x.key) || 0;
-        if (!x.forced && seen >= pref.repeat) continue;
-        count.set(x.key, seen + 1);
-        keep.add(x.i);
-      }
-      return keep;
+      return AdaptivePrediction.selectNotes(c.notes, noteState, pref, count);
     });
     S.dirty = true;
   }
