@@ -22,6 +22,7 @@
     57, 62, 11, 36, 20, 34, 44, 52];
 
   let cfg = { ...DEFAULTS };
+  let trialModel = null, trialEnabled = false;
   const S = {
     key: null,        // "BV…/p" of the page the subtitles belong to
     gen: 0,           // bumped on every new video, so stale async work can tell it's outdated
@@ -361,7 +362,16 @@
 
   // ------------------------------------------- which glosses to show (core) ---
   // "forced" (marked 不认识) > "known" (in the library / marked 认识) > level rule ("hard" / "easy")
+  const trialThreshold = () => AdaptiveWordIRT.thresholds[cfg.pref] ?? AdaptiveWordIRT.thresholds.more;
+
+  function trialProbability(n) {
+    if (!trialEnabled || !trialModel || !PF.ok || n?.kind !== "word" || n.local || PF.marks.has(n.key)) return null;
+    return Object.hasOwn(trialModel.probabilities, n.key) ? trialModel.probabilities[n.key] : null;
+  }
+
   function noteState(n) {
+    const probability = trialProbability(n);
+    if (probability !== null) return probability >= trialThreshold() ? "hard" : "easy";
     const pref = PREFS[cfg.pref] || PREFS.more;
     return AdaptivePrediction.classify(n, PF.known, PF.unknown, effLevel() * pref.factor);
   }
@@ -729,6 +739,13 @@
     if (!PF.ok) return "打开 Adaptive Subs 程序后可以标记";
     if (mk === "unknown") return "你标记过「不认识」，所以总会注释";
     if (mk === "known") return "你标记过「认识」，所以不注释";
+    const probability = trialProbability(n);
+    if (probability !== null) {
+      const threshold = trialThreshold();
+      const display = S.visible[CARD.ci]?.has(S.cues[CARD.ci]?.notes.indexOf(n));
+      const verdict = probability < threshold ? "低于当前提示阈值" : display ? "达到阈值，已提示" : "达到阈值，受本句或重复次数上限限制";
+      return `IRT 试用估计不认识概率为 ${(probability * 100).toFixed(1)}%，${verdict}（${Math.round(threshold * 100)}%）`;
+    }
     if (PF.unknown.has(k)) return "词汇测试里选了「不认识」，所以总会注释";
     if (PF.known.has(k)) return n && n.kind !== "word" ? "你标记过认识这个用法" : "在你的熟词库里（考试词表 / 常见词 / 测试），所以不注释";
     if (!n) return "这一集没有给它注释";
@@ -1022,7 +1039,9 @@
   }
 
   // ------------------------------------------------------------ settings ---
-  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover", "asubsKeysHint"], (r) => {
+  chrome.storage.local.get(["settings", "asubsDefs", "asubsPos", "asubsCover", "asubsKeysHint", "irtPreview", "irtEnabled"], (r) => {
+    trialModel = AdaptiveWordIRT.validPreview(r?.irtPreview) ? r.irtPreview : null;
+    trialEnabled = r?.irtEnabled === true;
     keysHint = !!(r && r.asubsKeysHint);
     POS = (r && r.asubsPos) || {};
     COVER = (r && r.asubsCover) || {};
@@ -1048,6 +1067,12 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    if (changes.irtPreview || changes.irtEnabled) {
+      if (changes.irtPreview) trialModel = AdaptiveWordIRT.validPreview(changes.irtPreview.newValue) ? changes.irtPreview.newValue : null;
+      if (changes.irtEnabled) trialEnabled = changes.irtEnabled.newValue === true;
+      computeVisible();
+      if (CARD.open) renderCard();
+    }
     if (changes.profileRev) { loadProfile(); return; }      // the popup changed the level
     if (changes.asubsCover) { COVER = changes.asubsCover.newValue || {}; lastLayout = ""; }
     if (!changes.settings) return;
