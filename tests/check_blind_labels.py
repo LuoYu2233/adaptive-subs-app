@@ -171,6 +171,14 @@ def check():
             page.close()
             page = open_label(); page.locator("#resume").click()
             expect(page.locator("#progress")).to_have_text("第 1 / 1 句")
+            with page.expect_download() as packet: page.locator("#bundle").click()
+            bundle = json.loads(Path(packet.value.path()).read_bytes())
+            assert bundle["kind"] == "blind-video-evaluation" and bundle["sourceVerifiedAtStart"]
+            assert bundle["labels"]["collection"]["startedAt"] <= bundle["labels"]["collection"]["completedAt"]
+            assert "不能提示答案" not in json.dumps(bundle, ensure_ascii=False)
+            assert "title" not in bundle["video"]["video"] and all("zh" not in c for c in bundle["video"]["cues"])
+            for key in ("known", "unknown"):
+                assert set(bundle["profile"][key]) <= set(profile[key])
             with page.expect_download() as part: page.locator("#answers").click()
             assert part.value.suggested_filename == "fresh000001-1-3-labels.json"
             part.value.save_as(Path(temp) / "segment.json")
@@ -180,6 +188,11 @@ def check():
             score = json.loads(subprocess.check_output(["node",str(ROOT / "tools/evaluate_prediction.cjs"),"score",
                 "fresh.json","segment.json","viewer.json","normal"],cwd=temp))
             assert score["durationSeconds"] == 2 and score["evaluatedCues"] == 1
+            packet_file = Path(temp) / "评分包.json"
+            packet_file.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+            packet_score = json.loads(subprocess.check_output(["node", str(ROOT / "tools/evaluate_prediction.cjs"),
+                                      "score-bundle", str(packet_file), "normal"], cwd=temp))
+            assert packet_score == score
             page.close()
             video.goto("https://www.youtube.com/watch?v=partial0001")
             expect(video.locator(".asubs-zh")).to_have_text("不能提示答案")

@@ -3,7 +3,7 @@ const byId = id => document.getElementById(id);
 const tell = text => { byId("notice").textContent = text; };
 const tabId = Number(new URLSearchParams(location.search).get("tab"));
 let port, source, key, draft, index = 0, chosen = [], phrase = false, anchor = null;
-let playbackIndices = [];
+let playbackIndices = [], sourceNotes, sourceHash, subtitleSha256;
 let busy = false, connected = false, oldDraft = false, releaseLock;
 
 function wordLists(p) {
@@ -74,6 +74,10 @@ function render() {
   const cue = draft.sheet.cues[index];
   const confirmed = draft.sheet.cues.filter(c => Array.isArray(c.unknown)).length;
   byId("progress").textContent = `第 ${index + 1} / ${draft.sheet.cues.length} 句`;
+  const changed = draft.sourceHash && sourceHash !== draft.sourceHash;
+  byId("bundle").disabled = busy || confirmed !== draft.sheet.cues.length || !!changed;
+  byId("bundleHint").textContent = changed ? "当前候选与开始标注时不同，仍可分别导出原答案和画像。" :
+    "全部确认后，可导出评分包。文件包含全片英文字幕、候选位置、盲标答案，以及只与本片候选词有关的画像词条。";
   byId("saved").textContent = `已确认 ${confirmed} 句。导出会包含所有已确认的答案。`;
   byId("confirm").textContent = index + 1 === draft.sheet.cues.length ? "确认最后一句" : "确认并播放下句";
   byId("phrase").setAttribute("aria-pressed", String(phrase));
@@ -154,9 +158,9 @@ byId("new").onclick = () => action(async () => {
   if (!validProfile(p)) throw new Error("无法读取观看前画像，请确认本地程序已运行后重试。");
   const profile = { level: p.level, known: p.known, unknown: p.unknown };
   if (p.marks) profile.marks = { known: p.marks.known, unknown: p.marks.unknown };
-  const sheet = { ...source, cues: indices.map(i => source.cues[i]) };
+  const sheet = { ...source, collection: { mode: "blind-cue", startedAt: Date.now() }, cues: indices.map(i => source.cues[i]) };
   if (range) { sheet.version = 2; sheet.window = range; }
-  await writeDraft({ sheet, profile, index: 0 });
+  await writeDraft({ sheet, profile, sourceHash, index: 0 });
   enter();
 });
 byId("resume").onclick = () => { if (connected && !busy) enter(); };
@@ -187,6 +191,7 @@ byId("confirm").onclick = () => action(async () => {
   if (anchor) return tell("请先选完短语或关闭「选择短语」。");
   const next = structuredClone(draft);
   next.sheet.cues[index].unknown = chosen;
+  if (next.sheet.collection && next.sheet.cues.every(c => Array.isArray(c.unknown))) next.sheet.collection.completedAt = Date.now();
   next.index = Math.min(index + 1, next.sheet.cues.length - 1);
   await writeDraft(next);
   const last = next.index === index;
@@ -216,6 +221,18 @@ function downloadName() {
 byId("answers").onclick = () => download(downloadName() + "-labels.json", draft.sheet);
 byId("viewer").onclick = () => download(downloadName() + "-viewer-before.json", draft.profile);
 
+byId("bundle").onclick = () => {
+  if (!draft || byId("bundle").disabled) return;
+  const keys = new Set(sourceNotes.flatMap(notes => notes.map(n => n.kind === "word" ? n.key : n.kind + ":" + n.key)));
+  const relevant = words => words.filter(w => keys.has(w));
+  const p = draft.profile, profile = { level: p.level, known: relevant(p.known), unknown: relevant(p.unknown) };
+  if (p.marks) profile.marks = { known: relevant(p.marks.known), unknown: relevant(p.marks.unknown) };
+  const video = { video: { id: source.video, duration: source.duration },
+    cues: source.cues.map(({ s, e, text }, i) => ({ s, e, text, notes: sourceNotes[i] })) };
+  download(downloadName() + "-evaluation.json", { version: 1, kind: "blind-video-evaluation",
+    sourceVerifiedAtStart: draft.sourceHash === sourceHash, subtitleSha256, video, labels: draft.sheet, profile });
+};
+
 function disconnected() {
   connected = false; controls();
   if (!busy) releaseLock?.();
@@ -223,7 +240,15 @@ function disconnected() {
   if (!byId("notice").textContent) tell("视频页已断开。已确认的答案可继续导出。");
 }
 
-async function openDraft(sheet, title) {
+async function openDraft(sheet, title, candidates) {
+  if (!Array.isArray(candidates) || candidates.length !== sheet.cues.length) throw new Error("缺少与字幕对应的候选词");
+  sourceNotes = candidates;
+  const digest = async value => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
+  };
+  [sourceHash, subtitleSha256] = await Promise.all([digest([sheet, candidates]), digest(sheet.cues.map(c => [c.s, c.e, c.text]))]);
   source = sheet; key = "blindLabels:" + sheet.video;
   byId("title").textContent = title;
   byId("duration").textContent = `原视频长 ${Math.floor(sheet.duration / 60)} 分 ${Math.floor(sheet.duration % 60)} 秒。`;
@@ -256,7 +281,7 @@ if (Number.isSafeInteger(tabId) && tabId > 0) {
   connected = true;
   let stopReason = "";
   port.onMessage.addListener(message => {
-    if (message.type === "sheet") openDraft(message.sheet, message.title).catch(error => tell(error.message));
+    if (message.type === "sheet") openDraft(message.sheet, message.title, message.candidates).catch(error => tell(error.message));
     if (message.type === "notice") tell(message.text);
     if (message.type === "stopped") { stopReason = message.reason; tell(stopReason); disconnected(); }
   });

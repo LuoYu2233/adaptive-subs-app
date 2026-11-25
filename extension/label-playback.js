@@ -68,7 +68,7 @@ function installLabelPlayback({ getClip, isCurrent, getVideo, isAd, setBlind }) 
           port.postMessage({ type: "notice", text: "播放器暂不能自动播放，请在原视频页点播放，或稍后重听本句。" });
       }
     });
-    port.postMessage({ type: "sheet", sheet: clip.sheet, title: clip.title });
+    port.postMessage({ type: "sheet", sheet: clip.sheet, title: clip.title, candidates: clip.candidates });
   });
 
   return { tick, get active() { return !!active; } };
