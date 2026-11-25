@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 import random
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -112,6 +113,16 @@ class ViewingModelTests(unittest.TestCase):
             paths = [save(f"观看{i}", s) for i, s in enumerate(sessions)]
             def run(train, test, **opts): return report(record, table, "b_initial", train, test, **opts)
             result = run(paths[:20], paths[20:])
+            output = base / "已冻结 模型.json"
+            command = [sys.executable, str(ROOT / "tools/fit_viewing_feedback.py"), str(record), str(table),
+                       "--train", str(paths[0]), "--output"]
+            completed = subprocess.run(command + [str(output)], check=True, capture_output=True)
+            self.assertEqual(completed.stdout, b"")
+            frozen = json.loads(output.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(frozen["frozenAt"], frozen["trainingCutoff"])
+            original = record.read_bytes()
+            self.assertNotEqual(subprocess.run(command + [str(record)], capture_output=True).returncode, 0)
+            self.assertEqual(record.read_bytes(), original)
             self.assertEqual(result["heldOut"]["included"], 1600)
             self.assertLess(result["heldOut"]["updatedEventLogLoss"], result["heldOut"]["anchorEventLogLoss"] - .02)
             self.assertGreater(result["estimate"]["domainBias"]["科技"], result["estimate"]["domainBias"]["新闻"])
