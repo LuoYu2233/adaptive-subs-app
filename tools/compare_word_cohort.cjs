@@ -1,7 +1,7 @@
 // Compare the same paired predictions for a cohort, weighting counts and duration across sessions.
 "use strict";
 const path = require("node:path");
-const { load, displayMetrics } = require("./evaluate_prediction.cjs");
+const { load, displayMetrics, unpackBlindPacket } = require("./evaluate_prediction.cjs");
 const { readTable, compare, probabilityMetrics } = require("./compare_word_models.cjs");
 
 function summarize(sessions) {
@@ -47,28 +47,47 @@ function cohort(manifestPath, tableFile, preset) {
     if (typeof file !== "string" || !file.trim()) throw new Error("缺少本地文件路径");
     return load(path.resolve(directory, file));
   };
-  const seen = new Map();
+  const seen = new Map(), mediaByVideo = new Map();
   const sessions = manifest.sessions.map((row, index) => {
     try {
       if (![row?.learner, row?.domain].every(s => typeof s === "string" && s.trim() && s === s.trim()))
         throw new Error("需要匿名学习者代号与片段领域");
-      const video = read(row.video), samples = {};
-      const id = JSON.stringify([row.learner, video.video?.id]);
-      const report = compare(video, read(row.labels), read(row.profile), preset, table,
+      let session;
+      if (row.packet !== undefined) {
+        if (["video","labels","profile"].some(k => row[k] !== undefined))
+          throw new Error("同一场请选择完整评分包或三个单独文件");
+        session = unpackBlindPacket(read(row.packet));
+      } else {
+        session = { video: read(row.video), labels: read(row.labels), profile: read(row.profile) };
+      }
+      const { video, labels, profile, mediaSha256, subtitleSha256 } = session, samples = {};
+      const report = compare(video, labels, profile, preset, table,
         row.parameters === undefined ? {} : read(row.parameters),
         { tableSha256, onSamples: (field, values) => { samples[field] = values; } });
-      const range = report.baseline.window ?? { start: 0, end: video.video.duration };
-      const existing = seen.get(id) || [];
-      if (existing.some(r => r.start < range.end && range.start < r.end))
-        throw new Error("同一学习者的视频片段重复或重叠");
-      existing.push(range);
-      seen.set(id, existing);
-      return { learner: row.learner, domain: row.domain, report, samples };
+      const videoId = video.video.id;
+      if (mediaSha256) {
+        if (mediaByVideo.has(videoId) && mediaByVideo.get(videoId) !== mediaSha256)
+          throw new Error("同一字幕视频标识对应了不同平台视频");
+        mediaByVideo.set(videoId, mediaSha256);
+      }
+      return { learner: row.learner, domain: row.domain, videoId, subtitleSha256, report, samples };
     } catch (error) { throw new Error(`第 ${index + 1} 组会话：${error.message}`); }
+  });
+  const identity = s => mediaByVideo.get(s.videoId) ? "media:" + mediaByVideo.get(s.videoId) : "id:" + s.videoId;
+  sessions.forEach((s, i) => {
+    const id = JSON.stringify([s.learner, identity(s)]);
+    const ranges = seen.get(id) || [];
+    const baseline = s.report.baseline;
+    const range = baseline.window ?? { start: 0, end: baseline.durationSeconds };
+    if (ranges.some(r => r.start < range.end && range.start < r.end ||
+        r.hash && s.subtitleSha256 && r.hash !== s.subtitleSha256))
+      throw new Error(`第 ${i + 1} 组会话：同一视频的片段重复、时间重叠或字幕轨不一致`);
+    ranges.push({ ...range, hash: s.subtitleSha256 });
+    seen.set(id, ranges);
   });
   return {
     preset, tableSha256, participants: new Set(sessions.map(r => r.learner)).size,
-    videos: new Set(sessions.map(r => r.report.baseline.video)).size, overall: summarize(sessions),
+    videos: new Set(sessions.map(identity)).size, overall: summarize(sessions),
     byLearner: group(sessions, "learner"), byDomain: group(sessions, "domain"),
   };
 }

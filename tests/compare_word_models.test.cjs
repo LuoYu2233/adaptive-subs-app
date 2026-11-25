@@ -130,6 +130,20 @@ test("cohort weights events and time, pools AUC before scoring, and rejects dupl
   assert.equal(paired.videos,1);
   assert.equal(paired.overall.durationSeconds,7);
   assert.equal(paired.overall.models.b_frequency.probability.observations,3);
+  const media = "a".repeat(64);
+  function packetSession(labelFile, name, videoId) {
+    const labels = JSON.parse(fs.readFileSync(path.join(dir,labelFile),"utf8"));
+    const packet = {version:1,kind:"blind-video-evaluation",mediaSha256:media,video:{...video,video:{...video.video,id:videoId}},
+      labels:{...labels,video:videoId},profile};
+    write(name,packet);
+    return {learner:first.learner,domain:first.domain,parameters:first.parameters,packet:name};
+  }
+  const readHead = packetSession("前段","前段评分包",video.video.id);
+  const readTail = packetSession("后段","后段评分包","另一个字幕轨");
+  assert.deepEqual(run([readHead,readTail]),paired);
+  assert.throws(()=>run([readHead,{...readTail,packet:readHead.packet}]),/重复/);
+  assert.throws(()=>run([readHead,{...readTail,labels:"标注"}]),/请选择/);
+  assert.throws(()=>run([readHead,head]),/重复/);
   const overlap = windowSession("重叠",2,6);
   assert.throws(()=>run([tail,overlap]),/第 2 组.*重叠/);
   assert.throws(()=>run([{...first,profile:""}]),/第 1 组.*路径/);

@@ -24,13 +24,13 @@ node tools/compare_word_models.cjs video.json labels.json profile.json word-diff
 
 ## 多位试用者、多个片段
 
-将每位学习者观看每段视频的文件写进一个本地 JSON 清单。路径相对于清单文件。learner 使用匿名代号，domain 用于分别查看科技、日常口语或新闻等片段。parameters 可省略，省略时使用该场的观看前词汇量反推能力。
+将每位学习者观看每段视频的文件写进一个本地 JSON 清单。路径相对于清单文件。learner 使用匿名代号，domain 用于分别查看科技、日常口语或新闻等片段。有完整盲标评分包时，直接把它的路径写在 packet 字段。较早导出的三份文件也能使用，同一场只选一种格式。parameters 可省略，省略时使用该场的观看前词汇量反推能力。
 
 ```json
 {
   "version": 1,
   "sessions": [
-    {"learner":"P01","domain":"科技","video":"clips/tech.json","labels":"P01/tech-labels.json","profile":"P01/tech-before.json","parameters":"P01/word-cat-parameters.json"},
+    {"learner":"P01","domain":"科技","packet":"P01/tech-evaluation.json","parameters":"P01/word-cat-parameters.json"},
     {"learner":"P02","domain":"科技","video":"clips/tech.json","labels":"P02/tech-labels.json","profile":"P02/tech-before.json"}
   ]
 }
