@@ -2,7 +2,7 @@
 const el = id => document.getElementById(id);
 const data = JSON.parse(el("data").textContent);
 let session, result;
-let startedAt, questionAt, visibleSince, visibleTotal = 0;
+let startedAt, startedUTC, questionAt, visibleSince, visibleTotal = 0;
 
 function updateVisibility(now) {
   if (visibleSince !== undefined) visibleTotal += now - visibleSince;
@@ -27,7 +27,7 @@ function advance() {
     const finished = performance.now();
     updateVisibility(finished);
     result = session.result();
-    result.timing = { elapsedMs: Math.round(finished - startedAt), visibleMs: Math.round(visibleTotal) };
+    result.timing = { startedAt: startedUTC, completedAt: Date.now(), elapsedMs: Math.round(finished - startedAt), visibleMs: Math.round(visibleTotal) };
     const { expectedVocabulary, theta, se } = result.fits.b_initial;
     el("quiz").hidden = true;
     el("done").hidden = false;
@@ -58,7 +58,7 @@ el("setup").onsubmit = event => {
   catch (error) { el("error").textContent = error.message; return; }
   el("start").hidden = true;
   el("quiz").hidden = false;
-  startedAt = performance.now();
+  startedUTC = Date.now(); startedAt = performance.now();
   updateVisibility(startedAt);
   advance();
 };
