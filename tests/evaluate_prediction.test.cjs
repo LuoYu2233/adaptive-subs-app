@@ -106,6 +106,11 @@ test("CLI supports UTF-8 BOM and preserves an existing label file", t => {
   const scored = run(["score", "video.json", "标注.json", "profile.json", "normal"]);
   assert.equal(scored.status, 0, scored.stderr);
   assert.equal(JSON.parse(scored.stdout).missed, 3);
+  const packet = {version:1,kind:"blind-video-evaluation",video:clip,labels:answered(),profile};
+  write("片段评分.json",packet);
+  assert.deepEqual(JSON.parse(run(["score-bundle","片段评分.json","normal"]).stdout),JSON.parse(scored.stdout));
+  write("片段评分.json",{...packet,subtitleSha256:"0".repeat(64)});
+  assert.match(run(["score-bundle","片段评分.json","normal"]).stderr,/指纹/);
 });
 
 test("a bounded clip keeps the source repeat history and uses the designated duration", () => {
