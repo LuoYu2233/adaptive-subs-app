@@ -36,6 +36,9 @@ import time
 
 import srt
 
+import subtitle_store as SS
+from storage import write_json
+
 sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).parent          # app/: data/ next to the code
@@ -558,8 +561,11 @@ def main():
         "model": None if args.dry_run else args.model,
         "cues": cues,
     }
-    out_json.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    if not args.dry_run:
+    if args.dry_run:
+        out_json = src.with_name(f"{video_id}.dry-run.json")
+        write_json(out_json, {**data, "status": "preview"})
+    else:
+        SS.publish(out_json, data)
         update_index(src.parent, video_id, data["video"]["title"], out_json.name)
 
     total = sum(len(c["notes"]) for c in cues)

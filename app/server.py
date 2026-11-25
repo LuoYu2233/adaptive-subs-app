@@ -34,6 +34,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import subtitle_store as SS
 import annotate as A
 import applog
 import asr as ASR
@@ -586,8 +587,13 @@ def repair_saved(vid: str, path: Path):
             return
         REPAIRING.add(vid)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        original = SS.snapshot(path, vid)
+        if original is None:
+            return
+        data = original.data
         cues, bad = data["cues"], refusal_lines(data)
+        if not bad:
+            return
         fixed = {}
         url = asr_source_url(vid) if LOCAL_ASR.available() else None
         if url:
@@ -616,7 +622,8 @@ def repair_saved(vid: str, path: Path):
             run_translation(job, {"ids": ids, "retry": 1})
         for i in bad:
             cues[i].update(text=job.texts[i], notes=job.ann.get(i, []), zh=job.zh.get(i, ""))
-        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        if not SS.publish(path, data, expected_digest=original.digest):
+            return
         print(f"[{vid}] repaired: {sum(1 for i in bad if job.texts[i])} of {len(bad)} lines recognised again")
     except Exception as e:
         print(f"[{vid}] repair failed: {short_err(e)}")
@@ -758,7 +765,7 @@ def finalize(job: Job):
             "usage": {**job.usage, "total": A.usage_total(job.usage), **({"asr": job.asr_usage} if job.asr_usage else {})},
             "source": "asr" if job.asr_url else (job.sub or {}).get("source", ""), "cues": cues}
     job.save_dir.mkdir(parents=True, exist_ok=True)
-    (job.save_dir / f"{job.vid}.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    SS.publish(job.save_dir / f"{job.vid}.json", data)
     if job.save_dir == DATA:      # YouTube videos appear in the player's list; extension videos don't
         A.update_index(DATA, job.vid, job.title, f"{job.vid}.json")
     job.state = "done"
@@ -949,6 +956,11 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             f = f.resolve()
             f.relative_to(base.resolve())
+            if base == DATA and f.suffix == ".json" and f.name != "index.json":
+                cached = SS.snapshot(f, f.stem)
+                if cached is None:
+                    return self.send_json({"error": "字幕缓存不完整，请重新生成"}, 409)
+                return self.send_json(cached.data)
             body = f.read_bytes()
         except (OSError, ValueError):
             return self.send_error(404)
@@ -1012,7 +1024,11 @@ class Handler(SimpleHTTPRequestHandler):
             vid = parse_video_id(q.get("url", ""))
             if not vid:
                 return self.send_json({"error": "没认出 YouTube 视频地址，请粘贴完整链接或 11 位视频 ID"}, 400)
-            if (DATA / f"{vid}.json").exists():
+            try:
+                cached = SS.snapshot(DATA / f"{vid}.json", vid)
+            except OSError:
+                return self.send_json({"error": "无法读取本地字幕文件，请检查目录权限后重试"}, 503)
+            if cached is not None:
                 return self.send_json({"id": vid, "cached": True, "file": f"{vid}.json"})
             if not P.has_key():
                 return self.send_json({"error": key_missing_msg()}, 400)
@@ -1119,16 +1135,26 @@ class Handler(SimpleHTTPRequestHandler):
         if not (YT_ID_RE if youtube else EXT_ID_RE).fullmatch(vid):
             return self.send_json({"error": "bad id"}, 400)
         saved = (DATA if youtube else EXT_DATA) / f"{vid}.json"
-        if youtube and not saved.exists() and (EXT_DATA / f"yt_{vid}_asr.json").exists():
-            vid = f"yt_{vid}_asr"
-            saved = EXT_DATA / f"{vid}.json"
-        if saved.exists():          # done before: send the whole result at once
-            data = json.loads(saved.read_text(encoding="utf-8"))
+        try:
+            original = SS.snapshot(saved, vid)
+            if youtube and original is None:
+                asr_id = f"yt_{vid}_asr"
+                fallback = EXT_DATA / f"{asr_id}.json"
+                original = SS.snapshot(fallback, asr_id)
+                if original is not None:
+                    vid, saved = asr_id, fallback
+        except OSError:
+            return self.send_json({"error": "无法读取本地字幕文件，请检查目录权限后重试"}, 503)
+        if original is not None:
+            data = original.data
             tags = tag_only_lines(data)
             if tags:                 # "<chinese>" for cheering / music (made before tags were filtered): no speech there
                 for i in tags:
                     data["cues"][i].update(text="", notes=[], zh="")
-                saved.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                try:
+                    SS.publish(saved, data, expected_digest=original.digest)
+                except OSError as error:
+                    print(f"[{vid}] cleaned subtitles for playback; disk update deferred: {short_err(error)}")
                 print(f"[{vid}] removed {len(tags)} non-speech labels (<chinese> ...) from the saved subtitles")
             if refusal_lines(data):  # made before refusals were detected: blank them now, fix in the background
                 for i in refusal_lines(data):
