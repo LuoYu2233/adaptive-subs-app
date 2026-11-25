@@ -12,12 +12,15 @@ try {
     $package = Join-Path $extract 'AdaptiveSubs-Windows'
     $extension = Join-Path $package '浏览器插件'
     $manifest = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $extension 'manifest.json') | ConvertFrom-Json
+    $resources = @($manifest.background.service_worker, $manifest.action.default_popup)
+    $resources += @($manifest.icons.PSObject.Properties.Value)
+    $resources += @($manifest.action.default_icon.PSObject.Properties.Value)
     foreach ($entry in $manifest.content_scripts) {
-        foreach ($file in (@($entry.js) + @($entry.css))) {
-            if (!(Test-Path -PathType Leaf -LiteralPath (Join-Path $extension $file))) {
-                throw "Missing extension resource: $file"
-            }
-        }
+        $resources += @($entry.js) + @($entry.css)
+    }
+    foreach ($file in ($resources | Where-Object { $_ } | Sort-Object -Unique)) {
+        $resource = Get-Item -LiteralPath (Join-Path $extension $file)
+        if ($resource.PSIsContainer -or $resource.Length -le 0) { throw "Empty extension resource: $file" }
     }
 
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
