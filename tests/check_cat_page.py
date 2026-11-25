@@ -56,6 +56,12 @@ def check(table=None):
             assert params["tableSha256"] == hashlib.sha256(table.read_bytes()).hexdigest()
             assert 12 <= len(expected) <= 40
             assert [(a["word"], a["selected"]) for a in record["responses"]] == expected
+            timing = record["timing"]
+            assert 0 < timing["visibleMs"] <= timing["elapsedMs"]
+            times = [r["elapsedMs"] for r in record["responses"]]
+            assert all(isinstance(t, int) and t >= 0 for t in times)
+            assert sum(times) <= timing["elapsedMs"] + len(times)  # rounding to whole milliseconds
+            assert "timing" not in params
             assert not errors and not network, (errors, network)
             context.close()
             browser.close()
