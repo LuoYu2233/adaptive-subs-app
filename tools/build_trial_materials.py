@@ -65,7 +65,7 @@ def build(word_page, phrase_page, table_file, output):
     guide = (package / "start.html").read_text(encoding="utf-8").replace("@@WORDS@@", str(len(measured["items"]))).replace(
         "@@PHRASES@@", str(len(phrases["items"])))
     files = {"先打开这里.html": guide.encode("utf-8"), "单词能力试测.html": word, "短语能力试测.html": phrase,
-             "word-difficulty-v1.json": table, "来源与许可.txt": (package / "来源与许可.txt").read_text(encoding="utf-8").encode("utf-8-sig")}
+             "word-difficulty-v1.json": table, "来源与许可.txt": (package / "third-party-notices.txt").read_text(encoding="utf-8").encode("utf-8-sig")}
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=output.parent, prefix="." + output.name, suffix=".tmp")
     try:
