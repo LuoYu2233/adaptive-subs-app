@@ -41,3 +41,5 @@ node tools/compare_word_cohort.cjs manifest.json word-difficulty-v1.json normal
 ```
 
 overall 按全部观看场次累计命中、漏注、多注和总时长，再计算比例。byLearner 和 byDomain 可检查不同水平、不同内容的差异。AUC 和校准分箱从相应组内的全部单词出现次数重新计算。overrideSources 给出各组使用新旧快照的场次数。同一人可以评估同一长视频的多个独立片段。重复或交叠的区间会报错，重测可另存清单独立分析。
+
+pairedDisplay 给出同一批片段上每个模型相对原规则的漏注率、多注数/分钟和 F2 差值。前两项下降、F2 上升表示相应指标改善。有多位学习者时，leaveOneLearnerOut 会依次去掉某人的全部片段后重算差值，便于检查结论是否依赖某位参与者。某组没有真生词时，漏注率差值为 null。

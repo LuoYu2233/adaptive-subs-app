@@ -117,6 +117,18 @@ test("cohort weights events and time, pools AUC before scoring, and rejects dupl
   assert.equal(model.probability.auc,5/6); // a positive ties the single negative across participants
   assert.equal(out.byLearner[1].models.b_frequency.probability.auc,null);
   assert.equal(out.byDomain[0].models.b_frequency.display.missed,0);
+  for (const [removed, retained] of [[0,1],[1,0]]) {
+    const without = out.pairedDisplay.leaveOneLearnerOut[removed], only = out.byLearner[retained].models;
+    assert.equal(without.omitted, out.byLearner[removed].learner);
+    assert.equal(without.changes.b_frequency.missRate,only.b_frequency.display.missRate - only.baseline.display.missRate);
+    assert.equal(without.changes.b_initial.extraPerMinute,only.b_initial.display.extraPerMinute - only.baseline.display.extraPerMinute);
+  }
+  assert.equal(out.pairedDisplay.changes.b_initial.f2,out.overall.models.b_initial.display.f2-out.overall.models.baseline.display.f2);
+  assert.deepEqual(run([first]).pairedDisplay.leaveOneLearnerOut,[]);
+  answers.cues[0].unknown = [];
+  write("全熟",answers);
+  const negative = run([first,{...second,labels:"全熟"}]);
+  assert.equal(negative.pairedDisplay.leaveOneLearnerOut[0].changes.b_initial.missRate,null);
   assert.throws(()=>run([first,first]),/第 2 组.*重复/);
   function windowSession(name, start, end) {
     const subset = prepare(video,{start,end});
